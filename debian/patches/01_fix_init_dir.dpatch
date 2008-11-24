@@ -1,0 +1,31 @@
+#! /bin/sh /usr/share/dpatch/dpatch-run
+## 01_fix_init_dir.dpatch by  <Michele Baldessari <michele@pupazzo.org>>
+##
+## All lines beginning with `## DP:' are a description of the patch.
+## DP: No description.
+
+@DPATCH@
+diff -urNad freeipa-1.1.0~/ipa-server/ipa-gui/Makefile.am freeipa-1.1.0/ipa-server/ipa-gui/Makefile.am
+--- freeipa-1.1.0~/ipa-server/ipa-gui/Makefile.am	2008-06-11 16:24:28.000000000 +0200
++++ freeipa-1.1.0/ipa-server/ipa-gui/Makefile.am	2008-07-09 07:43:20.000000000 +0200
+@@ -44,7 +44,7 @@
+ CLEANFILES =			\
+ 	$(mo)
+ 
+-initdir=$(sysconfdir)/rc.d/init.d
++initdir=$(sysconfdir)/init.d
+ 
+ install-data-hook: ipa_webgui.init
+ 	if test '!' -d $(DESTDIR)$(initdir); then \
+diff -urNad freeipa-1.1.0~/ipa-server/ipa-kpasswd/Makefile.am freeipa-1.1.0/ipa-server/ipa-kpasswd/Makefile.am
+--- freeipa-1.1.0~/ipa-server/ipa-kpasswd/Makefile.am	2008-06-11 16:24:28.000000000 +0200
++++ freeipa-1.1.0/ipa-server/ipa-kpasswd/Makefile.am	2008-07-09 07:43:50.000000000 +0200
+@@ -43,7 +43,7 @@
+ 	*~			\
+ 	Makefile.in
+ 
+-initdir=$(sysconfdir)/rc.d/init.d
++initdir=$(sysconfdir)/init.d
+ 
+ install-data-hook: ipa_kpasswd.init
+ 

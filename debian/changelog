@@ -1,0 +1,5 @@
+freeipa (1.2.0-1) unstable; urgency=low
+
+  * Initial release (Closes: #nnnn)
+
+ -- Michele Baldessari <michele@pupazzo.org>  Mon, 24 Nov 2008 22:22:16 +0100

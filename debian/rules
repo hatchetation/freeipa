@@ -1,0 +1,123 @@
+#!/usr/bin/make -f
+
+# Uncomment this to turn on verbose mode.
+#export DH_VERBOSE=1
+
+SUBDIRS=ipa-server ipa-admintools ipa-python ipa-client ipa-radius-server ipa-radius-admintools
+LIBDIR ?= /usr/lib
+
+# This has to be exported to make some magic below work.
+export DH_OPTIONS
+
+patch: patch-stamp
+patch-stamp:
+	dpatch apply-all
+	dpatch cat-all >patch-stamp
+
+configure: configure-stamp
+configure-stamp: patch
+	dh_testdir
+	$(MAKE) IPA_VERSION_IS_GIT_SNAPSHOT=no version-update
+	cd ipa-server; libtoolize --copy --force; aclocal; autoheader; automake --add-missing --gnu; autoconf; ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var --libdir=$(LIBDIR)
+	cd ipa-client; libtoolize --copy --force; aclocal; autoheader; automake --add-missing --gnu; autoconf; ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var --libdir=$(LIBDIR)
+	touch $@
+
+#Architecture
+build: build-arch build-indep
+
+build-arch: build-arch-stamp
+build-arch-stamp: configure-stamp  
+	@for subdir in $(SUBDIRS); do \
+		(cd $$subdir && $(MAKE)) || exit 1; \
+	done
+	touch $@
+
+build-indep: build-indep-stamp
+build-indep-stamp: configure-stamp  
+	touch $@
+
+clean: clean-patched unpatch
+clean-patched:
+	dh_testdir
+	dh_testroot
+	rm -f build-arch-stamp build-indep-stamp configure-stamp 
+	rm -rf ipa-python/build
+	-$(MAKE) distclean
+	for i in "ipa-server" "ipa-client"; do \
+		(cd $$i && rm -f COPYING INSTALL depcomp install-sh missing py-compile config.guess config.sub aclocal.m4 config.h.in); \
+	done
+	rm -rf $(CURDIR)/debian/freeipa
+	find . -name "*.pyo" -o -name "*.pyc" -type f -exec rm -f "{}" \;
+	find . -name "*.spec" -type f -exec rm -f "{}" \;
+	find . -name "ltmain.sh" -exec rm -f "{}" \;
+	find . -name "Makefile.in" -exec rm -f "{}" \;
+	find . -name "configure" -exec rm -f "{}" \;
+	rm -v -f ipa-python/setup.py
+	rm -v -f ipa-python/version.py
+	rm -f ipa-server/version.m4
+	rm -f ipa-client/version.m4
+	dh_clean 
+
+unpatch:
+	dpatch deapply-all
+	rm -rf patch-stamp debian/patched
+
+install: install-indep install-arch
+install-indep:
+	dh_testdir
+	dh_testroot
+	dh_clean -k -i 
+	dh_installdirs -i
+	dh_install -i
+
+install-arch:
+	dh_testdir
+	dh_testroot
+	dh_clean -k -s 
+	dh_installdirs -s
+	@for subdir in $(SUBDIRS); do \
+		(cd $$subdir && $(MAKE) DESTDIR=$(CURDIR)/debian/tmp install) || exit 1; \
+	done
+	dh_install -s
+# Must not depend on anything. This is to be called by
+# binary-arch/binary-indep
+# in another 'make' thread.
+
+binary-common:
+	dh_testdir
+	dh_testroot
+	dh_installchangelogs 
+	dh_installdocs
+	dh_installexamples
+#	dh_installmenu
+#	dh_installdebconf	
+#	dh_installlogrotate	
+#	dh_installemacsen
+#	dh_installpam
+#	dh_installmime
+#	dh_python
+#	dh_installinit
+#	dh_installcron
+#	dh_installinfo
+	dh_installman
+	dh_link
+	dh_strip
+	dh_compress
+	dh_fixperms
+#	dh_perl
+	dh_makeshlibs
+	dh_installdeb
+	dh_shlibdeps
+	dh_gencontrol
+	dh_md5sums
+	dh_builddeb
+# Build architecture independant packages using the common target.
+binary-indep: build-indep install-indep
+	$(MAKE) -f debian/rules DH_OPTIONS=-i binary-common
+
+# Build architecture dependant packages using the common target.
+binary-arch: build-arch install-arch
+	$(MAKE) -f debian/rules DH_OPTIONS=-s binary-common
+
+binary: binary-arch binary-indep
+.PHONY: build clean binary-indep binary-arch binary install install-indep install-arch configure
