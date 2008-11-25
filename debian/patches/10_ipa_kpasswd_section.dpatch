@@ -1,0 +1,19 @@
+#! /bin/sh /usr/share/dpatch/dpatch-run
+## 10_ipa_kpasswd_section.dpatch by  <Michele Baldessari <michele@pupazzo.org>>
+##
+## All lines beginning with `## DP:' are a description of the patch.
+## DP: Fix manpage section
+
+@DPATCH@
+diff -urNad freeipa-1.2.0~/ipa-server/man/ipa_kpasswd.8 freeipa-1.2.0/ipa-server/man/ipa_kpasswd.8
+--- freeipa-1.2.0~/ipa-server/man/ipa_kpasswd.8	2008-11-14 15:55:28.000000000 +0100
++++ freeipa-1.2.0/ipa-server/man/ipa_kpasswd.8	2008-11-25 16:03:17.000000000 +0100
+@@ -16,7 +16,7 @@
+ .\" 
+ .\" Author: Rob Crittenden <rcritten@redhat.com>
+ .\" 
+-.TH "ipa_kpasswd" "1" "Mar 14 2008" "freeipa" ""
++.TH "ipa_kpasswd" "8" "Mar 14 2008" "freeipa" ""
+ .SH "NAME"
+ ipa_kpasswd \- Proxy Kerberos password change requests
+ .SH "SYNOPSIS"

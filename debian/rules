@@ -42,8 +42,8 @@ clean-patched:
 	dh_testroot
 	rm -f build-arch-stamp build-indep-stamp configure-stamp 
 	rm -rf ipa-python/build
-	-$(MAKE) distclean
 	for i in "ipa-server" "ipa-client"; do \
+		(cd $$i && [ ! -f Makefile ] || $(MAKE) distclean); \
 		(cd $$i && rm -f COPYING INSTALL depcomp install-sh missing py-compile config.guess config.sub aclocal.m4 config.h.in); \
 	done
 	rm -rf $(CURDIR)/debian/freeipa
@@ -79,6 +79,8 @@ install-arch:
 	@for subdir in $(SUBDIRS); do \
 		(cd $$subdir && $(MAKE) DESTDIR=$(CURDIR)/debian/tmp install) || exit 1; \
 	done
+	rm -f $(CURDIR)/debian/tmp/usr/share/ipa/ipagui/static/javascript/prototype.js \
+		$(CURDIR)/debian/tmp/usr/share/ipa/ipagui/static/javascript/scriptaculous.js
 	dh_install -s
 # Must not depend on anything. This is to be called by
 # binary-arch/binary-indep
@@ -97,7 +99,7 @@ binary-common:
 #	dh_installpam
 #	dh_installmime
 #	dh_python
-#	dh_installinit
+	dh_installinit
 #	dh_installcron
 #	dh_installinfo
 	dh_installman
