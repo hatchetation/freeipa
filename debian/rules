@@ -22,18 +22,11 @@ configure-stamp: patch
 	cd ipa-client; libtoolize --copy --force; aclocal; autoheader; automake --add-missing --gnu; autoconf; ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var --libdir=$(LIBDIR)
 	touch $@
 
-#Architecture
-build: build-arch build-indep
-
-build-arch: build-arch-stamp
-build-arch-stamp: configure-stamp  
+build: build-stamp
+build-stamp: configure-stamp  
 	@for subdir in $(SUBDIRS); do \
 		(cd $$subdir && $(MAKE)) || exit 1; \
 	done
-	touch $@
-
-build-indep: build-indep-stamp
-build-indep-stamp: 
 	touch $@
 
 clean: clean-patched unpatch
@@ -63,65 +56,39 @@ unpatch:
 	dpatch deapply-all
 	rm -rf patch-stamp debian/patched
 
-install: install-indep install-arch
-install-indep:
+install: 
 	dh_testdir
 	dh_testroot
-	dh_clean -k -i 
-	dh_installdirs -i
-	dh_install -i
-
-install-arch:
-	dh_testdir
-	dh_testroot
-	dh_clean -k -s 
-	dh_installdirs -s
+	dh_clean -k 
+	dh_installdirs
 	@for subdir in $(SUBDIRS); do \
 		(cd $$subdir && $(MAKE) DESTDIR=$(CURDIR)/debian/tmp install) || exit 1; \
 	done
 	rm -f $(CURDIR)/debian/tmp/usr/share/ipa/ipagui/static/javascript/prototype.js \
 		$(CURDIR)/debian/tmp/usr/share/ipa/ipagui/static/javascript/scriptaculous.js
-	dh_install -s
-# Must not depend on anything. This is to be called by
-# binary-arch/binary-indep
-# in another 'make' thread.
+	dh_install
 
-binary-common:
+binary-indep: build install
+
+binary-arch: build install
 	dh_testdir
 	dh_testroot
 	dh_installchangelogs 
 	dh_installdocs
 	dh_installexamples
 	dh_installdirs
-#	dh_installmenu
-#	dh_installdebconf	
-#	dh_installlogrotate	
-#	dh_installemacsen
-#	dh_installpam
-#	dh_installmime
-#	dh_python
 	dh_installinit
-#	dh_installcron
-#	dh_installinfo
 	dh_installman
 	dh_link
 	dh_strip
 	dh_compress
 	dh_fixperms
-#	dh_perl
 	dh_makeshlibs
 	dh_installdeb
 	dh_shlibdeps
 	dh_gencontrol
 	dh_md5sums
 	dh_builddeb
-# Build architecture independant packages using the common target.
-binary-indep: build-indep install-indep
-	$(MAKE) -f debian/rules DH_OPTIONS=-i binary-common
 
-# Build architecture dependant packages using the common target.
-binary-arch: build-arch install-arch
-	$(MAKE) -f debian/rules DH_OPTIONS=-s binary-common
-
-binary: binary-arch binary-indep
-.PHONY: build clean binary-indep binary-arch binary install install-indep install-arch configure
+binary: binary-indep binary-arch
+.PHONY: build clean binary-indep binary-arch binary install

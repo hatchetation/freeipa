@@ -4,6 +4,8 @@ Priority: extra
 Maintainer: Michele Baldessari <michele@pupazzo.org>
 Build-Depends: debhelper (>= 7), libdirsrv-dev (>= 1.1.3), autoconf, automake, libtool, python-turbogears, libmozldap-dev, dpatch
 Standards-Version: 3.8.0
+Vcs-Svn: svn://svn.debian.org/svn/pkg-fedora-ds/freeipa/trunk/
+Vcs-Browser: http://svn.debian.org/viewsvn/pkg-fedora-ds/freeipa/trunk/
 Homepage: http://www.freeipa.org
 
 Package: freeipa-server
