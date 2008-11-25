@@ -19,7 +19,7 @@ Description: FreeIPA is a centralized identity framework
 
 Package: freeipa-client
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}
+Depends: ${shlibs:Depends}, ${misc:Depends}, python (>= 2.3)
 Description: FreeIPA is a centralized identity framework
  FreeIPA is an integrated solution to provide centrally managed Identity 
  (machine, user, virtual machines, groups, authentication credentials), Policy
