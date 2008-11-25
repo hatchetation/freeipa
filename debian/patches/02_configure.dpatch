@@ -2,7 +2,7 @@
 ## 02_configure.dpatch by  <Michele Baldessari <michele@pupazzo.org>>
 ##
 ## All lines beginning with `## DP:' are a description of the patch.
-## DP: No description.
+## DP: On Debian there is no nss3 and nspr4 include path
 
 @DPATCH@
 diff -urNad freeipa-1.2.0~/ipa-server/configure.ac freeipa-1.2.0/ipa-server/configure.ac

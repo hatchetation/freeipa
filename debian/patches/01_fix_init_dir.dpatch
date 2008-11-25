@@ -2,7 +2,7 @@
 ## 01_fix_init_dir.dpatch by  <Michele Baldessari <michele@pupazzo.org>>
 ##
 ## All lines beginning with `## DP:' are a description of the patch.
-## DP: No description.
+## DP: Debian compliant init.d PATH
 
 @DPATCH@
 diff -urNad freeipa-1.1.0~/ipa-server/ipa-gui/Makefile.am freeipa-1.1.0/ipa-server/ipa-gui/Makefile.am
