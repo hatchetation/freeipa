@@ -2,7 +2,7 @@ Source: freeipa
 Section: net
 Priority: extra
 Maintainer: Michele Baldessari <michele@pupazzo.org>
-Build-Depends: debhelper (>= 7), libdirsrv-dev (>= 1.1.3), autoconf, automake, libtool, python-turbogears, libmozldap-dev, dpatch
+Build-Depends: debhelper (>= 7), libdirsrv-dev (>= 1.1.3), autoconf, automake, libtool, python-turbogears, libmozldap-dev, dpatch, python-support, libssl-dev, python-all-dev
 Standards-Version: 3.8.0
 Vcs-Svn: svn://svn.debian.org/svn/pkg-fedora-ds/freeipa/trunk/
 Vcs-Browser: http://svn.debian.org/viewsvn/pkg-fedora-ds/freeipa/trunk/
@@ -44,7 +44,7 @@ Description: FreeIPA is a centralized identity framework
 Package: python-freeipa
 Architecture: any
 Section: python
-Depends: ${shlibs:Depends}, ${misc:Depends}
+Depends: ${python:Depends}, ${misc:Depends}
 Description: FreeIPA is a centralized identity framework
  FreeIPA is an integrated solution to provide centrally managed Identity 
  (machine, user, virtual machines, groups, authentication credentials), Policy
@@ -66,7 +66,7 @@ Description: FreeIPA is a centralized identity framework
 
 Package: freeipa-radius-admintools
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, python (>= 2.3)
+Depends: ${shlibs:Depends}, ${misc:Depends}, python (>= 2.3), python-freeipa
 Description: FreeIPA is a centralized identity framework
  FreeIPA is an integrated solution to provide centrally managed Identity 
  (machine, user, virtual machines, groups, authentication credentials), Policy

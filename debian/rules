@@ -1,13 +1,15 @@
 #!/usr/bin/make -f
 
 # Uncomment this to turn on verbose mode.
-#export DH_VERBOSE=1
+export DH_VERBOSE=1
 
-SUBDIRS=ipa-server ipa-admintools ipa-python ipa-client ipa-radius-server ipa-radius-admintools
-LIBDIR ?= /usr/lib
+SUBDIRS_ARCH=ipa-server ipa-client
+SUBDIRS_INDEP=ipa-admintools ipa-radius-server ipa-radius-admintools
+#ipa-python
 
 # This has to be exported to make some magic below work.
 export DH_OPTIONS
+PYVERS=$(shell pyversions -vr)
 
 patch: patch-stamp
 patch-stamp:
@@ -18,14 +20,17 @@ configure: configure-stamp
 configure-stamp: patch
 	dh_testdir
 	$(MAKE) IPA_VERSION_IS_GIT_SNAPSHOT=no version-update
-	cd ipa-server; libtoolize --copy --force; aclocal; autoheader; automake --add-missing --gnu; autoconf; ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var --libdir=$(LIBDIR)
-	cd ipa-client; libtoolize --copy --force; aclocal; autoheader; automake --add-missing --gnu; autoconf; ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var --libdir=$(LIBDIR)
+	cd ipa-server; libtoolize --copy --force; aclocal; autoheader; automake --add-missing --gnu; autoconf; ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var --libdir=/usr/lib
+	cd ipa-client; libtoolize --copy --force; aclocal; autoheader; automake --add-missing --gnu; autoconf; ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var --libdir=/usr/lib
 	touch $@
 
 build: build-stamp
 build-stamp: configure-stamp  
-	@for subdir in $(SUBDIRS); do \
+	@for subdir in $(SUBDIRS_ARCH); do \
 		(cd $$subdir && $(MAKE)) || exit 1; \
+	done
+	@for subdir in "ipa-python"; do \
+		(cd $$subdir && python setup.py build) || exit 1; \
 	done
 	touch $@
 
@@ -33,40 +38,44 @@ clean: clean-patched unpatch
 clean-patched:
 	dh_testdir
 	dh_testroot
-	rm -f build-arch-stamp build-indep-stamp configure-stamp 
+	rm -f build-arch-stamp build-indep-stamp configure-stamp ipa-python/setup.py ipa-python/version.py RELEASE
 	rm -rf ipa-python/build
 	for i in "ipa-server" "ipa-client"; do \
 		(cd $$i && [ ! -f Makefile ] || $(MAKE) distclean); \
-		(cd $$i && rm -f COPYING INSTALL depcomp install-sh missing py-compile config.guess config.sub aclocal.m4 config.h.in); \
+		(cd $$i && rm -f COPYING INSTALL depcomp install-sh missing py-compile config.guess config.sub aclocal.m4 config.h.in version.m4); \
 	done
-	rm -rf $(CURDIR)/debian/freeipa
 	find . -name "*.pyo" -o -name "*.pyc" -type f -exec rm -f "{}" \;
 	find . -name "*.spec" -type f -exec rm -f "{}" \;
 	find . -name "ltmain.sh" -exec rm -f "{}" \;
 	find . -name "Makefile.in" -exec rm -f "{}" \;
 	find . -name "configure" -exec rm -f "{}" \;
-	rm -v -f ipa-python/setup.py
-	rm -v -f ipa-python/version.py
-	rm -f ipa-server/version.m4
-	rm -f ipa-client/version.m4
-	rm -f RELEASE
 	dh_clean 
 
 unpatch:
 	dpatch deapply-all
 	rm -rf patch-stamp debian/patched
 
-install: 
+install: $(PYVERS:%=install-python%)
 	dh_testdir
 	dh_testroot
 	dh_clean -k 
 	dh_installdirs
-	@for subdir in $(SUBDIRS); do \
+	@for subdir in $(SUBDIRS_ARCH) $(SUBDIRS_INDEP); do \
 		(cd $$subdir && $(MAKE) DESTDIR=$(CURDIR)/debian/tmp install) || exit 1; \
 	done
 	rm -f $(CURDIR)/debian/tmp/usr/share/ipa/ipagui/static/javascript/prototype.js \
 		$(CURDIR)/debian/tmp/usr/share/ipa/ipagui/static/javascript/scriptaculous.js
+	find $(CURDIR)/debian/tmp -type f -name "*.py[oc]" -exec rm -f "{}" \;
 	dh_install
+
+install-python%:
+	@for subdir in "ipa-python"; do \
+		(cd $$subdir && python$* setup.py install \
+                --no-compile \
+                --root $(CURDIR)/debian/tmp/usr/share/python-support/python-freeipa) || exit 1; \
+	done
+	# --single-version-externally-managed \
+	#-dpkg --compare-versions '$*' lt '2.5' && rm -f $(CURDIR)/debian/$(package)/usr/lib/python$*/site-packages/beaker/ext/google.py
 
 binary-indep: build install
 
@@ -80,6 +89,7 @@ binary-arch: build install
 	dh_installinit
 	dh_installman
 	dh_link
+	dh_pysupport
 	dh_strip
 	dh_compress
 	dh_fixperms
