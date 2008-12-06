@@ -7,9 +7,10 @@ SUBDIRS_ARCH=ipa-server ipa-client
 SUBDIRS_INDEP=ipa-admintools ipa-radius-server ipa-radius-admintools
 #ipa-python
 
+# Using the default python version since ipa-python has no .so modules
 # This has to be exported to make some magic below work.
 export DH_OPTIONS
-PYVERS=$(shell pyversions -vr)
+PYVERS=$(shell pyversions -d)
 
 patch: patch-stamp
 	echo "Doing: $@"
@@ -30,7 +31,7 @@ configure-stamp: patch
 
 build: build-stamp
 	echo "Doing: $@"
-build-stamp: configure-stamp  
+build-stamp: configure
 	echo "Doing: $@"
 	@for subdir in $(SUBDIRS_ARCH); do \
 		(cd $$subdir && $(MAKE)) || exit 1; \
@@ -61,7 +62,7 @@ unpatch:
 	dpatch deapply-all
 	rm -rf patch-stamp debian/patched
 
-install: $(PYVERS:%=install-python%)
+install: $(PYVERS:%=install-%)
 	echo "Doing: $@"
 	dh_testdir
 	dh_testroot
@@ -75,18 +76,16 @@ install: $(PYVERS:%=install-python%)
 	find $(CURDIR)/debian/tmp -type f -name "*.py[oc]" -exec rm -f "{}" \;
 	dh_install
 
-install-python%:
+install-%:
 	echo "Doing: $@"
 	@for subdir in "ipa-python"; do \
-		(cd $$subdir && python$* setup.py build) || exit 1; \
+		(cd $$subdir && $* setup.py build) || exit 1; \
 	done
 	@for subdir in "ipa-python"; do \
-		(cd $$subdir && python$* setup.py install \
+		(cd $$subdir && $* setup.py install \
                 --no-compile \
                 --root $(CURDIR)/debian/tmp/usr/share/python-support/python-freeipa) || exit 1; \
 	done
-	# --single-version-externally-managed \
-	#-dpkg --compare-versions '$*' lt '2.5' && rm -f $(CURDIR)/debian/$(package)/usr/lib/python$*/site-packages/beaker/ext/google.py
 
 binary-indep: build install
 	echo "Doing: $@"
@@ -115,4 +114,4 @@ binary-arch: build install
 
 binary: binary-indep binary-arch
 	echo "Doing: $@"
-.PHONY: build clean binary-indep binary-arch binary install
+.PHONY: build clean binary-indep binary-arch binary install configure
