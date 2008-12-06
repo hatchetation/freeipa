@@ -10,7 +10,7 @@ Homepage: http://www.freeipa.org
 
 Package: freeipa-server
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, python (>= 2.3), libjs-prototype, libjs-scriptaculous
+Depends: ${shlibs:Depends}, ${misc:Depends}, python (>= 2.3), libjs-prototype, libjs-scriptaculous, python-freeipa
 Description: FreeIPA is a centralized identity framework
  FreeIPA is an integrated solution to provide centrally managed Identity 
  (machine, user, virtual machines, groups, authentication credentials), Policy
@@ -21,7 +21,7 @@ Description: FreeIPA is a centralized identity framework
 
 Package: freeipa-client
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, python (>= 2.3)
+Depends: ${shlibs:Depends}, ${misc:Depends}, python (>= 2.3), python-freeipa
 Description: FreeIPA is a centralized identity framework
  FreeIPA is an integrated solution to provide centrally managed Identity 
  (machine, user, virtual machines, groups, authentication credentials), Policy
@@ -32,7 +32,7 @@ Description: FreeIPA is a centralized identity framework
 
 Package: freeipa-admintools
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}
+Depends: ${shlibs:Depends}, ${misc:Depends}, python (>= 2.3), python-freeipa
 Description: FreeIPA is a centralized identity framework
  FreeIPA is an integrated solution to provide centrally managed Identity 
  (machine, user, virtual machines, groups, authentication credentials), Policy

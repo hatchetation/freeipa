@@ -1,4 +1,4 @@
-#!/usr/bin/make -f
+#!/usr/bin/make -f 
 
 # Uncomment this to turn on verbose mode.
 export DH_VERBOSE=1
@@ -56,10 +56,10 @@ unpatch:
 install: $(PYVERS:%=install-%)
 	dh_testdir
 	dh_testroot
-	dh_clean -k 
+	#dh_clean -k 
 	dh_installdirs
 	@for subdir in $(SUBDIRS_ARCH) $(SUBDIRS_INDEP); do \
-		(cd $$subdir && $(MAKE) DESTDIR=$(CURDIR)/debian/tmp install) || exit 1; \
+		(cd $$subdir && $(MAKE) DESTDIR=$(CURDIR)/debian/tmp pythondir=/usr/share/python-support/python-freeipa install) || exit 1; \
 	done
 	rm -f $(CURDIR)/debian/tmp/usr/share/ipa/ipagui/static/javascript/prototype.js \
 		$(CURDIR)/debian/tmp/usr/share/ipa/ipagui/static/javascript/scriptaculous.js
@@ -69,12 +69,10 @@ install: $(PYVERS:%=install-%)
 install-%:
 	echo "Doing: $@"
 	@for subdir in "ipa-python"; do \
-		(cd $$subdir && $* setup.py build) || exit 1; \
-	done
-	@for subdir in "ipa-python"; do \
 		(cd $$subdir && $* setup.py install \
                 --no-compile \
-                --root $(CURDIR)/debian/tmp/usr/share/python-support/python-freeipa) || exit 1; \
+                --root $(CURDIR)/debian/tmp/ \
+		--install-lib /usr/share/python-support/python-freeipa/) || exit 1; \
 	done
 
 binary-indep: build install
@@ -90,6 +88,7 @@ binary-arch: build install
 	dh_installman
 	dh_link
 	dh_pysupport
+	dh_python
 	dh_strip
 	dh_compress
 	dh_fixperms

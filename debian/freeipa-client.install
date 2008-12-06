@@ -2,8 +2,6 @@ usr/sbin/ipa-client-install
 usr/sbin/ipa-getkeytab
 usr/share/ipa/ipaclient/ipa.cfg
 usr/share/ipa/ipaclient/ipa.js
-#FIXME the python mess
-#usr/share/python/ipaclient
-#usr/share/python/ipaclient/*.py*
+usr/share/python-support/python-freeipa/ipaclient/*.py*
 usr/share/man/man1/ipa-getkeytab.1.gz
 usr/share/man/man1/ipa-client-install.1.gz
