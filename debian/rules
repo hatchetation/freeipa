@@ -13,16 +13,12 @@ export DH_OPTIONS
 PYVERS=$(shell pyversions -d)
 
 patch: patch-stamp
-	echo "Doing: $@"
 patch-stamp:
-	echo "Doing: $@"
 	dpatch apply-all
 	dpatch cat-all >patch-stamp
 
 configure: configure-stamp
-	echo "Doing: $@"
 configure-stamp: patch
-	echo "Doing: $@"
 	dh_testdir
 	$(MAKE) IPA_VERSION_IS_GIT_SNAPSHOT=no version-update
 	cd ipa-server; libtoolize --copy --force; aclocal; autoheader; automake --add-missing --gnu; autoconf; ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var --libdir=/usr/lib
@@ -30,18 +26,14 @@ configure-stamp: patch
 	touch $@
 
 build: build-stamp
-	echo "Doing: $@"
 build-stamp: configure
-	echo "Doing: $@"
 	@for subdir in $(SUBDIRS_ARCH); do \
 		(cd $$subdir && $(MAKE)) || exit 1; \
 	done
 	touch $@
 
 clean: clean-patched unpatch
-	echo "Doing: $@"
 clean-patched:
-	echo "Doing: $@"
 	dh_testdir
 	dh_testroot
 	rm -f build-arch-stamp build-indep-stamp configure-stamp ipa-python/setup.py ipa-python/version.py RELEASE
@@ -58,12 +50,10 @@ clean-patched:
 	dh_clean 
 
 unpatch:
-	echo "Doing: $@"
 	dpatch deapply-all
 	rm -rf patch-stamp debian/patched
 
 install: $(PYVERS:%=install-%)
-	echo "Doing: $@"
 	dh_testdir
 	dh_testroot
 	dh_clean -k 
@@ -88,10 +78,8 @@ install-%:
 	done
 
 binary-indep: build install
-	echo "Doing: $@"
 
 binary-arch: build install
-	echo "Doing: $@"
 	dh_testdir
 	dh_testroot
 	dh_installchangelogs 
@@ -113,5 +101,4 @@ binary-arch: build install
 	dh_builddeb
 
 binary: binary-indep binary-arch
-	echo "Doing: $@"
 .PHONY: build clean binary-indep binary-arch binary install configure
