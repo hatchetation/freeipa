@@ -1,4 +1,11 @@
-freeipa (1.2.0-1) unstable; urgency=low
+freeipa (1.2.1-1) UNRELEASED; urgency=low
+
+  * New upstream
+  * Dropped 10_ipa_kpasswd patch, applied upstream
+
+ -- Michele Baldessari <michele@pupazzo.org>  Sat, 06 Dec 2008 21:01:24 +0100
+
+freeipa (1.2.0-1) UNRELEASED; urgency=low
 
   * Initial release (Closes: #12345)
 
