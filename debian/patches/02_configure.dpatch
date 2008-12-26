@@ -5,9 +5,9 @@
 ## DP: On Debian there is no nss3 and nspr4 include path
 
 @DPATCH@
-diff -urNad freeipa-1.2.0~/ipa-server/configure.ac freeipa-1.2.0/ipa-server/configure.ac
---- freeipa-1.2.0~/ipa-server/configure.ac	2008-11-14 15:55:28.000000000 +0100
-+++ freeipa-1.2.0/ipa-server/configure.ac	2008-11-24 22:30:11.000000000 +0100
+diff -urNad freeipa-1.2.1~/ipa-server/configure.ac freeipa-1.2.1/ipa-server/configure.ac
+--- freeipa-1.2.1~/ipa-server/configure.ac	2008-12-26 12:13:30.000000000 +0100
++++ freeipa-1.2.1/ipa-server/configure.ac	2008-12-26 12:13:53.000000000 +0100
 @@ -22,8 +22,8 @@
  dnl ---------------------------------------------------------------------------
  dnl - Check for NSPR
@@ -38,7 +38,7 @@ diff -urNad freeipa-1.2.0~/ipa-server/configure.ac freeipa-1.2.0/ipa-server/conf
  # Need to hack CPPFLAGS to be able to correctly detetct slapi-plugin.h
  SAVE_CPPFLAGS=$CPPFLAGS
 -CPPFLAGS="-I/usr/include/nspr4"
-+CPPFLAGS="-I/usr/include/nspr"
++CPPFLAGS="-I/usr/include/nspr -I/usr/include/mozldap"
  AC_CHECK_HEADER(dirsrv/slapi-plugin.h)
  CPPFLAGS=$SAVE_CPPFLAGS
  
