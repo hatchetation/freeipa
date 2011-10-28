@@ -54,6 +54,7 @@ Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends},
  bind9utils,
  certmonger,
+ chkconfig,
  krb5-user,
  libcurl3,
  libnss3-tools,
