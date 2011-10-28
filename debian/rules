@@ -3,35 +3,12 @@
 # Uncomment this to turn on verbose mode.
 export DH_VERBOSE=1
 
-SUBDIRS_ARCH=ipa-server ipa-client
-SUBDIRS_INDEP=ipa-admintools
-#ipa-python
+ONLY_CLIENT=1
+DESTDIR=$(CURDIR)/debian/tmp
 
-# Using the default python version since ipa-python has no .so modules
-# This has to be exported to make some magic below work.
-export DH_OPTIONS
-PYVERS=$(shell pyversions -d)
+export SUPPORTED_PLATFORM=ubuntu
 
-configure: configure-stamp
-configure-stamp:
-	dh_testdir
-	$(MAKE) IPA_VERSION_IS_GIT_SNAPSHOT=no version-update
-	cd ipa-server; libtoolize --copy --force; aclocal; autoheader; automake --add-missing --gnu; autoconf; ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var --libdir=/usr/lib
-	cd ipa-client; libtoolize --copy --force; aclocal; autoheader; automake --add-missing --gnu; autoconf; ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var --libdir=/usr/lib
-	touch $@
-
-build: build-stamp
-build-stamp: configure
-	@for subdir in $(SUBDIRS_ARCH); do \
-		(cd $$subdir && $(MAKE)) || exit 1; \
-	done
-	touch $@
-
-clean: clean-patched
-clean-patched:
-	dh_testdir
-	dh_testroot
-	rm -f build-arch-stamp build-indep-stamp configure-stamp ipa-python/setup.py ipa-python/version.py RELEASE
+override_dh_auto_clean:
 	rm -rf ipa-python/build
 	for i in "ipa-server" "ipa-client"; do \
 		(cd $$i && [ ! -f Makefile ] || $(MAKE) distclean); \
@@ -43,52 +20,48 @@ clean-patched:
 	find . -name "Makefile.in" -exec rm -f "{}" \;
 	find . -name "configure" -exec rm -f "{}" \;
 	dh_clean 
+	rm -rf $(DESTDIR)
 
-install: $(PYVERS:%=install-%)
-	dh_testdir
-	dh_testroot
-	#dh_clean -k 
-	dh_installdirs
-	@for subdir in $(SUBDIRS_ARCH) $(SUBDIRS_INDEP); do \
-		(cd $$subdir && $(MAKE) DESTDIR=$(CURDIR)/debian/tmp pythondir=/usr/share/python-support/python-freeipa install) || exit 1; \
-	done
-	rm -f $(CURDIR)/debian/tmp/usr/share/ipa/ipagui/static/javascript/prototype.js \
-		$(CURDIR)/debian/tmp/usr/share/ipa/ipagui/static/javascript/scriptaculous.js
-	find $(CURDIR)/debian/tmp -type f -name "*.py[oc]" -exec rm -f "{}" \;
+override_dh_autoreconf:
+	cd ipa-client; dh_autoreconf; cd ..
+	ifneq ($(ONLY_CLIENT),1)
+		cd daemons; dh_autoreconf; cd ..
+		cd install; dh_autoreconf; cd ..
+	endif
+
+override_dh_auto_configure:
+	$(MAKE) version-update
+	cd ipa-client; dh_auto_configure; cd ..
+	ifneq ($(ONLY_CLIENT),1)
+	    cd daemons; dh_auto_configure --with-openldap; cd ..
+	    cd install; dh_auto_configure; cd ..
+	endif
+
+override_dh_auto_build:
+	ifneq ($(ONLY_CLIENT),1)
+	    make IPA_VERSION_IS_GIT_SNAPSHOT=no all
+	    cd selinux ; make all
+	else
+	    make IPA_VERSION_IS_GIT_SNAPSHOT=no client
+	endif
+
+override_dh_install:
+	ifneq ($(ONLY_CLIENT),1)
+		# Force re-generate of platform support
+		rm -f ipapython/services.py
+		make install DESTDIR=$(DESTDIR)
+		cd selinux
+		make install DESTDIR=$(DESTDIR)
+		cd ..
+	else
+		make client-install DESTDIR=$(DESTDIR)
+	endif
+
+	mkdir -p $(DESTDIR)/etc/ipa
+	touch $(DESTDIR)/etc/ipa/default.conf
+	mkdir -p $(DESTDIR)/var/lib/ipa-client/sysrestore
+
 	dh_install
 
-install-%:
-	echo "Doing: $@"
-	@for subdir in "ipa-python"; do \
-		(cd $$subdir && $* setup.py install \
-                --no-compile \
-                --root $(CURDIR)/debian/tmp/ \
-		--install-lib /usr/share/python-support/python-freeipa/) || exit 1; \
-	done
-
-binary-indep: build install
-
-binary-arch: build install
-	dh_testdir
-	dh_testroot
-	dh_installchangelogs 
-	dh_installdocs
-	dh_installexamples
-	dh_installdirs
-	dh_installinit
-	dh_installman
-	dh_link
-	dh_pysupport
-	dh_python
-	dh_strip
-	dh_compress
-	dh_fixperms
-	dh_makeshlibs
-	dh_installdeb
-	dh_shlibdeps
-	dh_gencontrol
-	dh_md5sums
-	dh_builddeb
-
-binary: binary-indep binary-arch
-.PHONY: build clean binary-indep binary-arch binary install configure
+%:
+	dh $@ --with quilt,autoreconf
