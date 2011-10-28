@@ -9,6 +9,7 @@ freeipa (2.1.3-1) UNRELEASED; urgency=low
   * Remove radius subpackages.
   * Migrate to source format 3.0 (quilt).
   * Migrate to dh.
+  * Fix dependencies.
 
  -- Michele Baldessari <michele@pupazzo.org>  Sat, 06 Dec 2008 21:01:24 +0100
 
