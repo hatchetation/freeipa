@@ -1,0 +1,22 @@
+diff --git a/ipapython/dnsclient.py b/ipapython/dnsclient.py
+index 9a59d9b..857e1c7 100644
+--- a/ipapython/dnsclient.py
++++ b/ipapython/dnsclient.py
+@@ -18,7 +18,7 @@ import struct
+ import socket
+ import sys
+ 
+-import acutil
++#import acutil
+ 
+ DNS_C_IN = 1
+ DNS_C_CS = 2
+@@ -446,7 +446,7 @@ def query(query, qclass, qtype):
+ 	qdata = dnsFormatQuery(query, qclass, qtype)
+ 	if not qdata:
+ 		return []
+-	answer = acutil.res_send(qdata)
++	answer = none
+ 	if not answer:
+ 		return []
+ 	return dnsParseResults(answer)
