@@ -15,9 +15,7 @@ override_dh_auto_clean:
 		(cd $$i && rm -f COPYING INSTALL depcomp install-sh missing py-compile config.guess config.sub aclocal.m4 config.h.in version.m4); \
 	done
 	find . -name "*.pyo" -o -name "*.pyc" -type f -exec rm -f "{}" \;
-	find . -name "*.spec" -type f -exec rm -f "{}" \;
 	find . -name "ltmain.sh" -exec rm -f "{}" \;
-	find . -name "Makefile.in" -exec rm -f "{}" \;
 	find . -name "configure" -exec rm -f "{}" \;
 	dh_clean 
 	rm -rf $(DESTDIR)
