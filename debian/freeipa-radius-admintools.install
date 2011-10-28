@@ -1,8 +1,0 @@
-usr/sbin/ipa-addradiusclient
-usr/sbin/ipa-addradiusprofile
-usr/sbin/ipa-delradiusclient
-usr/sbin/ipa-delradiusprofile
-usr/sbin/ipa-findradiusclient
-usr/sbin/ipa-findradiusprofile
-usr/sbin/ipa-modradiusclient
-usr/sbin/ipa-modradiusprofile

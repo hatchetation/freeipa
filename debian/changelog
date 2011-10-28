@@ -6,6 +6,7 @@ freeipa (2.1.3-1) UNRELEASED; urgency=low
 
   [ Timo Aaltonen ]
   * New upstream release.
+  * Remove radius subpackages.
 
  -- Michele Baldessari <michele@pupazzo.org>  Sat, 06 Dec 2008 21:01:24 +0100
 

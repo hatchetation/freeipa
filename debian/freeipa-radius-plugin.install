@@ -1,3 +1,0 @@
-usr/sbin/ipa-radius-install
-usr/share/ipa/ipaserver/plugins/*
-usr/share/ipa/plugins/radius.radiusd.conf.template

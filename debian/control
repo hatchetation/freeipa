@@ -52,25 +52,3 @@ Description: FreeIPA is a centralized identity framework
  logs, analysis thereof). 
  .
  This Python module is used by other FreeIPA packages
-
-Package: freeipa-radius-plugin
-Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, python (>= 2.3)
-Description: FreeIPA is a centralized identity framework
- FreeIPA is an integrated solution to provide centrally managed Identity 
- (machine, user, virtual machines, groups, authentication credentials), Policy
- (configuration settings, access control information) and Audit (events,
- logs, analysis thereof). 
- .
- This module provides radius support
-
-Package: freeipa-radius-admintools
-Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, python (>= 2.3), python-freeipa
-Description: FreeIPA is a centralized identity framework
- FreeIPA is an integrated solution to provide centrally managed Identity 
- (machine, user, virtual machines, groups, authentication credentials), Policy
- (configuration settings, access control information) and Audit (events,
- logs, analysis thereof). 
- .
- This package provides admintools for the radius service

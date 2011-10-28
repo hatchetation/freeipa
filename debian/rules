@@ -4,7 +4,7 @@
 export DH_VERBOSE=1
 
 SUBDIRS_ARCH=ipa-server ipa-client
-SUBDIRS_INDEP=ipa-admintools ipa-radius-server ipa-radius-admintools
+SUBDIRS_INDEP=ipa-admintools
 #ipa-python
 
 # Using the default python version since ipa-python has no .so modules
