@@ -1,0 +1,80 @@
+{
+    "error": null,
+    "id": 0,
+    "result": {
+        "result": {
+            "attributelevelrights": {
+                "aci": "rscwo",
+                "cn": "rscwo",
+                "description": "rscwo",
+                "enrolledby": "rsc",
+                "fqdn": "rscwo",
+                "ipaclientversion": "rscwo",
+                "ipauniqueid": "rsc",
+                "krbcanonicalname": "rsc",
+                "krbextradata": "rsc",
+                "krblastfailedauth": "rsc",
+                "krblastpwdchange": "rscwo",
+                "krblastsuccessfulauth": "rsc",
+                "krbloginfailedcount": "rsc",
+                "krbmaxrenewableage": "rscwo",
+                "krbmaxticketlife": "rscwo",
+                "krbobjectreferences": "rscwo",
+                "krbpasswordexpiration": "rsc",
+                "krbprincipalaliases": "rsc",
+                "krbprincipalexpiration": "rsc",
+                "krbprincipalkey": "wo",
+                "krbprincipalname": "rsc",
+                "krbprincipaltype": "rsc",
+                "krbpwdhistory": "rsc",
+                "krbpwdpolicyreference": "rsc",
+                "krbticketflags": "rsc",
+                "krbticketpolicyreference": "rsc",
+                "krbupenabled": "rsc",
+                "l": "rscwo",
+                "managedby": "rscwo",
+                "memberof": "rsc",
+                "nsaccountlock": "rscwo",
+                "nshardwareplatform": "rscwo",
+                "nshostlocation": "rscwo",
+                "nsosversion": "rscwo",
+                "objectclass": "rscwo",
+                "serverhostname": "rsc",
+                "usercertificate": "rscwo",
+                "userpassword": "wo"
+            },
+            "cn": [
+                "test.example.com"
+            ],
+            "dn": "fqdn=test.example.com,cn=computers,cn=accounts,dc=dev,dc=example,dc=com",
+            "fqdn": [
+                "test.example.com"
+            ],
+            "has_keytab": false,
+            "ipauniqueid": [
+                "ac28dca0-f3b5-11df-879f-00163e72f2d9"
+            ],
+            "krbprincipalname": [
+                "host/test.example.com@DEV.EXAMPLE.COM"
+            ],
+            "managedby": [
+                "fqdn=test.example.com,cn=computers,cn=accounts,dc=dev,dc=example,dc=com"
+            ],
+            "objectclass": [
+                "ipaobject",
+                "nshost",
+                "ipahost",
+                "pkiuser",
+                "ipaservice",
+                "krbprincipalaux",
+                "krbprincipal",
+                "top"
+            ],
+            "serverhostname": [
+                "test"
+            ]
+        },
+        "summary": null,
+        "value": "test.example.com"
+    }
+}

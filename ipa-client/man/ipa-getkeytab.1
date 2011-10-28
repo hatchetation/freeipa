@@ -1,0 +1,139 @@
+.\" A man page for ipa-getkeytab
+.\" Copyright (C) 2007 Red Hat, Inc.
+.\"
+.\" This program is free software; you can redistribute it and/or modify
+.\" it under the terms of the GNU General Public License as published by
+.\" the Free Software Foundation, either version 3 of the License, or
+.\" (at your option) any later version.
+.\"
+.\" This program is distributed in the hope that it will be useful, but
+.\" WITHOUT ANY WARRANTY; without even the implied warranty of
+.\" MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+.\" General Public License for more details.
+.\"
+.\" You should have received a copy of the GNU General Public License
+.\" along with this program.  If not, see <http://www.gnu.org/licenses/>.
+.\"
+.\" Author: Karl MacMillan <kmacmill@redhat.com>
+.\" Author: Simo Sorce <ssorce@redhat.com>
+.\"
+.TH "ipa-getkeytab" "1" "Oct 10 2007" "FreeIPA" "FreeIPA Manual Pages"
+.SH "NAME"
+ipa\-getkeytab \- Get a keytab for a Kerberos principal
+.SH "SYNOPSIS"
+ipa\-getkeytab \fB\-s\fR \fIipaserver\fR \fB\-p\fR \fIprincipal\-name\fR \fB\-k\fR \fIkeytab\-file\fR [ \fB\-e\fR encryption\-types ] [ \fB\-q\fR ] [ \fB\-D\fR|\fB\-\-binddn\fR \fIBINDDN\fR ] [ \fB\-w|\-\-bindpw\fR ] [ \fB\-P\fR|\fB\-\-password\fR \fIPASSWORD\fR ]
+
+.SH "DESCRIPTION"
+Retrieves a Kerberos \fIkeytab\fR.
+
+Kerberos keytabs are used for services (like sshd) to
+perform Kerberos authentication. A keytab is a file
+with one or more secrets (or keys) for a Kerberos
+principal.
+
+A Kerberos service principal is a Kerberos identity
+that can be used for authentication. Service principals
+contain the name of the service, the hostname of the
+server, and the realm name. For example, the following
+is an example principal for an ldap server:
+
+   ldap/foo.example.com@EXAMPLE.COM
+
+When using ipa\-getkeytab the realm name is already
+provided, so the principal name is just the service
+name and hostname (ldap/foo.example.com from the
+example above).
+
+\fBWARNING:\fR retrieving the keytab resets the secret for the Kerberos principal.
+This renders all other keytabs for that principal invalid.
+
+This is used during IPA client enrollement to retrieve a host service principal and store it in /etc/krb5.keytab. It is possible to retrieve the keytab without Kerberos credentials if the host was pre\-created with a one\-time password. The keytab can be retrieved by binding as the host and authenticating with this one\-time password. The \fB\-D|\-\-binddn\fR and \fB\-w|\-\-bindpw\fR options are used for this authentication.
+.SH "OPTIONS"
+.TP
+\fB\-s ipaserver\fR
+The IPA server to retrieve the keytab from (FQDN).
+.TP
+\fB\-p principal\-name\fR
+The non\-realm part of the full principal name.
+.TP
+\fB\-k keytab\-file\fR
+The keytab file where to append the new key (will be
+created if it does not exist).
+.TP
+\fB\-e encryption\-types\fR
+The list of encryption types to use to generate keys.
+ipa\-getkeytab will use local client defaults if not provided.
+Valid values depend on the Kerberos library version and configuration.
+Common values are:
+aes256\-cts
+aes128\-cts
+des3\-hmac\-sha1
+arcfour\-hmac
+des\-hmac\-sha1
+des\-cbc\-md5
+des\-cbc\-crc
+.TP
+\fB\-q\fR
+Quiet mode. Only errors are displayed.
+.TP
+\fB\-\-permitted\-enctypes\fR
+This options returns a description of the permitted encryption types, like this:
+Supported encryption types:
+AES\-256 CTS mode with 96\-bit SHA\-1 HMAC
+AES\-128 CTS mode with 96\-bit SHA\-1 HMAC
+Triple DES cbc mode with HMAC/sha1
+ArcFour with HMAC/md5
+DES cbc mode with CRC\-32
+DES cbc mode with RSA\-MD5
+DES cbc mode with RSA\-MD4
+.TP
+\fB\-P, \-\-password\fR
+Use this password for the key instead of one randomly generated.
+.TP
+\fB\-D, \-\-binddn\fR
+The LDAP DN to bind as when retrieving a keytab without Kerberos credentials. Generally used with the \fB\-w\fR option.
+.TP
+\fB\-w, \-\-bindpw\fR
+The LDAP password to use when not binding with Kerberos.
+.SH "EXAMPLES"
+Add and retrieve a keytab for the NFS service principal on
+the host foo.example.com and save it in the file /tmp/nfs.keytab and retrieve just the des\-cbc\-crc key.
+
+   # ipa\-getkeytab \-s ipaserver.example.com \-p nfs/foo.example.com \-k /tmp/nfs.keytab \-e des\-cbc\-crc
+
+Add and retrieve a keytab for the ldap service principal on
+the host foo.example.com and save it in the file /tmp/ldap.keytab.
+
+   # ipa\-getkeytab \-s ipaserver.example.com \-p ldap/foo.example.com \-k /tmp/ldap.keytab
+
+Retrieve a keytab using LDAP credentials (this will typically be done by \fBipa\-join(1)\fR when enrolling a client using the \fBipa\-client\-install(1)\fR command:
+
+   # ipa\-getkeytab \-s ipaserver.example.com \-p host/foo.example.com \-k /etc/krb5.keytab \-D fqdn=foo.example.com,cn=computers,cn=accounts,dc=example,dc=com \-w password
+.SH "EXIT STATUS"
+The exit status is 0 on success, nonzero on error.
+
+0 Success
+
+1 Kerberos context initialization failed
+
+2 Incorrect usage
+
+3 Out of memory
+
+4 Invalid service principal name
+
+5 No Kerberos credentials cache
+
+6 No Kerberos principal and no bind DN and password
+
+7 Failed to open keytab
+
+8 Failed to create key material
+
+9 Setting keytab failed
+
+10 Bind password required when using a bind DN
+
+11 Failed to add key to keytab
+
+12 Failed to close keytab

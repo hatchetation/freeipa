@@ -1,0 +1,194 @@
+#!/usr/bin/python
+#
+# Authors:
+#   Rob Crittenden <rcritten@redhat.com>
+#
+# Copyright (C) 2009  Red Hat
+# see file 'COPYING' for use and warranty information
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+"""
+Upgrade configuration files to a newer template.
+"""
+
+import sys
+try:
+    from ipapython import ipautil, sysrestore
+    from ipaserver.install import installutils
+    from ipaserver.install import dsinstance
+    from ipaserver.install import httpinstance
+    import krbV
+    import re
+    import os
+    import shutil
+    import fileinput
+except ImportError:
+    print >> sys.stderr, """\
+There was a problem importing one of the required Python modules. The
+error was:
+
+    %s
+""" % sys.exc_value
+    sys.exit(1)
+
+def backup_file(filename, ext):
+    """Make a backup of filename using ext as the extension. Do not overwrite
+       previous backups."""
+    if not os.path.isabs(filename):
+        raise ValueError("Absolute path required")
+
+    backupfile = filename + ".bak"
+    (reldir, file) = os.path.split(filename)
+
+    while os.path.exists(backupfile):
+        backupfile = backupfile + "." + str(ext)
+
+    try:
+        shutil.copy2(filename, backupfile)
+    except IOError, e:
+        if e.errno == 2: # No such file or directory
+            pass
+        else:
+            raise e
+
+def update_conf(sub_dict, filename, template_filename):
+    template = ipautil.template_file(template_filename, sub_dict)
+    fd = open(filename, "w")
+    fd.write(template)
+    fd.close()
+
+def find_hostname():
+    """Find the hostname currently configured in ipa-rewrite.conf"""
+    filename="/etc/httpd/conf.d/ipa-rewrite.conf"
+
+    if not ipautil.file_exists(filename):
+        return None
+
+    pattern = "^[\s#]*.*https:\/\/([A-Za-z0-9\.\-]*)\/.*"
+    p = re.compile(pattern)
+    for line in fileinput.input(filename):
+        if p.search(line):
+            fileinput.close()
+            return p.search(line).group(1)
+    fileinput.close()
+
+    raise RuntimeError("Unable to determine the fully qualified hostname from %s" % filename)
+
+def find_version(filename):
+    """Find the version of a configuration file"""
+    if os.path.exists(filename):
+        pattern = "^[\s#]*VERSION\s+([0-9]+)\s+.*"
+        p = re.compile(pattern)
+        for line in fileinput.input(filename):
+            if p.search(line):
+                fileinput.close()
+                return p.search(line).group(1)
+        fileinput.close()
+
+        # no VERSION found
+        return 0
+    else:
+        return -1
+
+def upgrade(sub_dict, filename, template, add=False):
+    """
+    Get the version from the current and template files and update the
+    installed configuration file if there is a new template.
+
+    If add is True then create a new configuration file.
+    """
+    old = int(find_version(filename))
+    new = int(find_version(template))
+
+    if old < 0 and not add:
+        print "%s not found." % filename
+        sys.exit(1)
+
+    if new < 0:
+        print "%s not found." % template
+
+    if old < new or add:
+        backup_file(filename, new)
+        update_conf(sub_dict, filename, template)
+        print "Upgraded %s to version %d" % (filename, new)
+
+def check_certs():
+    """Check ca.crt is in the right place, and try to fix if not"""
+    if not os.path.exists("/usr/share/ipa/html/ca.crt"):
+        ca_file = "/etc/httpd/alias/cacert.asc"
+        if os.path.exists(ca_file):
+            old_umask = os.umask(022)   # make sure its readable by httpd
+            try:
+                shutil.copyfile(ca_file, "/usr/share/ipa/html/ca.crt")
+            finally:
+                os.umask(old_umask)
+        else:
+            print "Missing Certification Authority file."
+            print "You should place a copy of the CA certificate in /usr/share/ipa/html/ca.crt"
+
+def upgrade_pki():
+    """
+    Update/add the dogtag proxy configuration. The IPA side of this is
+    handled in ipa-pki-proxy.conf.
+
+    This requires enabling SSL renegotiation.
+    """
+    if not os.path.exists('/etc/pki-ca/CS.cfg'):
+        return
+
+    fstore = sysrestore.FileStore('/var/lib/ipa/sysrestore')
+    http = httpinstance.HTTPInstance(fstore)
+    http.enable_mod_nss_renegotiate()
+    if not installutils.get_directive('/etc/pki-ca/CS.cfg',
+                                      'proxy.securePort', '=') and \
+            os.path.exists('/usr/bin/pki-setup-proxy'):
+        ipautil.run(['/usr/bin/pki-setup-proxy', '-pki_instance_root=/var/lib'
+                     ,'-pki_instance_name=pki-ca','-subsystem_type=ca'])
+
+def main():
+    """
+    Get some basics about the system. If getting those basics fail then
+    this is likely because the machine isn't currently an IPA server so
+    exit gracefully.
+    """
+
+    try:
+        krbctx = krbV.default_context()
+    except krbV.Krb5Error, e:
+        # Unable to get default kerberos realm
+        sys.exit(0)
+
+    fqdn = find_hostname()
+    if fqdn is None:
+        # ipa-rewrite.conf doesn't exist, nothing to do
+        sys.exit(0)
+
+    # Ok, we are an IPA server, do the additional tests
+
+    check_certs()
+
+    sub_dict = { "REALM" : krbctx.default_realm, "FQDN": fqdn }
+
+    upgrade(sub_dict, "/etc/httpd/conf.d/ipa.conf", ipautil.SHARE_DIR + "ipa.conf")
+    upgrade(sub_dict, "/etc/httpd/conf.d/ipa-rewrite.conf", ipautil.SHARE_DIR + "ipa-rewrite.conf")
+    upgrade(sub_dict, "/etc/httpd/conf.d/ipa-pki-proxy.conf", ipautil.SHARE_DIR + "ipa-pki-proxy.conf", add=True)
+    upgrade_pki()
+try:
+    if __name__ == "__main__":
+        sys.exit(main())
+except SystemExit, e:
+    sys.exit(e)
+except KeyboardInterrupt, e:
+    sys.exit(1)

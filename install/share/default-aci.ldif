@@ -1,0 +1,89 @@
+# $SUFFIX (base entry)
+# FIXME: We need to allow truly anonymous access only to NIS data for older clients. We need to allow broad access to most attributes only to authenticated users
+dn: $SUFFIX
+changetype: modify
+add: aci
+aci: (targetattr != "userPassword || krbPrincipalKey || sambaLMPassword || sambaNTPassword || passwordHistory || krbMKey || userPKCS12")(version 3.0; acl "Enable Anonymous access"; allow (read, search, compare) userdn = "ldap:///anyone";)
+aci: (targetattr = "memberOf || memberHost || memberUser")(version 3.0; acl "No anonymous access to member information"; deny (read,search,compare) userdn != "ldap:///all";)
+aci: (targetattr != "userPassword || krbPrincipalKey || sambaLMPassword || sambaNTPassword || passwordHistory || krbMKey || krbPrincipalName || krbCanonicalName || krbUPEnabled || krbTicketPolicyReference || krbPrincipalExpiration || krbPasswordExpiration || krbPwdPolicyReference || krbPrincipalType || krbPwdHistory || krbLastPwdChange || krbPrincipalAliases || krbExtraData || krbLastSuccessfulAuth || krbLastFailedAuth || krbLoginFailedCount || krbTicketFlags || ipaUniqueId || memberOf || serverHostName || enrolledBy")(version 3.0; acl "Admin can manage any entry"; allow (all) groupdn = "ldap:///cn=admins,cn=groups,cn=accounts,$SUFFIX";)
+aci: (targetattr = "userpassword || krbprincipalkey || sambalmpassword || sambantpassword")(version 3.0; acl "selfservice:Self can write own password"; allow (write) userdn="ldap:///self";)
+aci: (targetattr = "userPassword || krbPrincipalKey || sambaLMPassword || sambaNTPassword || passwordHistory")(version 3.0; acl "Admins can write passwords"; allow (add,delete,write) groupdn="ldap:///cn=admins,cn=groups,cn=accounts,$SUFFIX";)
+aci: (targetattr = "userPassword || krbPrincipalKey || sambaLMPassword || sambaNTPassword || passwordHistory")(version 3.0; acl "Password change service can read/write passwords"; allow (read, write) userdn="ldap:///krbprincipalname=kadmin/changepw@$REALM,cn=$REALM,cn=kerberos,$SUFFIX";)
+aci: (targetattr = "userPassword || krbPrincipalKey || krbPasswordExpiration || sambaLMPassword || sambaNTPassword || passwordHistory || krbExtraData")(version 3.0; acl "KDC System Account can access passwords"; allow (all) userdn="ldap:///uid=kdc,cn=sysaccounts,cn=etc,$SUFFIX";)
+aci: (targetattr = "krbLastSuccessfulAuth || krbLastFailedAuth || krbLoginFailedCount || krbLastAdminUnlock")(version 3.0; acl "KDC System Account can update some fields"; allow (read,write) userdn="ldap:///uid=kdc,cn=sysaccounts,cn=etc,$SUFFIX";)
+aci: (targetattr = "krbPrincipalName || krbCanonicalName || krbUPEnabled || krbMKey || krbTicketPolicyReference || krbPrincipalExpiration || krbPasswordExpiration || krbPwdPolicyReference || krbPrincipalType || krbPwdHistory || krbLastPwdChange || krbPrincipalAliases || krbExtraData || krbLastSuccessfulAuth || krbLastFailedAuth || krbLoginFailedCount")(version 3.0; acl "Only the KDC System Account has access to kerberos material"; allow (read, search, compare) userdn="ldap:///uid=kdc,cn=sysaccounts,cn=etc,$SUFFIX";)
+aci: (targetfilter = "(objectClass=krbPwdPolicy)")(targetattr = "krbMaxPwdLife || krbMinPwdLife || krbPwdMinDiffChars || krbPwdMinLength || krbPwdHistoryLength")(version 3.0;acl "Admins can write password policies"; allow (read, search, compare, write) groupdn = "ldap:///cn=admins,cn=groups,cn=accounts,$SUFFIX";)
+aci: (targetattr = "*")(target = "ldap:///cn=*,ou=SUDOers,$SUFFIX")(version 3.0; acl "No anonymous access to sudo"; deny (read,search,compare) userdn != "ldap:///all";)
+
+dn: $SUFFIX
+changetype: modify
+add: aci
+aci: (targetattr = "givenname || sn || cn || displayname || title || initials || loginshell || gecos || homephone || mobile || pager || facsimiletelephonenumber || telephonenumber || street || roomnumber || l || st || postalcode || manager || secretary || description || carlicense || labeleduri || inetuserhttpurl || seealso || employeetype  || businesscategory || ou")(version 3.0;acl "selfservice:User Self service";allow (write) userdn = "ldap:///self";)
+
+dn: cn=etc,$SUFFIX
+changetype: modify
+add: aci
+aci: (targetfilter = "(objectClass=ipaGuiConfig)")(targetattr != "aci")(version 3.0;acl "Admins can change GUI config"; allow (read, search, compare, write) groupdn = "ldap:///cn=admins,cn=groups,cn=accounts,$SUFFIX";)
+
+dn: cn=ipa,cn=etc,$SUFFIX
+changetype: modify
+add: aci
+aci: (targetfilter = "(|(objectClass=ipaConfigObject)(dnahostname=*))")(version 3.0;acl "Admins can change GUI config"; allow (delete) groupdn = "ldap:///cn=admins,cn=groups,cn=accounts,$SUFFIX";)
+
+dn: cn=accounts,$SUFFIX
+changetype: modify
+add: aci
+aci: (targetattr = "krbMaxPwdLife || krbMinPwdLife || krbPwdMinDiffChars || krbPwdMinLength || krbPwdHistoryLength")(version 3.0;acl "Admins can write password policy"; allow (write) groupdn="ldap:///cn=admins,cn=groups,cn=accounts,$SUFFIX";)
+aci: (targetattr = "aci")(version 3.0;acl "Admins can manage delegations"; allow (write, delete) groupdn="ldap:///cn=admins,cn=groups,cn=accounts,$SUFFIX";)
+
+dn: cn=services,cn=accounts,$SUFFIX
+changetype: modify
+add: aci
+aci: (targetattr="krbPrincipalName || krbCanonicalName || krbUPEnabled || krbPrincipalKey || krbTicketPolicyReference || krbPrincipalExpiration || krbPasswordExpiration || krbPwdPolicyReference || krbPrincipalType || krbPwdHistory || krbLastPwdChange || krbPrincipalAliases || krbExtraData")(version 3.0; acl "KDC System Account"; allow (read, search, compare, write) userdn="ldap:///uid=kdc,cn=sysaccounts,cn=etc,$SUFFIX";)
+aci: (targetattr = "krbPrincipalKey || krbLastPwdChange")(target = "ldap:///krbprincipalname=*,cn=services,cn=accounts,$SUFFIX")(version 3.0;acl "Admins can manage service keytab";allow (write) groupdn = "ldap:///cn=admins,cn=groups,cn=accounts,$SUFFIX";)
+
+# Define which hosts can edit services
+# The managedby attribute stores the DN of hosts that are allowed to manage
+# a service. Use service-add-host to add hosts to a service.
+dn: cn=services,cn=accounts,$SUFFIX
+changetype: modify
+add: aci
+aci: (targetattr="userCertificate || krbPrincipalKey")(version 3.0; acl "Hosts can manage service Certificates and kerberos keys"; allow(write) userattr = "parent[0,1].managedby#USERDN";)
+
+# Allow hosts to update their own certificate in host/
+# krbLastPwdChange lets a host unenroll itself
+dn: cn=computers,cn=accounts,$SUFFIX
+changetype: modify
+add: aci
+aci: (targetattr="usercertificate || krblastpwdchange || description || l || nshostlocation || nshardwareplatform || nsosversion")(version 3.0; acl "Hosts can modify their own certs and keytabs"; allow(write) userdn = "ldap:///self";)
+
+# Define which hosts can edit other hosts
+# The managedby attribute stores the DN of hosts that are allowed to manage
+# another host.
+dn: cn=computers,cn=accounts,$SUFFIX
+changetype: modify
+add: aci
+aci: (targetattr="userCertificate || krbPrincipalKey")(version 3.0; acl "Hosts can manage other host Certificates and kerberos keys"; allow(write) userattr = "parent[0,1].managedby#USERDN";)
+
+dn: cn=computers,cn=accounts,$SUFFIX
+changetype: modify
+add: aci
+aci: (targetattr = "krbPrincipalKey || krbLastPwdChange")(target = "ldap:///fqdn=*,cn=computers,cn=accounts,$SUFFIX")(version 3.0;acl "Admins can manage host keytab";allow (write) groupdn = "ldap:///cn=admins,cn=groups,cn=accounts,$SUFFIX";)
+
+dn: cn=hbac,$SUFFIX
+changetype: modify
+add: aci
+aci: (targetattr = "*")(version 3.0; acl "No anonymous access to hbac"; deny (read,search,compare) userdn != "ldap:///all";)
+
+dn: cn=sudo,$SUFFIX
+changetype: modify
+add: aci
+aci: (targetattr = "*")(version 3.0; acl "No anonymous access to sudo"; deny (read,search,compare) userdn != "ldap:///all";)
+
+# This is used for the host/service one-time passwordn and keytab indirectors.
+# We can do a query on a DN to see if an attribute exists.
+dn: cn=accounts,$SUFFIX
+changetype: modify
+add: aci
+aci: (targetattr="userPassword || krbPrincipalKey")(version 3.0; acl "Search existence of password and kerberos keys"; allow(search) userdn = "ldap:///all";)
+

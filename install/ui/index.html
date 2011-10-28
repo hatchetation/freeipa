@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+    <title>IPA: Identity Policy Audit</title>
+
+    <script type="text/javascript" src="json2.js"></script>
+    <script type="text/javascript" src="jquery.js"></script>
+    <script type="text/javascript" src="jquery-ui.js"></script>
+    <script type="text/javascript" src="jquery.ba-bbq.js"></script>
+    <script type="text/javascript" src="jquery.ordered-map.js"></script>
+
+    <script type="text/javascript" src="ipa.js"></script>
+    <script type="text/javascript" src="widget.js"></script>
+    <script type="text/javascript" src="dialog.js"></script>
+    <script type="text/javascript" src="search.js"></script>
+    <script type="text/javascript" src="details.js"></script>
+    <script type="text/javascript" src="add.js"></script>
+    <script type="text/javascript" src="association.js"></script>
+    <script type="text/javascript" src="entity.js"></script>
+    <script type="text/javascript" src="navigation.js"></script>
+    <script type="text/javascript" src="rule.js"></script>
+
+    <script type="text/javascript" src="automount.js"></script>
+    <script type="text/javascript" src="dns.js"></script>
+    <script type="text/javascript" src="certificate.js"></script>
+    <script type="text/javascript" src="user.js"></script>
+    <script type="text/javascript" src="group.js"></script>
+    <script type="text/javascript" src="hbac.js"></script>
+    <script type="text/javascript" src="host.js"></script>
+    <script type="text/javascript" src="hostgroup.js"></script>
+    <script type="text/javascript" src="netgroup.js"></script>
+    <script type="text/javascript" src="service.js"></script>
+    <script type="text/javascript" src="serverconfig.js"></script>
+    <script type="text/javascript" src="sudo.js"></script>
+    <script type="text/javascript" src="policy.js"></script>
+    <script type="text/javascript" src="aci.js"></script>
+    <script type="text/javascript" src="entitle.js"></script>
+
+
+    <script type="text/javascript" src="develop.js"></script>
+    <script type="text/javascript" src="webui.js"></script>
+
+    <link rel="stylesheet" type="text/css" href="jquery-ui.css" />
+    <link rel="stylesheet" type="text/css" href="ipa.css" />
+    <link rel="icon" type="image/ico" href="favicon.ico">
+</head>
+
+<body>
+
+    <div id="container">
+
+        <div id="background">
+            <div id="background-header"></div>
+            <div id="background-navigation"></div>
+            <div id="background-left"></div>
+            <div id="background-center"></div>
+            <div id="background-right"></div>
+        </div>
+
+        <div id="header">
+            <span class="header-logo">
+                 <a href="#"><img src="ipalogo.png" /><img src="ipabanner.png" /></a>
+            </span>
+            <span id="header-network-activity-indicator" class="network-activity-indicator">
+                 <img src="spinner_header.gif" />
+            </span>
+            <span id="loggedinas" class="header-loggedinas">
+                 <a href="#"><span id="login_header">Logged in as</span>: <strong>user@FREEIPA.ORG</strong></a>
+            </span>
+        </div>
+
+        <div id="navigation"></div>
+
+        <div id="content"></div>
+
+    </div>
+
+</body>
+
+</html>
+

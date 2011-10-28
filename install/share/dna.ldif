@@ -1,0 +1,17 @@
+# add plugin configuration for user private groups
+
+dn: cn=Posix IDs,cn=Distributed Numeric Assignment Plugin,cn=plugins,cn=config
+changetype: add
+objectclass: top
+objectclass: extensibleObject
+cn: Posix IDs
+dnaType: uidNumber
+dnaType: gidNumber
+dnaNextValue: eval($IDSTART)
+dnaMaxValue: eval($IDMAX)
+dnaMagicRegen: 999
+dnaFilter: (|(objectclass=posixAccount)(objectClass=posixGroup))
+dnaScope: $SUFFIX
+dnaThreshold: 500
+dnaSharedCfgDN: cn=posix-ids,cn=dna,cn=ipa,cn=etc,$SUFFIX
+

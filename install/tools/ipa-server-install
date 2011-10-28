@@ -1,0 +1,1187 @@
+#! /usr/bin/python -E
+# Authors: Karl MacMillan <kmacmillan@mentalrootkit.com>
+#          Simo Sorce <ssorce@redhat.com>
+#          Rob Crittenden <rcritten@redhat.com>
+#
+# Copyright (C) 2007-2010  Red Hat
+# see file 'COPYING' for use and warranty information
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+
+
+# requires the following packages:
+# fedora-ds-base
+# openldap-clients
+# nss-tools
+
+import sys
+import os
+import errno
+import logging
+import grp
+import subprocess
+import signal
+import shutil
+import glob
+import traceback
+from ConfigParser import RawConfigParser
+import random
+import tempfile
+import nss.error
+from optparse import OptionGroup, OptionValueError
+
+from ipaserver.install import dsinstance
+from ipaserver.install import krbinstance
+from ipaserver.install import bindinstance
+from ipaserver.install import httpinstance
+from ipaserver.install import ntpinstance
+from ipaserver.install import certs
+from ipaserver.install import cainstance
+
+from ipaserver.install import service
+from ipapython import version
+from ipaserver.install.installutils import *
+from ipaserver.plugins.ldap2 import ldap2
+
+from ipapython import sysrestore
+from ipapython.ipautil import *
+from ipalib import api, errors, util
+from ipalib.parameters import IA5Str
+from ipapython.config import IPAOptionParser
+from ipalib.dn import DN
+from ipalib.x509 import load_certificate_from_file, load_certificate_chain_from_file
+from ipalib.constants import DNS_ZONE_REFRESH
+from ipapython import services as ipaservices
+
+pw_name = None
+uninstalling = False
+
+VALID_SUBJECT_ATTRS = ['cn', 'st', 'o', 'ou', 'dnqualifier', 'c',
+                       'serialnumber', 'l', 'title', 'sn', 'givenname',
+                       'initials', 'generationqualifier', 'dc', 'mail',
+                       'uid', 'postaladdress', 'postalcode', 'postofficebox',
+                       'houseidentifier', 'e', 'street', 'pseudonym',
+                       'incorporationlocality', 'incorporationstate',
+                       'incorporationcountry', 'businesscategory']
+
+def zonemgr_callback(option, opt_str, value, parser):
+    """
+    Make sure the zonemgr is an IA5String.
+    """
+    name = opt_str.replace('--','')
+    v = unicode(value, 'utf-8')
+    ia = IA5Str(name)
+    ia._convert_scalar(v)
+    parser.values.zonemgr = value
+
+def subject_callback(option, opt_str, value, parser):
+    """
+    Make sure the certificate subject base is a valid DN
+    """
+    name = opt_str.replace('--','')
+    v = unicode(value, 'utf-8')
+    if any(ord(c) < 0x20 for c in v):
+        raise OptionValueError("Subject base must not contain control characters")
+    if '&' in v:
+        raise OptionValueError("Subject base must not contain an ampersand (\"&\")")
+    try:
+        dn = DN(v)
+        for rdn in dn:
+            if rdn.attr.lower() not in VALID_SUBJECT_ATTRS:
+                raise OptionValueError('invalid attribute: %s' % rdn.attr)
+    except ValueError, e:
+        raise OptionValueError('Invalid subject base format: %s' % str(e))
+    parser.values.subject = str(dn) # may as well normalize it
+
+def validate_dm_password(password):
+    if len(password) < 8:
+        raise ValueError("Password must be at least 8 characters long")
+    if any(ord(c) < 0x20 for c in password):
+        raise ValueError("Password must not contain control characters")
+    if ' ' in password:
+        raise ValueError("Password must not contain a space (\" \")")
+    if '&' in password:
+        raise ValueError("Password must not contain an ampersand (\"&\")")
+    if '\\' in password:
+        raise ValueError("Password must not contain a backslash (\"\\\")")
+
+def parse_options():
+    # Guaranteed to give a random 200k range below the 2G mark (uint32_t limit)
+    namespace = random.randint(1, 10000) * 200000
+    parser = IPAOptionParser(version=version.VERSION)
+
+    basic_group = OptionGroup(parser, "basic options")
+    basic_group.add_option("-r", "--realm", dest="realm_name",
+                      help="realm name")
+    basic_group.add_option("-n", "--domain", dest="domain_name",
+                      help="domain name")
+    basic_group.add_option("-p", "--ds-password", dest="dm_password",
+                      sensitive=True, help="admin password")
+    basic_group.add_option("-P", "--master-password",
+                      dest="master_password", sensitive=True,
+                      help="kerberos master password (normally autogenerated)")
+    basic_group.add_option("-a", "--admin-password",
+                      sensitive=True, dest="admin_password",
+                      help="admin user kerberos password")
+    basic_group.add_option("--hostname", dest="host_name", help="fully qualified name of server")
+    basic_group.add_option("--ip-address", dest="ip_address",
+                      type="ip", ip_local=True,
+                      help="Master Server IP Address")
+    basic_group.add_option("-N", "--no-ntp", dest="conf_ntp", action="store_false",
+                      help="do not configure ntp", default=True)
+    basic_group.add_option("--idstart", dest="idstart", default=namespace, type=int,
+                      help="The starting value for the IDs range (default random)")
+    basic_group.add_option("--idmax", dest="idmax", default=0, type=int,
+                      help="The max value value for the IDs range (default: idstart+199999)")
+    basic_group.add_option("--no_hbac_allow", dest="hbac_allow", default=False,
+                      action="store_true",
+                      help="Don't install allow_all HBAC rule")
+    basic_group.add_option("--no-ui-redirect", dest="ui_redirect", action="store_false",
+                      default=True, help="Do not automatically redirect to the Web UI")
+    basic_group.add_option("-d", "--debug", dest="debug", action="store_true",
+                      default=False, help="print debugging information")
+    basic_group.add_option("-U", "--unattended", dest="unattended", action="store_true",
+                      default=False, help="unattended (un)installation never prompts the user")
+    parser.add_option_group(basic_group)
+
+    cert_group = OptionGroup(parser, "certificate system options")
+    cert_group.add_option("", "--external-ca", dest="external_ca", action="store_true",
+                      default=False, help="Generate a CSR to be signed by an external CA")
+    cert_group.add_option("", "--external_cert_file", dest="external_cert_file",
+                      help="File containing PKCS#10 certificate")
+    cert_group.add_option("", "--external_ca_file", dest="external_ca_file",
+                      help="File containing PKCS#10 of the external CA chain")
+    cert_group.add_option("--no-pkinit", dest="setup_pkinit", action="store_false",
+                      default=True, help="disables pkinit setup steps")
+    cert_group.add_option("--dirsrv_pkcs12", dest="dirsrv_pkcs12",
+                      help="PKCS#12 file containing the Directory Server SSL certificate")
+    cert_group.add_option("--http_pkcs12", dest="http_pkcs12",
+                      help="PKCS#12 file containing the Apache Server SSL certificate")
+    cert_group.add_option("--pkinit_pkcs12", dest="pkinit_pkcs12",
+                      help="PKCS#12 file containing the Kerberos KDC SSL certificate")
+    cert_group.add_option("--dirsrv_pin", dest="dirsrv_pin", sensitive=True,
+                      help="The password of the Directory Server PKCS#12 file")
+    cert_group.add_option("--http_pin", dest="http_pin", sensitive=True,
+                      help="The password of the Apache Server PKCS#12 file")
+    cert_group.add_option("--pkinit_pin", dest="pkinit_pin",
+                      help="The password of the Kerberos KDC PKCS#12 file")
+    cert_group.add_option("--subject", action="callback", callback=subject_callback,
+                      type="string",
+                      help="The certificate subject base (default O=<realm-name>)")
+    cert_group.add_option("", "--selfsign", dest="selfsign", action="store_true",
+                      default=False, help="Configure a self-signed CA instance rather than a dogtag CA. " \
+                      "WARNING: Certificate management capabilities will be limited")
+    parser.add_option_group(cert_group)
+
+    dns_group = OptionGroup(parser, "DNS options")
+    dns_group.add_option("--setup-dns", dest="setup_dns", action="store_true",
+                      default=False, help="configure bind with our zone")
+    dns_group.add_option("--forwarder", dest="forwarders", action="append",
+                      type="ip", help="Add a DNS forwarder")
+    dns_group.add_option("--no-forwarders", dest="no_forwarders", action="store_true",
+                      default=False, help="Do not add any DNS forwarders, use root servers instead")
+    dns_group.add_option("--reverse-zone", dest="reverse_zone", help="The reverse DNS zone to use")
+    dns_group.add_option("--no-reverse", dest="no_reverse", action="store_true",
+                      default=False, help="Do not create reverse DNS zone")
+    dns_group.add_option("--zonemgr", action="callback", callback=zonemgr_callback,
+                      type="string",
+                      help="DNS zone manager e-mail address. Defaults to root")
+    dns_group.add_option("--zone-notif", dest="zone_notif",
+                      action="store_true", default=False,
+                      help="Let name server receive notification when a new zone is added." \
+                           "Zone refresh is turned off when zone notification is enabled")
+    dns_group.add_option("--zone-refresh", dest="zone_refresh",
+                      default=DNS_ZONE_REFRESH, type="int",
+                      help="A delay between checks for new DNS zones. Defaults to %d" \
+                              % DNS_ZONE_REFRESH)
+    dns_group.add_option("--no-host-dns", dest="no_host_dns", action="store_true",
+                      default=False,
+                      help="Do not use DNS for hostname lookup during installation")
+    parser.add_option_group(dns_group)
+
+    uninstall_group = OptionGroup(parser, "uninstall options")
+    uninstall_group.add_option("", "--uninstall", dest="uninstall", action="store_true",
+                      default=False, help="uninstall an existing installation. The uninstall can " \
+                                          "be run with --unattended option")
+    parser.add_option_group(uninstall_group)
+
+    options, args = parser.parse_args()
+    safe_options = parser.get_safe_opts(options)
+
+    if options.dm_password is not None:
+        try:
+            validate_dm_password(options.dm_password)
+        except ValueError, e:
+            parser.error("DS admin password: " + str(e))
+    if options.admin_password is not None and len(options.admin_password) < 8:
+        parser.error("Admin user password must be at least 8 characters long")
+
+    if not options.setup_dns:
+        if options.forwarders:
+            parser.error("You cannot specify a --forwarder option without the --setup-dns option")
+        if options.no_forwarders:
+            parser.error("You cannot specify a --no-forwarders option without the --setup-dns option")
+        if options.reverse_zone:
+            parser.error("You cannot specify a --reverse-zone option without the --setup-dns option")
+        if options.no_reverse:
+            parser.error("You cannot specify a --no-reverse option without the --setup-dns option")
+    elif options.forwarders and options.no_forwarders:
+        parser.error("You cannot specify a --forwarder option together with --no-forwarders")
+    elif options.reverse_zone and options.no_reverse:
+        parser.error("You cannot specify a --reverse-zone option together with --no-reverse")
+
+    if options.uninstall:
+        if (options.realm_name or
+            options.admin_password or options.master_password):
+            parser.error("In uninstall mode, -a, -r and -P options are not allowed")
+    elif options.unattended:
+        if (not options.realm_name or
+            not options.dm_password or not options.admin_password):
+            parser.error("In unattended mode you need to provide at least -r, -p and -a options")
+        if options.setup_dns:
+            if not options.forwarders and not options.no_forwarders:
+                parser.error("You must specify at least one --forwarder option or --no-forwarders option")
+
+    # If any of the PKCS#12 options are selected, all are required. Create a
+    # list of the options and count it to enforce that all are required without
+    # having a huge set of it blocks.
+    pkcs12 = [options.dirsrv_pkcs12, options.http_pkcs12, options.dirsrv_pin, options.http_pin]
+    cnt = pkcs12.count(None)
+    if cnt > 0 and cnt < 4:
+        parser.error("All PKCS#12 options are required if any are used.")
+
+    if (options.external_cert_file or options.external_ca_file) and options.selfsign:
+        parser.error("--selfsign cannot be used with the external CA options.")
+
+    if options.external_ca:
+        if options.external_cert_file:
+            parser.error("You cannot specify --external_cert_file together with --external-ca")
+        if options.external_ca_file:
+            parser.error("You cannot specify --external_ca_file together with --external-ca")
+
+    if ((options.external_cert_file and not options.external_ca_file) or
+       (not options.external_cert_file and options.external_ca_file)):
+        parser.error("if either external CA option is used, both are required.")
+
+    if (options.external_ca_file and not os.path.isabs(options.external_ca_file)):
+        parser.error("--external-ca-file must use an absolute path")
+    if (options.external_cert_file and not os.path.isabs(options.external_cert_file)):
+        parser.error("--external-cert-file must use an absolute path")
+
+    if options.idmax == 0:
+        options.idmax = int(options.idstart) + 200000 - 1
+
+    if options.idmax < options.idstart:
+        parser.error("idmax (%u) cannot be smaller than idstart (%u)" %
+                    (options.idmax, options.idstart))
+
+    #Automatically disable pkinit w/ dogtag until that is supported
+    if not options.pkinit_pkcs12 and not options.selfsign:
+        options.setup_pkinit = False
+
+    if options.zone_refresh < 0:
+        parser.error("negative numbers not allowed for --zone-refresh")
+
+    if options.zone_notif:   # these 2 features are mutually exclusive
+        options.zone_refresh = 0
+
+    return safe_options, options
+
+def signal_handler(signum, frame):
+    global ds
+    print "\nCleaning up..."
+    if ds:
+        print "Removing configuration for %s instance" % ds.serverid
+        ds.stop()
+        if ds.serverid:
+            dsinstance.erase_ds_instance_data (ds.serverid)
+    sys.exit(1)
+
+ANSWER_CACHE = "/root/.ipa_cache"
+
+def read_cache(dm_password):
+    """
+    Returns a dict of cached answers or None if no cache file exists.
+    """
+    if not ipautil.file_exists(ANSWER_CACHE):
+        return {}
+
+    top_dir = tempfile.mkdtemp("ipa")
+    try:
+        clearfile = "%s/cache" % top_dir
+        decrypt_file(ANSWER_CACHE, clearfile, dm_password, top_dir)
+    except Exception, e:
+        shutil.rmtree(top_dir)
+        raise RuntimeError("Problem decrypting answer cache in %s, check your password." % ANSWER_CACHE)
+
+    optdict={}
+    parser = RawConfigParser()
+    try:
+        fp = open(clearfile, "r")
+        parser.readfp(fp)
+        optlist = parser.items('options')
+        fp.close()
+
+    except IOError, e:
+        raise RuntimeError("Error reading cache file %s: %s" % (ANSWER_CACHE, str(e)))
+    finally:
+        shutil.rmtree(top_dir)
+
+    for opt in optlist:
+        value = opt[1]
+        if value.lower() in ['true', 'false']:
+            value = value.lower() == 'true'
+        if value == 'None':
+            value = None
+        optdict[opt[0]] = value
+
+    # These are the only ones that may be overridden
+    if 'external_ca_file' in optdict:
+        del optdict['external_ca_file']
+    if 'external_cert_file' in optdict:
+        del optdict['external_cert_file']
+
+    return optdict
+
+def write_cache(options):
+    """
+    Takes a dict as input and writes a cached file of answers
+    """
+
+    # convert the options instance into a dict
+    optdict = eval(str(options))
+    parser = RawConfigParser()
+    top_dir = tempfile.mkdtemp("ipa")
+    try:
+        fp = open("%s/cache" % top_dir, "w")
+        parser.add_section('options')
+        for opt in optdict:
+            parser.set('options', opt, optdict[opt])
+        parser.write(fp)
+        fp.close()
+        ipautil.encrypt_file("%s/cache" % top_dir, ANSWER_CACHE, options.dm_password, top_dir);
+    except IOError, e:
+        raise RuntimeError("Unable to cache command-line options %s" % str(e))
+    finally:
+        shutil.rmtree(top_dir)
+
+def read_host_name(host_default,no_host_dns=False):
+    host_name = ""
+
+    print "Enter the fully qualified domain name of the computer"
+    print "on which you're setting up server software. Using the form"
+    print "<hostname>.<domainname>"
+    print "Example: master.example.com."
+    print ""
+    print ""
+    if host_default == "":
+        host_default = "master.example.com"
+    host_name = user_input("Server host name", host_default, allow_empty = False)
+    print ""
+    verify_fqdn(host_name,no_host_dns)
+
+    return host_name
+
+def read_domain_name(domain_name, unattended):
+    print "The domain name has been calculated based on the host name."
+    print ""
+    if not unattended:
+        domain_name = user_input("Please confirm the domain name", domain_name)
+        print ""
+    return domain_name
+
+def read_realm_name(domain_name, unattended):
+    print "The kerberos protocol requires a Realm name to be defined."
+    print "This is typically the domain name converted to uppercase."
+    print ""
+
+    if unattended:
+        return domain_name.upper()
+    realm_name = user_input("Please provide a realm name", domain_name.upper())
+    upper_dom = realm_name.upper()  #pylint: disable=E1103
+    if upper_dom != realm_name:
+        print "An upper-case realm name is required."
+        if not user_input("Do you want to use " + upper_dom + " as realm name?", True):
+            print ""
+            print "An upper-case realm name is required. Unable to continue."
+            sys.exit(1)
+        else:
+            realm_name = upper_dom
+        print ""
+    return realm_name
+
+
+def read_dm_password():
+    print "Certain directory server operations require an administrative user."
+    print "This user is referred to as the Directory Manager and has full access"
+    print "to the Directory for system management tasks and will be added to the"
+    print "instance of directory server created for IPA."
+    print "The password must be at least 8 characters long."
+    print ""
+    #TODO: provide the option of generating a random password
+    dm_password = read_password("Directory Manager", validator=validate_dm_password)
+    return dm_password
+
+def read_admin_password():
+    print "The IPA server requires an administrative user, named 'admin'."
+    print "This user is a regular system account used for IPA server administration."
+    print ""
+    #TODO: provide the option of generating a random password
+    admin_password = read_password("IPA admin")
+    return admin_password
+
+def check_dirsrv(unattended):
+    serverids = dsinstance.check_existing_installation()
+    if serverids:
+        print ""
+        print "An existing Directory Server has been detected."
+        if unattended or not user_input("Do you wish to remove it and create a new one?", False):
+            print ""
+            print "Only a single Directory Server instance is allowed on an IPA"
+            print "server, the one used by IPA itself."
+            sys.exit(1)
+
+        try:
+            ipaservices.knownservices.dirsrv.stop()
+        except:
+            pass
+
+        for serverid in serverids:
+            dsinstance.erase_ds_instance_data(serverid)
+
+    (ds_unsecure, ds_secure) = dsinstance.check_ports()
+    if not ds_unsecure or not ds_secure:
+        print "IPA requires ports 389 and 636 for the Directory Server."
+        print "These are currently in use:"
+        if not ds_unsecure:
+            print "\t389"
+        if not ds_secure:
+            print "\t636"
+        sys.exit(1)
+
+def uninstall():
+
+    rv = 0
+
+    print "Shutting down all IPA services"
+    try:
+        (stdout, stderr, rc) = run(["/usr/sbin/ipactl", "stop"], raiseonerr=False)
+    except Exception, e:
+        pass
+
+    print "Removing IPA client configuration"
+    try:
+        (stdout, stderr, rc) = run(["/usr/sbin/ipa-client-install", "--on-master", "--unattended", "--uninstall"], raiseonerr=False)
+        if rc not in [0,2]:
+            logging.debug("ipa-client-install returned %d" % rc)
+            raise RuntimeError(stdout)
+    except Exception, e:
+        rv = 1
+        print "Uninstall of client side components failed!"
+        print "ipa-client-install returned: " + str(e)
+
+    ntpinstance.NTPInstance(fstore).uninstall()
+    if cainstance.CADSInstance().is_configured():
+        cainstance.CADSInstance().uninstall()
+    if cainstance.CAInstance(api.env.realm, certs.NSS_DIR).is_configured():
+        cainstance.CAInstance(api.env.realm, certs.NSS_DIR).uninstall()
+    bindinstance.BindInstance(fstore).uninstall()
+    httpinstance.HTTPInstance(fstore).uninstall()
+    krbinstance.KrbInstance(fstore).uninstall()
+    dsinstance.DsInstance(fstore=fstore).uninstall()
+    fstore.restore_all_files()
+    try:
+        os.remove(ANSWER_CACHE)
+    except Exception:
+        pass
+
+    # ipa-client-install removes /etc/ipa/default.conf
+
+    sstore._load()
+    group_exists = sstore.restore_state("install", "group_exists")
+    if group_exists == False:
+        try:
+            grp.getgrnam(dsinstance.DS_GROUP)
+            try:
+                ipautil.run(["/usr/sbin/groupdel", dsinstance.DS_GROUP])
+            except ipautil.CalledProcessError, e:
+                logging.critical("failed to delete group %s" % e)
+                rv = 1
+        except KeyError:
+            logging.info("Group %s already removed", dsinstance.DS_GROUP)
+
+    ipaservices.knownservices.ipa.disable()
+
+    old_hostname = sstore.restore_state('network','hostname')
+    system_hostname = get_fqdn()
+    if old_hostname is not None and old_hostname != system_hostname:
+        try:
+            ipautil.run(['/bin/hostname', old_hostname])
+        except CalledProcessError, e:
+            print >>sys.stderr, "Failed to set this machine hostname back to %s (%s)." % (old_hostname, str(e))
+
+    # Now for some sanity checking. Make sure everything was really
+    # uninstalled.
+    serverids = dsinstance.check_existing_installation()
+    if len(serverids):
+        rv = 1
+        logging.error('IPA cannot be re-installed without removing existing 389-ds instance(s)')
+
+    if fstore.has_files():
+        logging.error('Some files have not been restored, see /var/lib/ipa/sysrestore/sysrestore.index')
+    has_state = False
+    for module in IPA_MODULES: # from installutils
+        if sstore.has_state(module):
+            logging.error('Some installation state for %s has not been restored, see /var/lib/ipa/sysrestore/sysrestore.state' % module)
+            has_state = True
+            rv = 1
+
+    if has_state:
+        logging.warn('Some installation state has not been restored.\nThis will cause re-installation to fail.\nIt should be safe to remove /var/lib/ipa/sysrestore.state but it may\nmean your system hasn\'t be restored to its pre-installation state.')
+
+    return rv
+
+
+def set_subject_in_config(realm_name, dm_password, suffix, subject_base):
+        ldapuri = 'ldapi://%%2fvar%%2frun%%2fslapd-%s.socket' % (
+            dsinstance.realm_to_serverid(realm_name)
+        )
+        try:
+            conn = ldap2(shared_instance=False, ldap_uri=ldapuri, base_dn=suffix)
+            conn.connect(bind_dn='cn=directory manager', bind_pw=dm_password)
+        except errors.ExecutionError, e:
+            logging.critical("Could not connect to the Directory Server on %s" % realm_name)
+            raise e
+        (dn, entry_attrs) = conn.get_ipa_config()
+        if 'ipacertificatesubjectbase' not in entry_attrs:
+            mod = {'ipacertificatesubjectbase': subject_base}
+            conn.update_entry(dn, mod)
+        conn.disconnect()
+
+def main():
+    global ds
+    global pw_name
+    global uninstalling
+    ds = None
+
+    safe_options, options = parse_options()
+
+    if os.getegid() != 0:
+        sys.exit("Must be root to set up server")
+
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+
+    if options.uninstall:
+        uninstalling = True
+        standard_logging_setup("/var/log/ipaserver-uninstall.log", options.debug)
+    else:
+        standard_logging_setup("/var/log/ipaserver-install.log", options.debug)
+        print "\nThe log file for this installation can be found in /var/log/ipaserver-install.log"
+        if not options.external_ca and not options.external_cert_file and is_ipa_configured():
+            sys.exit("IPA server is already configured on this system.\n"
+                     + "If you want to reinstall the IPA server please uninstall it first.")
+
+        client_fstore = sysrestore.FileStore('/var/lib/ipa-client/sysrestore')
+        if client_fstore.has_files():
+            sys.exit("IPA client is already configured on this system.\n"
+                     + "Please uninstall it first before configuring the IPA server.")
+
+    logging.debug('%s was invoked with options: %s' % (sys.argv[0], safe_options))
+    logging.debug("missing options might be asked for interactively later\n")
+
+    global fstore
+    fstore = sysrestore.FileStore('/var/lib/ipa/sysrestore')
+    global sstore
+    sstore = sysrestore.StateFile('/var/lib/ipa/sysrestore')
+
+    # Configuration for ipalib, we will bootstrap and finalize later, after
+    # we are sure we have the configuration file ready.
+    cfg = dict(
+        context='installer',
+        in_server=True,
+        debug=options.debug
+    )
+
+    if options.uninstall:
+
+        # We will need at least api.env, finalize api now. This system is
+        # already installed, so the configuration file is there.
+        api.bootstrap(**cfg)
+        api.finalize()
+
+        if not options.unattended:
+            print "\nThis is a NON REVERSIBLE operation and will delete all data and configuration!\n"
+            if not user_input("Are you sure you want to continue with the uninstall procedure?", False):
+                print ""
+                print "Aborting uninstall operation."
+                sys.exit(1)
+
+        return uninstall()
+
+    if options.external_ca:
+        if cainstance.CADSInstance().is_configured():
+            print "CA is already installed.\nRun the installer with --external_cert_file and --external_ca_file."
+            sys.exit(1)
+    elif options.external_cert_file:
+        if not cainstance.CADSInstance().is_configured():
+            # This can happen if someone passes external_ca_file without
+            # already having done the first stage of the CA install.
+            print "CA is not installed yet. To install with an external CA is a two-stage process.\nFirst run the installer with --external-ca."
+            sys.exit(1)
+
+    # This will override any settings passed in on the cmdline
+    if ipautil.file_exists(ANSWER_CACHE):
+        dm_password = read_password("Directory Manager", confirm=False)
+        if dm_password is None:
+            sys.exit("\nDirectory Manager password required")
+        options._update_loose(read_cache(dm_password))
+
+    if options.external_cert_file:
+        try:
+            extcert = load_certificate_from_file(options.external_cert_file)
+        except IOError, e:
+            print "Can't load the PKCS#10 certificate: %s." % str(e)
+            sys.exit(1)
+        except nss.error.NSPRError:
+            print "'%s' is not a valid PEM-encoded certificate." % options.external_cert_file
+            sys.exit(1)
+
+        certsubject = unicode(extcert.subject)
+        wantsubject = unicode(DN(('CN','Certificate Authority'), options.subject))
+        if certsubject.lower() != wantsubject.lower():
+            print "Subject of the PKCS#10 certificate is not correct (got %s, expected %s)." % (certsubject, wantsubject)
+            sys.exit(1)
+
+        try:
+            extchain = load_certificate_chain_from_file(options.external_ca_file)
+        except IOError, e:
+            print "Can't load the external CA chain: %s." % str(e)
+            sys.exit(1)
+        except nss.error.NSPRError:
+            print "'%s' is not a valid PEM-encoded certificate chain." % options.external_ca_file
+            sys.exit(1)
+
+        certdict = dict((unicode(cert.subject).lower(), cert) for cert in extchain)
+        certissuer = unicode(extcert.issuer)
+        if certissuer.lower() not in certdict:
+            print "The PKCS#10 certificate is not signed by the external CA (unknown issuer %s)." % certissuer
+            sys.exit(1)
+
+        cert = extcert
+        while cert.issuer != cert.subject:
+            certissuer = unicode(cert.issuer)
+            if certissuer.lower() not in certdict:
+                print "The external CA chain is incomplete (%s is missing from the chain)." % certissuer
+                sys.exit(1)
+            cert = certdict[certissuer.lower()]
+
+    print "=============================================================================="
+    print "This program will set up the FreeIPA Server."
+    print ""
+    print "This includes:"
+    if options.selfsign:
+        print "  * Configure NSS to handle a self-signed CA"
+        print "    WARNING: certificate management capabilities will be limited"
+    else:
+        print "  * Configure a stand-alone CA (dogtag) for certificate management"
+    if options.conf_ntp:
+        print "  * Configure the Network Time Daemon (ntpd)"
+    print "  * Create and configure an instance of Directory Server"
+    print "  * Create and configure a Kerberos Key Distribution Center (KDC)"
+    print "  * Configure Apache (httpd)"
+    if options.setup_dns:
+        print "  * Configure DNS (bind)"
+    if options.setup_pkinit:
+        print "  * Configure the KDC to enable PKINIT"
+    if not options.conf_ntp:
+        print ""
+        print "Excluded by options:"
+        print "  * Configure the Network Time Daemon (ntpd)"
+    print ""
+    print "To accept the default shown in brackets, press the Enter key."
+    print ""
+
+    if not options.external_ca and not options.external_cert_file:
+        # Let it past if there is an external_cert_file defined on the chance
+        # that we are coming in without a cache file.
+        check_dirsrv(options.unattended)
+
+    realm_name = ""
+    host_name = ""
+    domain_name = ""
+    ip_address = ""
+    master_password = ""
+    dm_password = ""
+    admin_password = ""
+    reverse_zone = None
+
+    # check bind packages are installed
+    if options.setup_dns:
+        if not bindinstance.check_inst(options.unattended):
+            sys.exit("Aborting installation")
+
+        # Don't require an external DNS to say who we are if we are
+        # setting up a local DNS server.
+        options.no_host_dns = True
+
+    # check the hostname is correctly configured, it must be as the kldap
+    # utilities just use the hostname as returned by getaddrinfo to set
+    # up some of the standard entries
+
+    host_default = ""
+    if options.host_name:
+        host_default = options.host_name
+    else:
+        host_default = get_fqdn()
+
+    try:
+        if options.unattended:
+            verify_fqdn(host_default,options.no_host_dns)
+            host_name = host_default
+        else:
+            host_name = read_host_name(host_default,options.no_host_dns)
+    except BadHostError, e:
+        sys.exit(str(e) + "\n")
+
+    host_name = host_name.lower()
+    logging.debug("will use host_name: %s\n" % host_name)
+
+    system_hostname = get_fqdn()
+    if host_name != system_hostname:
+        print >>sys.stderr
+        print >>sys.stderr, "Warning: hostname %s does not match system hostname %s." \
+                            % (host_name, system_hostname)
+        print >>sys.stderr, "System hostname will be updated during the installation process"
+        print >>sys.stderr, "to prevent service failures."
+        print >>sys.stderr
+
+    if not options.domain_name:
+        domain_name = read_domain_name(host_name[host_name.find(".")+1:], options.unattended)
+        logging.debug("read domain_name: %s\n" % domain_name)
+    else:
+        domain_name = options.domain_name
+
+    domain_name = domain_name.lower()
+
+    # Check we have a public IP that is associated with the hostname
+    hostaddr = resolve_host(host_name)
+    if hostaddr is not None:
+        ip = CheckedIPAddress(hostaddr, match_local=True)
+    else:
+        ip = options.ip_address
+    if ip is None:
+        print "Unable to resolve IP address for host name"
+        if options.unattended:
+            sys.exit(1)
+
+    if options.ip_address:
+        if options.ip_address != ip and not options.setup_dns:
+            print >>sys.stderr, "Error: the hostname resolves to an IP address that is different"
+            print >>sys.stderr, "from the one provided on the command line.  Please fix your DNS"
+            print >>sys.stderr, "or /etc/hosts file and restart the installation."
+            return 1
+
+        ip = options.ip_address
+
+    ip_add_to_hosts = False
+    if ip is None:
+        ip = read_ip_address(host_name, fstore)
+        logging.debug("read ip_address: %s\n" % str(ip))
+        ip_add_to_hosts = True
+
+    ip_address = str(ip)
+
+    # check /etc/hosts sanity, add a record when needed
+    hosts_record = record_in_hosts(ip_address)
+
+    if hosts_record is None:
+        if ip_add_to_hosts:
+            print "Adding ["+ip_address+" "+host_name+"] to your /etc/hosts file"
+            fstore.backup_file("/etc/hosts")
+            add_record_to_hosts(ip_address, host_name)
+    else:
+        primary_host = hosts_record[1][0]
+        if primary_host != host_name:
+            print >>sys.stderr, "Error: there is already a record in /etc/hosts for IP address %s:" \
+                    % ip_address
+            print >>sys.stderr, hosts_record[0], " ".join(hosts_record[1])
+            print >>sys.stderr, "Chosen hostname %s does not match configured canonical hostname %s" \
+                    % (host_name, primary_host)
+            print >>sys.stderr, "Please fix your /etc/hosts file and restart the installation."
+            return 1
+
+    if options.reverse_zone and not bindinstance.verify_reverse_zone(options.reverse_zone, ip):
+        sys.exit(1)
+
+    print "The IPA Master Server will be configured with"
+    print "Hostname:    " + host_name
+    print "IP address:  " + ip_address
+    print "Domain name: " + domain_name
+    print ""
+
+    if not options.realm_name:
+        realm_name = read_realm_name(domain_name, options.unattended)
+        logging.debug("read realm_name: %s\n" % realm_name)
+    else:
+        realm_name = options.realm_name.upper()
+
+    if not options.subject:
+        options.subject = "O=%s" % realm_name
+
+    if not options.dm_password:
+        dm_password = read_dm_password()
+
+        if dm_password is None:
+            sys.exit("\nDirectory Manager password required")
+    else:
+        dm_password = options.dm_password
+
+    if not options.master_password:
+        master_password = ipa_generate_password()
+    else:
+        master_password = options.master_password
+
+    if not options.admin_password:
+        admin_password = read_admin_password()
+        if admin_password is None:
+            sys.exit("\nIPA admin password required")
+    else:
+        admin_password = options.admin_password
+
+    if options.setup_dns:
+        if options.no_forwarders:
+            dns_forwarders = ()
+        elif options.forwarders:
+            dns_forwarders = options.forwarders
+        else:
+            dns_forwarders = read_dns_forwarders()
+
+        if options.reverse_zone:
+            reverse_zone = bindinstance.normalize_zone(options.reverse_zone)
+        elif not options.no_reverse:
+            reverse_zone = bindinstance.get_reverse_zone_default(ip)
+            if not options.unattended and bindinstance.create_reverse():
+                reverse_zone = bindinstance.read_reverse_zone(reverse_zone, ip)
+
+        if reverse_zone is not None:
+            print "Using reverse zone %s" % reverse_zone
+    else:
+        dns_forwarders = ()
+    logging.debug("will use dns_forwarders: %s\n" % str(dns_forwarders))
+
+    # Create the management framework config file and finalize api
+    target_fname = '/etc/ipa/default.conf'
+    fd = open(target_fname, "w")
+    fd.write("[global]\n")
+    fd.write("host=" + host_name + "\n")
+    fd.write("basedn=" + util.realm_to_suffix(realm_name) + "\n")
+    fd.write("realm=" + realm_name + "\n")
+    fd.write("domain=" + domain_name + "\n")
+    fd.write("xmlrpc_uri=https://%s/ipa/xml\n" % format_netloc(host_name))
+    fd.write("ldap_uri=ldapi://%%2fvar%%2frun%%2fslapd-%s.socket\n" % dsinstance.realm_to_serverid(realm_name))
+    fd.write("enable_ra=True\n")
+    if not options.selfsign:
+        fd.write("ra_plugin=dogtag\n")
+    fd.write("mode=production\n")
+    fd.close()
+
+    # Must be readable for everyone
+    os.chmod(target_fname, 0644)
+
+    api.bootstrap(**cfg)
+    api.finalize()
+
+    if not options.unattended:
+        print ""
+        print "The following operations may take some minutes to complete."
+        print "Please wait until the prompt is returned."
+        print ""
+
+    if host_name != system_hostname:
+        logging.debug("Chosen hostname (%s) differs from system hostname (%s) - change it" \
+                      % (host_name, system_hostname))
+        # configure /etc/sysconfig/network to contain the custom hostname
+        ipaservices.backup_and_replace_hostname(fstore, sstore, host_name)
+
+    # Create DS group if it doesn't exist yet
+    try:
+        grp.getgrnam(dsinstance.DS_GROUP)
+        logging.debug("ds group %s exists" % dsinstance.DS_GROUP)
+        group_exists = True
+    except KeyError:
+        group_exists = False
+        args = ["/usr/sbin/groupadd", "-r", dsinstance.DS_GROUP]
+        try:
+            ipautil.run(args)
+            logging.debug("done adding DS group")
+        except ipautil.CalledProcessError, e:
+            logging.critical("failed to add DS group: %s" % e)
+    sstore.backup_state("install", "group_exists", group_exists)
+
+    # Configure ntpd
+    if options.conf_ntp:
+        ntp = ntpinstance.NTPInstance(fstore)
+        if not ntp.is_configured():
+            ntp.create_instance()
+
+    if options.selfsign:
+        ca = certs.CertDB(realm_name, host_name=host_name,
+                          subject_base=options.subject)
+        ca.create_self_signed()
+    else:
+        # Clean up any previous self-signed CA that may exist
+        try:
+            os.remove(certs.CA_SERIALNO)
+        except:
+            pass
+
+        # Figure out what state we're in. See cainstance.py for more info on
+        # the 3 states.
+        if options.external_cert_file:
+            external = 2
+        elif options.external_ca:
+            external = 1
+        else:
+            external = 0
+
+        cs = cainstance.CADSInstance(host_name, realm_name, domain_name, dm_password)
+        if not cs.is_configured():
+            cs.create_instance(realm_name, host_name, domain_name, dm_password, subject_base=options.subject)
+        ca = cainstance.CAInstance(realm_name, certs.NSS_DIR)
+        if external == 0:
+            ca.configure_instance(host_name, dm_password, dm_password,
+                                  subject_base=options.subject)
+        elif external == 1:
+            # stage 1 of external CA installation
+            options.realm_name = realm_name
+            options.domain_name = domain_name
+            options.master_password = master_password
+            options.dm_password = dm_password
+            options.admin_password = admin_password
+            options.host_name = host_name
+            options.unattended = True
+            options.forwarders = dns_forwarders
+            options.reverse_zone = reverse_zone
+            write_cache(options)
+            ca.configure_instance(host_name, dm_password, dm_password,
+                                  csr_file="/root/ipa.csr",
+                                  subject_base=options.subject)
+        else:
+            # stage 2 of external CA installation
+            ca.configure_instance(host_name, dm_password, dm_password,
+                                  cert_file=options.external_cert_file,
+                                  cert_chain_file=options.external_ca_file,
+                                  subject_base=options.subject)
+
+    # Now put the CA cert where other instances exepct it
+    ca.publish_ca_cert("/etc/ipa/ca.crt")
+
+    # Create a directory server instance
+    ds = dsinstance.DsInstance(fstore=fstore)
+
+    if options.dirsrv_pin:
+        [pw_fd, pw_name] = tempfile.mkstemp()
+        os.write(pw_fd, options.dirsrv_pin)
+        os.close(pw_fd)
+
+    if options.dirsrv_pkcs12:
+        pkcs12_info = (options.dirsrv_pkcs12, pw_name)
+        try:
+            ds.create_instance(realm_name, host_name, domain_name,
+                               dm_password, pkcs12_info,
+                               subject_base=options.subject,
+                               hbac_allow=not options.hbac_allow)
+        finally:
+            os.remove(pw_name)
+    else:
+        ds.create_instance(realm_name, host_name, domain_name,
+                           dm_password, self_signed_ca=options.selfsign,
+                           idstart=options.idstart, idmax=options.idmax,
+                           subject_base=options.subject,
+                           hbac_allow=not options.hbac_allow)
+
+    # We need to ldap_enable the CA now that DS is up and running
+    if not options.selfsign:
+        ca.ldap_enable('CA', host_name, dm_password,
+                       util.realm_to_suffix(realm_name))
+
+        # Turn on SSL in the dogtag LDAP instance. This will get restarted
+        # later, we don't need SSL now.
+        cs.create_certdb()
+        cs.enable_ssl()
+        # Add the IPA service for storing the PKI-IPA server certificate.
+        cs.add_simple_service(cs.principal)
+        cs.add_cert_to_service()
+
+    # Create a kerberos instance
+    if options.pkinit_pin:
+        [pw_fd, pw_name] = tempfile.mkstemp()
+        os.write(pw_fd, options.dirsrv_pin)
+        os.close(pw_fd)
+
+    krb = krbinstance.KrbInstance(fstore)
+    if options.pkinit_pkcs12:
+        pkcs12_info = (options.pkinit_pkcs12, pw_name)
+        krb.create_instance(realm_name, host_name, domain_name,
+                            dm_password, master_password,
+                            setup_pkinit=options.setup_pkinit,
+                            pkcs12_info=pkcs12_info,
+                            subject_base=options.subject)
+    else:
+        krb.create_instance(realm_name, host_name, domain_name,
+                            dm_password, master_password,
+                            setup_pkinit=options.setup_pkinit,
+                            self_signed_ca=options.selfsign,
+                            subject_base=options.subject)
+
+    if options.pkinit_pin:
+        os.remove(pw_name)
+
+    # The DS instance is created before the keytab, add the SSL cert we
+    # generated
+    ds.add_cert_to_service()
+
+    # Create a HTTP instance
+
+    if options.http_pin:
+        [pw_fd, pw_name] = tempfile.mkstemp()
+        os.write(pw_fd, options.http_pin)
+        os.close(pw_fd)
+
+    http = httpinstance.HTTPInstance(fstore)
+    if options.http_pkcs12:
+        pkcs12_info = (options.http_pkcs12, pw_name)
+        http.create_instance(realm_name, host_name, domain_name, dm_password, autoconfig=False, pkcs12_info=pkcs12_info, subject_base=options.subject, auto_redirect=options.ui_redirect)
+        os.remove(pw_name)
+    else:
+        http.create_instance(realm_name, host_name, domain_name, dm_password, autoconfig=True, self_signed_ca=options.selfsign, subject_base=options.subject, auto_redirect=options.ui_redirect)
+    ipaservices.restore_context("/var/cache/ipa/sessions")
+
+    set_subject_in_config(realm_name, dm_password, util.realm_to_suffix(realm_name), options.subject)
+
+    # Apply any LDAP updates. Needs to be done after the configuration file
+    # is created
+    service.print_msg("Applying LDAP updates")
+    ds.apply_updates()
+
+    # Restart ds and krb after configurations have been changed
+    service.print_msg("Restarting the directory server")
+    ds.restart()
+
+    service.print_msg("Restarting the KDC")
+    krb.restart()
+
+    # Restart httpd to pick up the new IPA configuration
+    service.print_msg("Restarting the web server")
+    http.restart()
+
+    # Create a BIND instance
+    bind = bindinstance.BindInstance(fstore, dm_password)
+    bind.setup(host_name, ip_address, realm_name, domain_name, dns_forwarders,
+               options.conf_ntp, reverse_zone, zonemgr=options.zonemgr,
+               zone_refresh=options.zone_refresh,
+               zone_notif=options.zone_notif)
+    if options.setup_dns:
+        api.Backend.ldap2.connect(bind_dn="cn=Directory Manager", bind_pw=dm_password)
+
+        bind.create_instance()
+    else:
+        bind.create_sample_bind_zone()
+
+    # Set the admin user kerberos password
+    ds.change_admin_password(admin_password)
+
+    # Call client install script
+    try:
+        run(["/usr/sbin/ipa-client-install", "--on-master", "--unattended", "--domain", domain_name, "--server", host_name, "--realm", realm_name, "--hostname", host_name])
+    except Exception, e:
+        sys.exit("Configuration of client side components failed!\nipa-client-install returned: " + str(e))
+
+
+    #Everything installed properly, activate ipa service.
+    ipaservices.knownservices.ipa.enable()
+
+    print "=============================================================================="
+    print "Setup complete"
+    print ""
+    print "Next steps:"
+    print "\t1. You must make sure these network ports are open:"
+    print "\t\tTCP Ports:"
+    print "\t\t  * 80, 443: HTTP/HTTPS"
+    print "\t\t  * 389, 636: LDAP/LDAPS"
+    print "\t\t  * 88, 464: kerberos"
+    if options.setup_dns:
+        print "\t\t  * 53: bind"
+    print "\t\tUDP Ports:"
+    print "\t\t  * 88, 464: kerberos"
+    if options.setup_dns:
+        print "\t\t  * 53: bind"
+    if options.conf_ntp:
+        print "\t\t  * 123: ntp"
+    print ""
+    print "\t2. You can now obtain a kerberos ticket using the command: 'kinit admin'"
+    print "\t   This ticket will allow you to use the IPA tools (e.g., ipa user-add)"
+    print "\t   and the web user interface."
+
+    if not ipaservices.knownservices.ntpd.is_running():
+        print "\t3. Kerberos requires time synchronization between clients"
+        print "\t   and servers for correct operation. You should consider enabling ntpd."
+
+    print ""
+    if options.http_pkcs12:
+        print "In order for Firefox autoconfiguration to work you will need to"
+        print "use a SSL signing certificate. See the IPA documentation for more details."
+        print "You also need to install a PEM copy of the CA certificate into"
+        print "/usr/share/ipa/html/ca.crt"
+    else:
+        if options.selfsign:
+            print "Be sure to back up the CA certificate stored in /etc/httpd/alias/cacert.p12"
+            print "The password for this file is in /etc/httpd/alias/pwdfile.txt"
+        else:
+            print "Be sure to back up the CA certificate stored in /root/cacert.p12"
+            print "This file is required to create replicas. The password for this"
+            print "file is the Directory Manager password"
+
+    if ipautil.file_exists(ANSWER_CACHE):
+        os.remove(ANSWER_CACHE)
+    return 0
+
+try:
+    try:
+        sys.exit(main())
+    except SystemExit, e:
+        sys.exit(e)
+    except HostnameLocalhost:
+        print "The hostname resolves to the localhost address (127.0.0.1/::1)"
+        print "Please change your /etc/hosts file so that the hostname"
+        print "resolves to the ip address of your network interface."
+        print "The KDC service does not listen on localhost"
+        print ""
+        print "Please fix your /etc/hosts file and restart the setup program"
+    except Exception, e:
+        if uninstalling:
+            message = "Unexpected error - see ipaserver-uninstall.log for details:\n %s" % str(e)
+        else:
+            message = "Unexpected error - see ipaserver-install.log for details:\n %s" % str(e)
+        print message
+        message = str(e)
+        for str in traceback.format_tb(sys.exc_info()[2]):
+            message = message + "\n" + str
+        logging.debug(message)
+        sys.exit(1)
+finally:
+    if pw_name and ipautil.file_exists(pw_name):
+        os.remove(pw_name)

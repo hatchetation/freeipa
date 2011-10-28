@@ -1,0 +1,208 @@
+prefix = @prefix@
+exec_prefix = ${prefix}
+datarootdir = ${prefix}/share
+datadir = ${datarootdir}
+localedir = ${datarootdir}/locale
+
+INSTALL = @INSTALL@
+INSTALL_DATA = @INSTALL@ -m 644
+AWK = @AWK@
+SED = @SED@
+MKDIR_P = @MKDIR_P@
+XGETTEXT = @XGETTEXT@
+MSGFMT = @MSGFMT@
+MSGINIT = @MSGINIT@
+MSGMERGE = @MSGMERGE@
+MSGCMP = @MSGCMP@
+TX = @TX@
+
+DOMAIN = @GETTEXT_DOMAIN@
+MSGMERGE_UPDATE = $(MSGMERGE) --update
+
+COPYRIGHT_HOLDER = Red Hat
+PACKAGE_NAME = $(DOMAIN)
+PACKAGE_BUGREPORT = https://hosted.fedoraproject.org/projects/freeipa/newticket
+XGETTEXT_OPTIONS = \
+--add-comments="TRANSLATORS:" \
+--copyright-holder="$(COPYRIGHT_HOLDER)" \
+--package-name="$(PACKAGE_NAME)" \
+--msgid-bugs-address="$(PACKAGE_BUGREPORT)"
+
+languages = $(shell $(SED) 's/\#.*//' LINGUAS) # The sed command removes comments
+po_files = $(patsubst %, %.po, $(languages))
+mo_files = $(patsubst %.po, %.mo, $(po_files))
+po_count=$(words $(po_files))
+
+PY_FILES = $(shell cd ../..; git ls-files | grep -v -e "^tests/" -e "^doc/" -e "^install/po/" -e "^ipapython/test/" -e "setup.py" -e "setup-client.py" | grep "\.py$$" | tr '\n' ' '; cd install/po)
+C_FILES = $(shell cd ../..; git ls-files | grep "\.c$$" | tr '\n' ' '; cd install/po)
+H_FILES = $(shell cd ../..; git ls-files | grep "\.h$$" | tr '\n' ' '; cd install/po)
+
+PY_EXPLICIT_FILES = \
+     ipa \
+     install/tools/ipa-replica-manage \
+     install/tools/ipa-server-certinstall \
+     install/tools/ipa-replica-conncheck \
+     install/tools/ipa-replica-install \
+     install/tools/ipa-nis-manage \
+     install/tools/ipa-upgradeconfig \
+     install/tools/ipa-replica-prepare \
+     install/tools/ipa-compat-manage \
+     install/tools/ipa-managed-entries \
+     install/tools/ipa-server-install \
+     install/tools/ipa-ldap-updater \
+     install/tools/ipa-dns-install \
+     install/tools/ipa-ca-install \
+     ipa-client/ipa-install/ipa-client-install
+
+PYTHON_POTFILES = $(PY_FILES) $(PY_EXPLICIT_FILES)
+
+C_POTFILES = $(C_FILES) $(H_FILES)
+
+.SUFFIXES:
+.SUFFIXES: .po .mo
+.PHONY: all create-po update-po update-pot install mostlyclean clean distclean test_lang test mo-files debug
+
+all:
+
+SUFFIXES = .po .mo
+
+.po.mo:
+	@echo Creating $@; \
+	$(MSGFMT) -c -o t-$@ $< && mv t-$@ $@
+
+$(po_files): $(DOMAIN).pot
+	@if [ ! -f $@ ]; then \
+	    lang=`echo $@ | $(SED) -r -e 's/\.po$$//'` # Strip .po suffix ; \
+	    echo Creating nonexistent $@, you should add this file to your SCM repository; \
+	    $(MSGINIT) --locale $$lang --no-translator -i $(DOMAIN).pot -o $@; \
+	fi; \
+	echo Merging $(DOMAIN).pot into $@; \
+	$(MSGMERGE) --no-fuzzy-matching -o $@ $@ $(DOMAIN).pot
+
+create-po: $(DOMAIN).pot
+	@for po_file in $(po_files); do \
+	    if [ ! -e $$po_file ]; then \
+	        lang=`echo $$po_file | $(SED) -r -e 's/\.po$$//'` # Strip .po suffix ; \
+	        echo Creating nonexistent $$po_file, you should add this file to your SCM repository; \
+	        $(MSGINIT) --locale $$lang --no-translator -i $(DOMAIN).pot -o $$po_file; \
+	    fi; \
+	done
+
+
+pull-po:
+	cd ../..; $(TX) pull -f
+
+update-po: update-pot
+	$(MAKE) $(po_files)
+
+update-pot:
+	@rm -f $(DOMAIN).pot.update
+	@pushd ../.. ; \
+	$(XGETTEXT) $(XGETTEXT_OPTIONS) \
+	--output install/po/$(DOMAIN).pot.update \
+	--language="python" \
+	$(PYTHON_POTFILES) \
+	&& \
+	$(XGETTEXT) $(XGETTEXT_OPTIONS) \
+	--output install/po/$(DOMAIN).pot.update \
+	--join-existing \
+	--language="c" \
+	--from-code="UTF-8" \
+	--keyword='_' \
+	$(C_POTFILES) ; \
+	popd ; \
+	$(SED) '/^"POT-Creation-Date: .*"$$/d' $(DOMAIN).pot.update > $(DOMAIN).pot.update.tmp ; \
+	$(SED) -i -r -e 's%("Content-Type: text/plain; charset=)(.*)(\\n")%\1UTF-8\3%' $(DOMAIN).pot.update.tmp ; \
+	$(SED) '/^"POT-Creation-Date: .*"$$/d' $(DOMAIN).pot >  $(DOMAIN).pot.tmp ; \
+	if ! cmp -s $(DOMAIN).pot.update.tmp $(DOMAIN).pot.tmp ; then \
+	    echo "$(DOMAIN).pot updated" ; \
+	    mv $(DOMAIN).pot.update $(DOMAIN).pot ; \
+	    # Replace the charset with UTF-8 ; \
+	    $(SED) -i -r -e 's%("Content-Type: text/plain; charset=)(.*)(\\n")%\1UTF-8\3%' $(DOMAIN).pot ; \
+	else \
+	    echo "$(DOMAIN).pot unmodified" ; \
+	fi || :
+	@rm -f $(DOMAIN).pot.update $(DOMAIN).pot.update.tmp $(DOMAIN).pot.tmp
+
+msg-stats:
+	@pot_count=`$(MSGFMT) --statistics $(DOMAIN).pot 2>&1 | \
+	$(AWK) '{match($$0, /([0-9]+) translated messages, ([0-9]+) untranslated messages/, groups); \
+	      printf "%s\n", groups[2];}'` ; \
+	echo "$(DOMAIN).pot has $$pot_count messages. There are $(po_count) po translation files." ; \
+	for po_file in $(po_files); do \
+	    $(MSGFMT) --statistics $$po_file 2>&1 | \
+	    $(AWK) -v po_file=$$po_file -v pot_count=$$pot_count -v pot_file=$(DOMAIN).pot \
+	        'BEGIN {po_name = gensub(/\.po$$/, "", 1, po_file);} \
+                 match($$0, /([[:digit:]]+) translated/,   group) {translated   = group[1]} \
+                 match($$0, /([[:digit:]]+) untranslated/, group) {untranslated = group[1]} \
+                 match($$0, /([[:digit:]]+) fuzzy/,        group) {fuzzy        = group[1]} \
+		 END {pot_untranslated = pot_count - translated; \
+		      ratio = sprintf("%d/%d", translated, pot_count); \
+		      printf "%-7s %11s %5.1f%% %5d untranslated, %5d fuzzy\n", \
+		          po_name ":", ratio, translated/pot_count*100.0, pot_untranslated, fuzzy;}'; \
+	done
+
+mo-files: $(mo_files)
+
+install: $(mo_files)
+	@for lang in $(languages); do \
+	    dstdir=$(DESTDIR)$(localedir)/$$lang/LC_MESSAGES; \
+	    $(MKDIR_P) $$dstdir; \
+	    $(INSTALL) $$lang.mo $$dstdir/$(DOMAIN).mo; \
+	done
+
+mostlyclean:
+	rm -rf *.mo test.po test_locale
+	rm -f $(DOMAIN).pot.update $(DOMAIN).pot.update.tmp $(DOMAIN).pot.tmp
+
+clean: mostlyclean
+
+distclean: clean
+	rm -f Makefile
+
+maintainer-clean: distclean
+
+# We test our translations by taking the original untranslated string
+# (e.g. msgid) and prepend a prefix character and then append a suffix
+# character. The test consists of asserting that the first character in the
+# translated string is the prefix, the last character in the translated string
+# is the suffix and the everything between the first and last character exactly
+# matches the original msgid.
+#
+# We use unicode characters not in the ascii character set for the prefix and
+# suffix to enhance the test. To make reading the translated string easier the
+# prefix is the unicode right pointing arrow and the suffix left pointing arrow,
+# thus the translated string looks like the original string enclosed in
+# arrows. In ASCII art the string "foo" would render as:
+# -->foo<--
+#
+# Unicode right pointing arrow: u'\u2192', utf-8 = '\xe2\x86\x92'
+# Unicode left pointing arrow:  u'\u2190', utf-8 = '\xe2\x86\x90'
+#
+# The sed command below performs the prefix and suffix substitution.
+#
+# When msginit is invoked with an English target locale it copies the msgid
+# into the msgstr. This is an undocumented feature of msginit. Otherwise the
+# msgstr will be set to the empty string (i.e. untranslated). We depend on
+# the msgid being copied to the msgstr.
+
+test_lang:
+	rm -rf test.po test_locale
+	$(MSGINIT) --no-translator -i $(DOMAIN).pot -l en_US -o test.po
+	$(SED) -i -r -e 's/Language: en_US/Language: xh_ZA/' test.po
+	$(SED) -i -r -e 's/^msgstr[ \t]+"(..*)"[ \t]*$$/msgstr "\xe2\x86\x92\1\xe2\x86\x90"/' test.po
+	$(SED) -i -r -e 's/^msgstr[ \t]+"(.*)(\\n)(.)"[ \t]*$$/msgstr "\1\xe2\x86\x90\2"/' test.po
+	$(MKDIR_P) test_locale/xh_ZA/LC_MESSAGES
+	$(MSGFMT) -o test_locale/xh_ZA/LC_MESSAGES/ipa.mo test.po
+
+test: test_lang
+	./test_i18n.py
+
+debug:
+	@echo Python potfiles:
+	@echo PY_FILES = $(PY_FILES)
+	@echo PY_EXPLICIT_FILES = $(PY_EXPLICIT_FILES)
+	@echo C potfiles:
+	@echo C_FILES = $(C_FILES)
+	@echo H_FILES = $(H_FILES)
+

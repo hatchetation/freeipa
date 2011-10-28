@@ -1,0 +1,49 @@
+options {
+	// turns on IPv6 for port 53, IPv4 is on by default for all ifaces
+	listen-on-v6 {any;};
+
+	// Put files that named is allowed to write in the data/ directory:
+	directory "/var/named"; // the default
+	dump-file		"data/cache_dump.db";
+	statistics-file		"data/named_stats.txt";
+	memstatistics-file	"data/named_mem_stats.txt";
+
+	forward first;
+	forwarders {$FORWARDERS};
+
+	// Any host is permitted to issue recursive queries
+	allow-recursion { any; };
+
+	tkey-gssapi-credential "DNS/$FQDN";
+	tkey-domain "$REALM";
+};
+
+/* If you want to enable debugging, eg. using the 'rndc trace' command,
+ * By default, SELinux policy does not allow named to modify the /var/named directory,
+ * so put the default debug log file in data/ :
+ */
+logging {
+	channel default_debug {
+		file "data/named.run";
+		severity dynamic;
+	};
+};
+
+zone "." IN {
+	type hint;
+	file "named.ca";
+};
+
+include "/etc/named.rfc1912.zones";
+
+dynamic-db "ipa" {
+	library "ldap.so";
+	arg "uri ldapi://%2fvar%2frun%2fslapd-$SERVER_ID.socket";
+	arg "base cn=dns, $SUFFIX";
+	arg "fake_mname $FQDN.";
+	arg "auth_method sasl";
+	arg "sasl_mech GSSAPI";
+	arg "sasl_user DNS/$FQDN";
+	arg "zone_refresh $ZONE_REFRESH";
+	arg "psearch $PERSISTENT_SEARCH";
+};

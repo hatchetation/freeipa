@@ -1,0 +1,78 @@
+#!/usr/bin/python
+
+"""
+Run IPA unit tests under multiple versions of Python (if present).
+"""
+
+import sys
+import optparse
+import os
+from os import path
+from subprocess import call
+
+versions = ('2.4', '2.5', '2.6', '2.7')
+python = '/usr/bin/python'
+nose = '/usr/bin/nosetests'
+ran = []
+fail = []
+
+parser = optparse.OptionParser(
+	usage='usage: %prog [MODULE...]',
+)
+parser.add_option('--stop',
+	action='store_true',
+	default=False,
+	help='Stop running tests after the first error or failure',
+)
+parser.add_option('--pdb',
+	action='store_true',
+	default=False,
+	help='Drop into debugger on errors',
+)
+parser.add_option('--pdb-failures',
+	action='store_true',
+	default=False,
+	help='Drop into debugger on failures',
+)
+(options, args) = parser.parse_args()
+
+cmd = [nose] + args + [
+    '-v',
+    '--with-doctest',
+    '--doctest-tests',
+    '--exclude=plugins',
+]
+if options.stop:
+    cmd.append('--stop')
+if options.pdb:
+    cmd.append('--pdb')
+if options.pdb_failures:
+    cmd.append('--pdb-failures')
+
+
+# This must be set so ipalib.api gets initialized property for tests:
+os.environ['IPA_UNIT_TEST_MODE'] = 'cli_test'
+
+if not path.isfile(nose):
+    print 'ERROR: need %r' % nose
+    sys.exit(100)
+for v in versions:
+    pver = python + v
+    if not path.isfile(pver):
+        continue
+    if 0 != call([pver] + cmd):
+        fail.append(pver)
+    ran.append(pver)
+
+
+print '=' * 70
+for pver in ran:
+    if pver in fail:
+        print 'FAILED under %r' % pver
+    else:
+        print 'passed under %r' % pver
+print ''
+if fail:
+    print '** FAIL **'
+else:
+    print '** pass **'
