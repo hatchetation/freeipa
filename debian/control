@@ -12,7 +12,8 @@ Build-Depends: debhelper (>= 7),
  dpatch,
  python-support,
  libssl-dev,
- python-all-dev
+ python-all-dev,
+ quilt,
 Standards-Version: 3.8.0
 Vcs-Git: git://git.debian.org/git/collab-maint/freeipa.git
 Vcs-Browser: http://anonscm.debian.org/gitweb/?p=collab-maint/freeipa.git

@@ -12,13 +12,8 @@ SUBDIRS_INDEP=ipa-admintools
 export DH_OPTIONS
 PYVERS=$(shell pyversions -d)
 
-patch: patch-stamp
-patch-stamp:
-	dpatch apply-all
-	dpatch cat-all >patch-stamp
-
 configure: configure-stamp
-configure-stamp: patch
+configure-stamp:
 	dh_testdir
 	$(MAKE) IPA_VERSION_IS_GIT_SNAPSHOT=no version-update
 	cd ipa-server; libtoolize --copy --force; aclocal; autoheader; automake --add-missing --gnu; autoconf; ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var --libdir=/usr/lib
@@ -32,7 +27,7 @@ build-stamp: configure
 	done
 	touch $@
 
-clean: clean-patched unpatch
+clean: clean-patched
 clean-patched:
 	dh_testdir
 	dh_testroot
@@ -48,10 +43,6 @@ clean-patched:
 	find . -name "Makefile.in" -exec rm -f "{}" \;
 	find . -name "configure" -exec rm -f "{}" \;
 	dh_clean 
-
-unpatch:
-	dpatch deapply-all
-	rm -rf patch-stamp debian/patched
 
 install: $(PYVERS:%=install-%)
 	dh_testdir
