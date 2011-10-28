@@ -14,8 +14,8 @@ Build-Depends: debhelper (>= 7),
  libssl-dev,
  python-all-dev
 Standards-Version: 3.8.0
-Vcs-Svn: svn://svn.debian.org/svn/pkg-fedora-ds/freeipa/trunk/
-Vcs-Browser: http://svn.debian.org/viewsvn/pkg-fedora-ds/freeipa/trunk/
+Vcs-Git: git://git.debian.org/git/collab-maint/freeipa.git
+Vcs-Browser: http://anonscm.debian.org/gitweb/?p=collab-maint/freeipa.git
 Homepage: http://www.freeipa.org
 
 Package: freeipa-server
