@@ -10,50 +10,50 @@ export SUPPORTED_PLATFORM=debian
 
 override_dh_auto_clean:
 	rm -rf ipa-python/build
-	for i in "ipa-server" "ipa-client"; do \
-		(cd $$i && [ ! -f Makefile ] || $(MAKE) distclean); \
-		(cd $$i && rm -f COPYING INSTALL depcomp install-sh missing py-compile config.guess config.sub aclocal.m4 config.h.in version.m4); \
-	done
+#	for i in "ipa-server" "ipa-client"; do \
+#		(cd $$i && [ ! -f Makefile ] || $(MAKE) distclean); \
+#		(cd $$i && rm -f COPYING INSTALL depcomp install-sh missing py-compile config.guess config.sub aclocal.m4 config.h.in version.m4); \
+#	done
 	find . -name "*.pyo" -o -name "*.pyc" -type f -exec rm -f "{}" \;
 	find . -name "ltmain.sh" -exec rm -f "{}" \;
 	find . -name "configure" -exec rm -f "{}" \;
 	dh_clean 
 	rm -rf $(DESTDIR)
 
-override_dh_autoreconf:
-	cd ipa-client; dh_autoreconf; cd ..
-	ifneq ($(ONLY_CLIENT),1)
-		cd daemons; dh_autoreconf; cd ..
-		cd install; dh_autoreconf; cd ..
-	endif
+#override_dh_autoreconf:
+#	dh_autoreconf; cd ..
+#	ifneq ($(ONLY_CLIENT), 1)
+#		cd daemons; dh_autoreconf; cd ..
+#		cd install; dh_autoreconf; cd ..
+#	endif
 
 override_dh_auto_configure:
 	$(MAKE) version-update
 	cd ipa-client; dh_auto_configure; cd ..
-	ifneq ($(ONLY_CLIENT),1)
-	    cd daemons; dh_auto_configure --with-openldap; cd ..
-	    cd install; dh_auto_configure; cd ..
-	endif
+ifneq ($(ONLY_CLIENT), 1)
+	cd daemons; dh_auto_configure --with-openldap; cd ..
+	cd install; dh_auto_configure; cd ..
+endif
 
 override_dh_auto_build:
-	ifneq ($(ONLY_CLIENT),1)
-	    make IPA_VERSION_IS_GIT_SNAPSHOT=no all
-	    cd selinux ; make all
-	else
-	    make IPA_VERSION_IS_GIT_SNAPSHOT=no client
-	endif
+ifneq ($(ONLY_CLIENT), 1)
+	make IPA_VERSION_IS_GIT_SNAPSHOT=no all
+	cd selinux ; make all
+else
+	make IPA_VERSION_IS_GIT_SNAPSHOT=no client
+endif
 
 override_dh_install:
-	ifneq ($(ONLY_CLIENT),1)
-		# Force re-generate of platform support
-		rm -f ipapython/services.py
-		make install DESTDIR=$(DESTDIR)
-		cd selinux
-		make install DESTDIR=$(DESTDIR)
-		cd ..
-	else
-		make client-install DESTDIR=$(DESTDIR)
-	endif
+ifneq ($(ONLY_CLIENT), 1)
+	# Force re-generate of platform support
+	rm -f ipapython/services.py
+	make install DESTDIR=$(DESTDIR)
+	cd selinux
+	make install DESTDIR=$(DESTDIR)
+	cd ..
+else
+	make client-install DESTDIR=$(DESTDIR)
+endif
 
 	mkdir -p $(DESTDIR)/etc/ipa
 	touch $(DESTDIR)/etc/ipa/default.conf
