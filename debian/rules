@@ -48,12 +48,12 @@ override_dh_auto_install:
 ifneq ($(ONLY_CLIENT), 1)
 	# Force re-generate of platform support
 	rm -f ipapython/services.py
-	make install DESTDIR=$(DESTDIR)
+	make IPA_VERSION_IS_GIT_SNAPSHOT=no install DESTDIR=$(DESTDIR)
 	cd selinux
-	make install DESTDIR=$(DESTDIR)
+	make IPA_VERSION_IS_GIT_SNAPSHOT=no install DESTDIR=$(DESTDIR)
 	cd ..
 else
-	make client-install DESTDIR=$(DESTDIR)
+	make IPA_VERSION_IS_GIT_SNAPSHOT=no client-install DESTDIR=$(DESTDIR)
 endif
 
 	mkdir -p $(DESTDIR)/etc/ipa
