@@ -28,11 +28,10 @@ override_dh_auto_clean:
 #	endif
 
 override_dh_auto_configure:
-	$(MAKE) version-update
-	cd ipa-client; dh_auto_configure; cd ..
+	dh_auto_configure -Dipa-client
 ifneq ($(ONLY_CLIENT), 1)
-	cd daemons; dh_auto_configure --with-openldap; cd ..
-	cd install; dh_auto_configure; cd ..
+	dh_auto_configure -Ddaemons -- --with-openldap
+	dh_auto_configure -Dinstall
 endif
 
 override_dh_auto_build:
