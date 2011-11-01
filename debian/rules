@@ -60,7 +60,7 @@ endif
 	touch $(DESTDIR)/etc/ipa/default.conf
 	mkdir -p $(DESTDIR)/var/lib/ipa-client/sysrestore
 
-	dh_install
+	dh_install --list-missing
 
 %:
 	dh $@ --with quilt,autoreconf
