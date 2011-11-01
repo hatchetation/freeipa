@@ -28,6 +28,7 @@ override_dh_auto_clean:
 #	endif
 
 override_dh_auto_configure:
+	make IPA_VERSION_IS_GIT_SNAPSHOT=no version-update
 	dh_auto_configure -Dipa-client
 ifneq ($(ONLY_CLIENT), 1)
 	dh_auto_configure -Ddaemons -- --with-openldap
