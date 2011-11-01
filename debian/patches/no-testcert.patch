@@ -1,0 +1,13 @@
+diff --git a/Makefile b/Makefile
+index 9d88025..9d1cbb5 100644
+--- a/Makefile
++++ b/Makefile
+@@ -84,7 +84,7 @@ lint:
+ 
+ test:
+ 	$(MAKE) -C install/po test_lang
+-	./make-testcert
++#	./make-testcert
+ 	./make-test
+ 
+ release-update:
