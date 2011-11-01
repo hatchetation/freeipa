@@ -2,12 +2,20 @@ diff --git a/Makefile b/Makefile
 index 9d88025..d949d82 100644
 --- a/Makefile
 +++ b/Makefile
+@@ -9,6 +9,7 @@ RPMBUILD ?= $(PWD)/rpmbuild
+ TARGET ?= master
+ 
+ SUPPORTED_PLATFORM=redhat
++PYTHONLIBDIR ?= $(shell  python -c "from distutils.sysconfig import *; print get_python_lib()")
+ 
+ # After updating the version in VERSION you should run the version-update
+ # target.
 @@ -76,7 +76,7 @@ client-install: client
  	if [ "$(DESTDIR)" = "" ]; then \
  		python setup-client.py install; \
  	else \
 -		python setup-client.py install --root $(DESTDIR); \
-+		python setup-client.py install --root $(DESTDIR) --install-layout=deb; \
++		python setup-client.py install --root $(DESTDIR) --install-lib=$(PYTHONLIBDIR); \
  	fi
  
  lint:
@@ -20,7 +28,7 @@ index a09ffd1..112b02a 100644
  		python setup.py install; \
  	else \
 -		python setup.py install --root $(DESTDIR); \
-+		python setup.py install --root $(DESTDIR) --install-layout=deb; \
++		python setup.py install --root $(DESTDIR) --install-lib=$(PYTHONLIBDIR); \
  	fi
  	@for subdir in $(SUBDIRS); do \
  		(cd $$subdir && $(MAKE) $@) || exit 1; \
