@@ -9,8 +9,7 @@ DESTDIR=$(CURDIR)/debian/tmp
 export SUPPORTED_PLATFORM=debian
 
 override_dh_auto_clean:
-	rm -rf ipa-python/build
-	for i in daemons install ipaserver ipa-client; do \
+	for i in daemons install ipapython ipaserver ipa-client; do \
 		(cd $$i && [ ! -f Makefile ] || $(MAKE) distclean); \
 		(cd $$i && rm -f COPYING INSTALL depcomp install-sh missing py-compile config.guess config.sub aclocal.m4 config.h.in version.m4); \
 	done
@@ -18,6 +17,7 @@ override_dh_auto_clean:
 	find . -name "ltmain.sh" -exec rm -f "{}" \;
 	find . -name "configure" -exec rm -f "{}" \;
 	rm -rf daemons/ipa-version.h freeipa.spec freeipa.egg-info ipa-client/ipa-client.spec version.m4
+	rm -rf ipapython/build RELEASE build
 	dh_clean 
 	rm -rf $(DESTDIR)
 
