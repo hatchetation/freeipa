@@ -1,1 +1,0 @@
-shlibs:Depends=libc6 (>= 2.7-1), libcomerr2 (>= 1.33-3), libkrb53 (>= 1.6.dfsg.2), libmozldap-0d (>= 0.6.5), libnspr4-0d (>= 1.8.0.10), libnss3-1d (>= 3.12.0~1.9b1), libpopt0 (>= 1.14), libsasl2-2, libssl0.9.8 (>= 0.9.8f-5)
