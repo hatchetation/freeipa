@@ -46,7 +46,7 @@ ifeq ($(ONLY_CLIENT), 1)
 override_dh_auto_test:
 endif
 
-override_dh_install:
+override_dh_auto_install:
 ifneq ($(ONLY_CLIENT), 1)
 	# Force re-generate of platform support
 	rm -f ipapython/services.py
