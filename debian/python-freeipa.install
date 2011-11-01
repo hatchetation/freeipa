@@ -1,3 +1,4 @@
 #etc/ipa/ipa.conf
 usr/lib/python2.7/dist-packages/ipalib/*
 usr/lib/python2.7/dist-packages/ipapython/*
+usr/share/locale
