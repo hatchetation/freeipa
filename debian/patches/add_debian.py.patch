@@ -128,11 +128,11 @@ index e69de29..ba8bf2d 100644
 +        services = dict()
 +        for s in base.wellknownservices:
 +            if s == "certmonger":
-+                services[s] = DebianService("apache2")
++                services[s] = DebianService("certmonger")
 +            elif s == "messagebus":
 +                services[s] = DebianService("dbus")
 +            elif s == "ntpd":
-+                services[s] = DebianService("openntpd")
++                services[s] = DebianService("ntp")
 +            else:
 +                services[s] = DebianService(s)
 +        # Call base class constructor. This will lock services to read-only
