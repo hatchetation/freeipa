@@ -6,7 +6,7 @@ export DH_VERBOSE=1
 ONLY_CLIENT=1
 DESTDIR=$(CURDIR)/debian/tmp
 
-export SUPPORTED_PLATFORM=debian
+PLATFORM="SUPPORTED_PLATFORM=debian"
 
 override_dh_auto_clean:
 	for i in daemons install ipapython ipaserver ipa-client; do \
@@ -34,10 +34,10 @@ endif
 
 override_dh_auto_build:
 ifneq ($(ONLY_CLIENT), 1)
-	make IPA_VERSION_IS_GIT_SNAPSHOT=no all
+	make $(PLATFORM) IPA_VERSION_IS_GIT_SNAPSHOT=no all
 	cd selinux ; make all
 else
-	make IPA_VERSION_IS_GIT_SNAPSHOT=no client
+	make $(PLATFORM) IPA_VERSION_IS_GIT_SNAPSHOT=no client
 endif
 
 ifeq ($(ONLY_CLIENT), 1)
@@ -48,12 +48,12 @@ override_dh_auto_install:
 ifneq ($(ONLY_CLIENT), 1)
 	# Force re-generate of platform support
 	rm -f ipapython/services.py
-	make IPA_VERSION_IS_GIT_SNAPSHOT=no install DESTDIR=$(DESTDIR)
+	make $(PLATFORM) IPA_VERSION_IS_GIT_SNAPSHOT=no install DESTDIR=$(DESTDIR)
 	cd selinux
-	make IPA_VERSION_IS_GIT_SNAPSHOT=no install DESTDIR=$(DESTDIR)
+	make $(PLATFORM) IPA_VERSION_IS_GIT_SNAPSHOT=no install DESTDIR=$(DESTDIR)
 	cd ..
 else
-	make IPA_VERSION_IS_GIT_SNAPSHOT=no client-install DESTDIR=$(DESTDIR)
+	make $(PLATFORM) IPA_VERSION_IS_GIT_SNAPSHOT=no client-install DESTDIR=$(DESTDIR)
 endif
 
 	mkdir -p $(DESTDIR)/etc/ipa
