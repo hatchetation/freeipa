@@ -16,7 +16,7 @@ index 9a59d9b..857e1c7 100644
  	if not qdata:
  		return []
 -	answer = acutil.res_send(qdata)
-+	answer = none
++	answer = None
  	if not answer:
  		return []
  	return dnsParseResults(answer)
