@@ -365,7 +365,7 @@ class KrbInstance(service.Service):
         replacevars = {'KRB5REALM':self.realm}
         appendvars = {}
         if workers and cpus > 1:
-            appendvars = {'KRB5KDC_ARGS': "-w %s" % str(cpus)}
+            appendvars = {'KRB5KDC_ARGS': "'-w %s'" % str(cpus)}
         ipautil.backup_config_and_replace_variables(self.fstore, "/etc/sysconfig/krb5kdc",
                                                     replacevars=replacevars,
                                                     appendvars=appendvars)
@@ -488,6 +488,7 @@ class KrbInstance(service.Service):
         self.fstore.backup_file("/etc/dirsrv/ds.keytab")
         installutils.create_keytab("/etc/dirsrv/ds.keytab", ldap_principal)
 
+        update_key_val_in_file("/etc/sysconfig/dirsrv", "KRB5_KTNAME", "/etc/dirsrv/ds.keytab")
         update_key_val_in_file("/etc/sysconfig/dirsrv", "export KRB5_KTNAME", "/etc/dirsrv/ds.keytab")
         pent = pwd.getpwnam(dsinstance.DS_USER)
         os.chown("/etc/dirsrv/ds.keytab", pent.pw_uid, pent.pw_gid)

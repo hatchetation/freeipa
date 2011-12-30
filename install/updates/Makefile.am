@@ -20,10 +20,12 @@ app_DATA =				\
 	21-replicas_container.update	\
 	40-delegation.update		\
 	40-dns.update			\
+	40-automember.update		\
 	45-roles.update			\
 	50-lockout-policy.update	\
 	50-groupuuid.update		\
 	50-hbacservice.update		\
+	50-nis.update			\
 	$(NULL)
 
 EXTRA_DIST =				\

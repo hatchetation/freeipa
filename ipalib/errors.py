@@ -102,6 +102,7 @@ current block assignments:
 
 from inspect import isclass
 from text import _ as ugettext, ngettext as ungettext
+from text import Gettext, NGettext
 from constants import TYPE_ERROR
 
 
@@ -268,7 +269,9 @@ class PublicError(StandardError):
             else:
                 self.strerror = self.format % kw
         else:
-            if type(message) is not unicode:
+            if isinstance(message, (Gettext, NGettext)):
+                message = unicode(message)
+            elif type(message) is not unicode:
                 raise TypeError(
                     TYPE_ERROR % ('message', unicode, message, type(message))
                 )
@@ -437,6 +440,23 @@ class XMLRPCMarshallError(PublicError):
 
     errno = 910
     format = _('error marshalling data for XML-RPC transport: %(error)s')
+
+
+class RefererError(PublicError):
+    """
+    **911** Raised when the the request does not contain an HTTP referer
+
+    For example:
+
+    >>> raise RefererError()
+    Traceback (most recent call last):
+      ...
+    RefererError: Missing or invalid HTTP Referer
+    """
+
+    errno = 911
+    format = _('Missing or invalid HTTP Referer, %(referer)s')
+
 
 ##############################################################################
 # 1000 - 1999: Authentication errors
