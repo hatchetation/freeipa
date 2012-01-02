@@ -1,6 +1,7 @@
 freeipa (2.1.4-1) UNRELEASED; urgency=low
 
   [ Michele Baldessari ]
+  * Initial release (Closes: #12345)
   * New upstream
   * Dropped 10_ipa_kpasswd patch, applied upstream
 
@@ -20,9 +21,3 @@ freeipa (2.1.4-1) UNRELEASED; urgency=low
   * Add --list-missing for dh_install.
 
  -- Timo Aaltonen <tjaalton@ubuntu.com>  Tue, 01 Nov 2011 10:52:25 -0400
-
-freeipa (1.2.0-1) UNRELEASED; urgency=low
-
-  * Initial release (Closes: #12345)
-
- -- Michele Baldessari <michele@pupazzo.org>  Mon, 24 Nov 2008 22:22:16 +0100

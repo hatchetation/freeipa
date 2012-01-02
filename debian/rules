@@ -1,9 +1,9 @@
 #!/usr/bin/make -f 
 
 # Uncomment this to turn on verbose mode.
-export DH_VERBOSE=1
+#export DH_VERBOSE=1
 
-ONLY_CLIENT=1
+ONLY_CLIENT=0
 DESTDIR=$(CURDIR)/debian/tmp
 
 PLATFORM="SUPPORTED_PLATFORM=debian"
@@ -35,7 +35,7 @@ endif
 override_dh_auto_build:
 ifneq ($(ONLY_CLIENT), 1)
 	make $(PLATFORM) IPA_VERSION_IS_GIT_SNAPSHOT=no all
-	cd selinux ; make all
+#	cd selinux ; make all
 else
 	make $(PLATFORM) IPA_VERSION_IS_GIT_SNAPSHOT=no client
 endif
@@ -49,8 +49,8 @@ ifneq ($(ONLY_CLIENT), 1)
 	# Force re-generate of platform support
 	rm -f ipapython/services.py
 	make $(PLATFORM) IPA_VERSION_IS_GIT_SNAPSHOT=no install DESTDIR=$(DESTDIR)
-	cd selinux
-	make $(PLATFORM) IPA_VERSION_IS_GIT_SNAPSHOT=no install DESTDIR=$(DESTDIR)
+#	cd selinux
+#	make $(PLATFORM) IPA_VERSION_IS_GIT_SNAPSHOT=no install DESTDIR=$(DESTDIR)
 	cd ..
 else
 	make $(PLATFORM) IPA_VERSION_IS_GIT_SNAPSHOT=no client-install DESTDIR=$(DESTDIR)
@@ -59,6 +59,9 @@ endif
 	mkdir -p $(DESTDIR)/etc/ipa
 	touch $(DESTDIR)/etc/ipa/default.conf
 	mkdir -p $(DESTDIR)/var/lib/ipa-client/sysrestore
+
+	# purge .la files
+	find $(CURDIR)/debian/tmp -name "*.la" -type f -exec rm -f "{}" \;
 
 	dh_install --list-missing
 

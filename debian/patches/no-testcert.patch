@@ -1,8 +1,8 @@
-diff --git a/Makefile b/Makefile
-index 9d88025..9d1cbb5 100644
---- a/Makefile
-+++ b/Makefile
-@@ -84,7 +84,7 @@ lint:
+Index: freeipa/Makefile
+===================================================================
+--- freeipa.orig/Makefile	2011-12-31 04:02:56.140475799 +0200
++++ freeipa/Makefile	2011-12-31 04:04:39.887587352 +0200
+@@ -84,7 +84,7 @@
  
  test:
  	$(MAKE) -C install/po test_lang

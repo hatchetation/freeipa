@@ -5,3 +5,4 @@ add_debian.py.patch
 include-stdint.patch
 no-arrows.patch
 no-testcert.patch
+prefix.patch
