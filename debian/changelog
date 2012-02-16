@@ -19,7 +19,7 @@ freeipa (2.1.4-1) UNRELEASED; urgency=low
   * Bump compat to 8.
   * Add missing files to freeipa.install.
   * Add --list-missing for dh_install.
-  * copyright: Updated.
+  * copyright: Updated, with OpenSSL exception.
   * control: Add python-libipa-hbac to build-depends.
   * control: Add ${shlibs:Depends} to python-freeipa depends.
   * rules: Strip the executable bit from translation files.
