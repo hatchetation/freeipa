@@ -26,7 +26,7 @@ Build-Depends: quilt, debhelper (>= 8.1.3~), dh-autoreconf,
  python-sss,
  python-support,
 # server
- libdirsrv-dev (>= 1.1.3),
+ 389-ds-base-dev (>= 1.1.3),
  libsvrcore-dev,
  uuid-dev,
  selinux-policy-dev,
