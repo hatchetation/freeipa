@@ -119,7 +119,7 @@ Description: FreeIPA is a centralized identity framework
 Package: python-freeipa
 Architecture: any
 Section: python
-Depends: ${python:Depends}, ${misc:Depends},
+Depends: ${shlibs:Depends}, ${python:Depends}, ${misc:Depends},
  gnupg,
  iproute,
  python-kerberos,
