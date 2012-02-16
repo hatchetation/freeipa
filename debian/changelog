@@ -20,5 +20,6 @@ freeipa (2.1.4-1) UNRELEASED; urgency=low
   * Add missing files to freeipa.install.
   * Add --list-missing for dh_install.
   * copyright: Updated.
+  * control: Add python-libipa-hbac to build-depends.
 
  -- Timo Aaltonen <tjaalton@ubuntu.com>  Tue, 01 Nov 2011 10:52:25 -0400
