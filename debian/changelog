@@ -22,5 +22,6 @@ freeipa (2.1.4-1) UNRELEASED; urgency=low
   * copyright: Updated.
   * control: Add python-libipa-hbac to build-depends.
   * control: Add ${shlibs:Depends} to python-freeipa depends.
+  * rules: Strip the executable bit from translation files.
 
  -- Timo Aaltonen <tjaalton@ubuntu.com>  Tue, 01 Nov 2011 10:52:25 -0400
