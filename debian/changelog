@@ -1,4 +1,4 @@
-freeipa (2.1.4-0ubuntu1) UNRELEASED; urgency=low
+freeipa (2.1.4-0ubuntu1) precise; urgency=low
 
   * Merge from unreleased debian git.
   * Build only the client package.
@@ -10,7 +10,7 @@ freeipa (2.1.4-0ubuntu1) UNRELEASED; urgency=low
   * rules: Strip the executable bit from translation files.
   * fix-format-string.diff: Fix build errors, thanks Krzysztof Klimonda!
 
- -- Timo Aaltonen <tjaalton@ubuntu.com>  Thu, 16 Feb 2012 22:29:00 +0200
+ -- Timo Aaltonen <tjaalton@ubuntu.com>  Thu, 16 Feb 2012 23:02:08 +0200
 
 freeipa (2.1.4-1) UNRELEASED; urgency=low
 
