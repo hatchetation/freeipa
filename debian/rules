@@ -63,6 +63,9 @@ endif
 	# purge .la files
 	find $(CURDIR)/debian/tmp -name "*.la" -type f -exec rm -f "{}" \;
 
+	# fix permissions
+	find $(CURDIR)/debian/tmp -name "*.mo" -type f -exec chmod -x "{}" \;
+
 	dh_install --list-missing
 
 %:

@@ -1,5 +1,5 @@
-usr/lib/python2.7/dist-packages/ipalib/*
-usr/lib/python2.7/dist-packages/ipapython/*
+usr/lib/python2.7/dist-packages/ipalib/*.py
+usr/lib/python2.7/dist-packages/ipapython/*.py
 usr/lib/python2.7/dist-packages/default_encoding_utf8.so
 usr/lib/python2.7/dist-packages/ipapython-*.egg-info
 usr/lib/python2.7/dist-packages/freeipa-*.egg-info
