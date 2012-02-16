@@ -62,11 +62,12 @@ endif
 
 	# purge .la files
 	find $(CURDIR)/debian/tmp -name "*.la" -type f -exec rm -f "{}" \;
-
+	# purge precompiled .pyc/.pyo files
+	find $(CURDIR)/debian/tmp -name '*.py[c,o]' -exec rm '{}' ';'
 	# fix permissions
 	find $(CURDIR)/debian/tmp -name "*.mo" -type f -exec chmod -x "{}" \;
 
 	dh_install --list-missing
 
 %:
-	dh $@ --with quilt,autoreconf
+	dh $@ --with quilt,autoreconf,python2
