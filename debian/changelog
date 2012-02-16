@@ -16,7 +16,7 @@ freeipa (2.1.4-1) UNRELEASED; urgency=low
   * Add include-stdint.patch from upstream to fix build errors.
   * Add no-arrows.patch to not fail test_lang.
   * Add no-testcert.patch to not fail make-testcert.
-  * Bump compat to 8.
+  * Bump compat to 9.
   * Add missing files to freeipa.install.
   * Add --list-missing for dh_install.
   * copyright: Updated, with OpenSSL exception.
