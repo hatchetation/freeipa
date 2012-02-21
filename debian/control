@@ -16,7 +16,7 @@ Build-Depends: quilt, debhelper (>= 8.1.3~), dh-autoreconf,
  libsasl2-dev,
  libssl-dev,
  libxmlrpc-c3-dev,
- python-dev,
+ python-all-dev,
  python-kerberos,
  python-krbv,
  python-ldap,
@@ -79,8 +79,7 @@ Homepage: http://www.freeipa.org
 
 Package: freeipa-client
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends},
- python,
+Depends: ${shlibs:Depends}, ${misc:Depends}, ${python:Depends},
  python-freeipa (= ${binary:Version}),
  bind9utils,
  certmonger,

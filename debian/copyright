@@ -1,132 +1,49 @@
-X-Format-Specification: http://wiki.debian.org/Proposals/CopyrightFormat
-X-Debianized-By: Michele Baldessari <michele@pupazzo.org>
-X-Debianized-Date: Mon, 24 Nov 2008 23:36:42 +0200.
-X-Source-Downloaded-From: http://freeipa.org/downloads/src/
+Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-name: freeipa
+Source: http://freeipa.org/downloads/src/
 
-Files: include/*.h, include/public/*.h, include/public/nsacl.h,
- include/public/base/*.h, include/libaccess/*.h, include/ldaputil/*.h,
- include/libadmin/*.h, include/base/*.h, lib/base/*, lib/libsi18n/*,
- lib/libadmin/*, lib/ldaputil/*.[ch], lib/ldaputil/examples/*,
- lib/ldaputil/utest/*, lib/libaccess/*, lib/libaccess/utest/*, 
- wrappers/*, ldap/admin/src/*, ldap/admin/src/scripts/*, ldap/ldif/*,
- ldap/servers/slapd/*.[ch], ldap/servers/slapd/back-ldbm/*.[ch],
- ldap/servers/slapd/back-ldbm/tools/index_dump/*, 
- ldap/servers/slapd/back-ldif/*, ldap/servers/slapd/ntmsgdll/*,
- ldap/servers/slapd/ntperfdll/*, ldap/servers/slapd/ntwdog/*,
- ldap/servers/slapd/test-plugins/*, ldap/servers/slapd/tools/dbscan.c,
- ldap/servers/slapd/tools/eggencode.c, ldap/servers/slapd/tools/keyupg.c,
- ldap/servers/slapd/tools/ldif.c, ldap/servers/slapd/tools/migratecred.c,
- ldap/servers/slapd/tools/mkdep.c, ldap/servers/slapd/tools/mmldif.c,
- ldap/servers/slapd/tools/pwenc.c, ldap/servers/slapd/tools/ldclt/*,
- ldap/servers/slapd/tools/rsearch/*, ldap/servers/snmp/ldap-agent.[ch],
- ldap/servers/slapd/snmp/main.c, ldap/servers/snmp/ntagt/*, 
- ldap/servers/slapd/snmp/netscape-ldap.mib, ldap/servers/snmp/redhat-directory.mib,
- ldap/servers/plugins/syntaxes/*, ldap/servers/plugins/uiduniq/*,
- ldap/servers/plugins/referint/*, ldap/servers/plugins/acl/*,
- ldap/servers/plugins/chainingdb/*, ldap/servers/plugins/distrib/*,
- ldap/servers/plugins/dna/*, ldap/servers/plugins/statechange/*,
- ldap/servers/plugins/vattrsp_template/*, ldap/servers/plugins/views/*,
- ldap/servers/plugins/replication/*, ldap/servers/plugins/replication/tests/*,
- ldap/servers/plugins/retrocl/*, ldap/servers/plugins/shared/*,
- ldap/servers/plugins/pwdstorage/*, ldap/servers/plugins/bitwise/*,
- ldap/servers/plugins/pam_passthru/*, ldap/servers/plugins/collation/*,
- ldap/servers/plugins/presence/*, ldap/servers/plugins/cos/*,
- ldap/servers/plugins/http/*, ldap/servers/plugins/rever/*,
- ldap/servers/plugins/passthru/*, ldap/servers/plugins/roles/*,
- ldap/servers/systools/*
-Copyright: © 2001 Sun Microsystems, Inc.
- © 2005 Red Hat, Inc.
-License: GPL-2 | Other
- In addition, as a special exception, Red Hat, Inc. gives You the additional
- right to link the code of this Program with code not covered under the GNU
- General Public License ("Non-GPL Code") and to distribute linked combinations
- including the two, subject to the limitations in this paragraph. Non-GPL Code
- permitted under this exception must only link to the code of this Program
- through those well defined interfaces identified in the file named EXCEPTION
- found in the source code files (the "Approved Interfaces"). The files of
- Non-GPL Code may instantiate templates or use macros or inline functions from
- the Approved Interfaces without causing the resulting work to be covered by
- the GNU General Public License. Only Red Hat, Inc. may make changes or
- additions to the list of Approved Interfaces. You must obey the GNU General
- Public License in all respects for all of the Program code and other code used
- in conjunction with the Program except the Non-GPL Code covered by this
- exception. If you modify this file, you may extend this exception to your
- version of the file, but you are not obligated to do so. If you do not wish to
- provide this exception without modification, you must delete this exception
- statement from your version and license this file solely under the GPL without
- exception.
+Files: *
+Copyright: 1999-2011 Red Hat, Inc.
+License: GPL-3+
 
-Files: ldap/libraries/libavl/*.[ch], ldap/servers/slapd/abandon.c, 
- ldap/servers/slapd/add.c, ldap/servers/slapd/abandon.c, ldap/servers/slapd/add.c,
- ldap/servers/slapd/bind.c, ldap/servers/slapd/bulk_import.c, ldap/servers/slapd/compare.c,
- ldap/servers/slapd/delete.c, ldap/servers/slapd/detach.c, ldap/servers/slapd/globals.c,
- ldap/servers/slapd/modify.c, ldap/servers/slapd/modrdn.c, ldap/servers/slapd/monitor.c,
- ldap/servers/slapd/search.c, ldap/servers/slapd/unbind.c
-Copyright: © 1993 Regents of the University of Michigan
- © 2001 Sun Microsystems, Inc.
- © 2005 Red Hat, Inc.
-License: GPL-2 | Other
- In addition, as a special exception, Red Hat, Inc. gives You the additional
- right to link the code of this Program with code not covered under the GNU
- General Public License ("Non-GPL Code") and to distribute linked combinations
- including the two, subject to the limitations in this paragraph. Non-GPL Code
- permitted under this exception must only link to the code of this Program
- through those well defined interfaces identified in the file named EXCEPTION
- found in the source code files (the "Approved Interfaces"). The files of
- Non-GPL Code may instantiate templates or use macros or inline functions from
- the Approved Interfaces without causing the resulting work to be covered by
- the GNU General Public License. Only Red Hat, Inc. may make changes or
- additions to the list of Approved Interfaces. You must obey the GNU General
- Public License in all respects for all of the Program code and other code used
- in conjunction with the Program except the Non-GPL Code covered by this
- exception. If you modify this file, you may extend this exception to your
- version of the file, but you are not obligated to do so. If you do not wish to
- provide this exception without modification, you must delete this exception
- statement from your version and license this file solely under the GPL without
- exception.
-
-Files: ldap/servers/slapd/tools/ldaptool.h, ldap/servers/slapd/tools/ldaptool-sasl.c,
- ldap/servers/slapd/tools/ldaptool-sasl.h
-Copyright: © 1998 Netscape Communication Corporation
-License: GPL-2+ | LGPL-2.1+ | MPL-1.1
-
-Files: ldap/servers/snmp/NETWORK-SERVICES-MIB.txt, ldap/servers/snmp/RFC1155-SMI.txt,
- ldap/servers/snmp/RFC-1215.txt, ldap/servers/snmp/SNMPv2-CONF.txt,
- ldap/servers/snmp/SNMPv2-SMI.txt, ldap/servers/snmp/SNMPv2-TC.txt
-Copyright: © IETF???
-License: ??? (mostly derived from RFC texts anyway..not in original form)
-
-# FIXME: check DFSG'ness of RFC w/ schema files
-Files: ldap/schema/*
-Copyright: © 2001 Sun Microsystems, Inc.
- © 2005 Red Hat, Inc.
-License: GPL-2 | Other
- In addition, as a special exception, Red Hat, Inc. gives You the additional
- right to link the code of this Program with code not covered under the GNU
- General Public License ("Non-GPL Code") and to distribute linked combinations
- including the two, subject to the limitations in this paragraph. Non-GPL Code
- permitted under this exception must only link to the code of this Program
- through those well defined interfaces identified in the file named EXCEPTION
- found in the source code files (the "Approved Interfaces"). The files of
- Non-GPL Code may instantiate templates or use macros or inline functions from
- the Approved Interfaces without causing the resulting work to be covered by
- the GNU General Public License. Only Red Hat, Inc. may make changes or
- additions to the list of Approved Interfaces. You must obey the GNU General
- Public License in all respects for all of the Program code and other code used
- in conjunction with the Program except the Non-GPL Code covered by this
- exception. If you modify this file, you may extend this exception to your
- version of the file, but you are not obligated to do so. If you do not wish to
- provide this exception without modification, you must delete this exception
- statement from your version and license this file solely under the GPL without
- exception.
-
-Files: m4/*.m4
-Copyright: © 2006, 2007 Red Hat, Inc.
-License: GPL-2+
+Files: daemons/ipa-slapi-plugins/*/*.c,
+       daemons/ipa-slapi-plugins/*/*.h
+License: GPL-3+ with OpenSSL exception
+ This program is free software; you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation, either version 3 of the License, or
+ (at your option) any later version.
+ .
+ This program is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+ .
+ You should have received a copy of the GNU General Public License
+ along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ .
+ Additional permission under GPLv3 section 7:
+ .
+ In the following paragraph, "GPL" means the GNU General Public
+ License, version 3 or any later version, and "Non-GPL Code" means
+ code that is governed neither by the GPL nor a license
+ compatible with the GPL.
+ .
+ You may link the code of this Program with Non-GPL Code and convey
+ linked combinations including the two, provided that such Non-GPL
+ Code only links to the code of this Program through those well
+ defined interfaces identified in the file named EXCEPTION found in
+ the source code files (the "Approved Interfaces"). The files of
+ Non-GPL Code may instantiate templates or use macros or inline
+ functions from the Approved Interfaces without causing the resulting
+ work to be covered by the GPL. Only the copyright holders of this
+ Program may make changes or additions to the list of Approved
+ Interfaces.
 
 Files: debian/*
-Copyright: © 2008 Michele Baldessari <michele@pupazzo.org>
-License: GPL-2+
+Copyright: Michele Baldessari michele@pupazzo.org>
+           Timo Aaltonen <tjaalton@ubuntu.com>
+License: GPL-3+
 
 On Debian machines the full text of the GNU General Public License 
-can be found in the file /usr/share/common-licenses/GPL-2.
+can be found in the file /usr/share/common-licenses/GPL-3.
