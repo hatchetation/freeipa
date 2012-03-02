@@ -1,5 +1,3 @@
-01_fix_init_dir.patch
-#02_configure.patch
 fix_dnsclient.py.patch
 add_debian.py.patch
 include-stdint.patch
@@ -7,3 +5,4 @@ no-arrows.patch
 no-testcert.patch
 prefix.patch
 fix-string-format.diff
+create-client-dirs.patch

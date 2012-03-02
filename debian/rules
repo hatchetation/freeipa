@@ -56,9 +56,7 @@ else
 	make $(PLATFORM) IPA_VERSION_IS_GIT_SNAPSHOT=no client-install DESTDIR=$(DESTDIR)
 endif
 
-	mkdir -p $(DESTDIR)/etc/ipa
 	touch $(DESTDIR)/etc/ipa/default.conf
-	mkdir -p $(DESTDIR)/var/lib/ipa-client/sysrestore
 
 	# purge .la files
 	find $(CURDIR)/debian/tmp -name "*.la" -type f -exec rm -f "{}" \;

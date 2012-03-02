@@ -1,3 +1,8 @@
+Author: Timo Aaltonen <tjaalton@ubuntu.com>
+Date:   Tue Nov 1 10:53:18 2011 -0400
+
+    Add no-arrows.patch to not fail test_lang.
+
 diff --git a/install/po/Makefile.in b/install/po/Makefile.in
 index 49d125d..e04341b 100644
 --- a/install/po/Makefile.in

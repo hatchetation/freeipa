@@ -6,8 +6,9 @@ Files: *
 Copyright: 1999-2011 Red Hat, Inc.
 License: GPL-3+
 
-Files: daemons/ipa-slapi-plugins/*/*.c,
+Files: daemons/ipa-slapi-plugins/*/*.c
        daemons/ipa-slapi-plugins/*/*.h
+Copyright: 2005-2010 Red Hat, Inc.
 License: GPL-3+ with OpenSSL exception
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -45,5 +46,6 @@ Copyright: Michele Baldessari michele@pupazzo.org>
            Timo Aaltonen <tjaalton@ubuntu.com>
 License: GPL-3+
 
-On Debian machines the full text of the GNU General Public License 
-can be found in the file /usr/share/common-licenses/GPL-3.
+License: GPL-3+
+ On Debian machines the full text of the GNU General Public License 
+ can be found in the file /usr/share/common-licenses/GPL-3.

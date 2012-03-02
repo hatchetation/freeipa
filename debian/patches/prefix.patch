@@ -1,3 +1,8 @@
+Author: Timo Aaltonen <tjaalton@ubuntu.com>
+Date:   Mon Jan 2 16:09:40 2012 +0200
+
+use the debian layout when installing python modules
+
 diff --git a/Makefile b/Makefile
 index 3cd08e2..97af4c0 100644
 --- a/Makefile

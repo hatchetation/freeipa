@@ -23,7 +23,7 @@ freeipa (2.1.4-1) UNRELEASED; urgency=low
   * Add include-stdint.patch from upstream to fix build errors.
   * Add no-arrows.patch to not fail test_lang.
   * Add no-testcert.patch to not fail make-testcert.
-  * Bump compat to 9.
+  * Bump compat and debhelper build-depends to 9.
   * Add missing files to freeipa.install.
   * Add --list-missing for dh_install.
   * copyright: Updated, with OpenSSL exception.
@@ -32,5 +32,9 @@ freeipa (2.1.4-1) UNRELEASED; urgency=low
   * rules: Strip the executable bit from translation files.
   * fix-format-string.diff: Fix build errors, thanks Krzysztof Klimonda!
   * Use dh_python2.
+  * create-client-dirs.patch: Add a patch from upstream that creates
+    /etc/ipa and /var/lib/ipa-client/sysrestore paths. Stop creating them in
+    rules.
+  * Add DEP-3 compliant headers to the patches.
 
  -- Timo Aaltonen <tjaalton@ubuntu.com>  Tue, 01 Nov 2011 10:52:25 -0400
