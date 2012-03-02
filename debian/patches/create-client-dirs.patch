@@ -1,0 +1,44 @@
+commit 534ca86b69b5d5abfe070ddf752e4d8f150ad1e2
+Author: Alexander Bokovoy <abokovoy@redhat.com>
+Date:   Thu Nov 17 10:45:15 2011 +0200
+
+    Create directories for client install
+    
+    When ``make client-install`` is called, create /etc/ipa and
+    /var/lib/ipa-client/sysrestore directories required for successful use of
+    ipa-client-install.
+    
+    Do it only if DESTDIR is set to help packagers to notice that these
+    directories have to exist
+    
+    https://fedorahosted.org/freeipa/ticket/1849
+
+diff --git a/Makefile b/Makefile
+index 318364a..baf6eee 100644
+--- a/Makefile
++++ b/Makefile
+@@ -68,7 +68,7 @@ install: all server-install
+ 		(cd $$subdir && $(MAKE) $@) || exit 1; \
+ 	done
+ 
+-client-install: client
++client-install: client client-dirs
+ 	@for subdir in $(CLIENTDIRS); do \
+ 		(cd $$subdir && $(MAKE) install) || exit 1; \
+ 	done
+@@ -79,6 +79,15 @@ client-install: client
+ 		python setup-client.py install --root $(DESTDIR); \
+ 	fi
+ 
++client-dirs:
++	@if [ "$(DESTDIR)" != "" ] ; then \
++		mkdir -p $(DESTDIR)/etc/ipa ; \
++		mkdir -p $(DESTDIR)/var/lib/ipa-client/sysrestore ; \
++	else \
++		echo "DESTDIR was not set, please create /etc/ipa and /var/lib/ipa-client/sysrestore" ; \
++		echo "Without those directories ipa-client-install will fail" ; \
++	fi
++
+ lint:
+ 	./make-lint $(LINT_OPTIONS)
+ 
