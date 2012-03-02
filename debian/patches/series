@@ -1,5 +1,3 @@
-01_fix_init_dir.patch
-#02_configure.patch
 fix_dnsclient.py.patch
 add_debian.py.patch
 include-stdint.patch
