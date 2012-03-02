@@ -25,5 +25,8 @@ freeipa (2.1.4-1) UNRELEASED; urgency=low
   * rules: Strip the executable bit from translation files.
   * fix-format-string.diff: Fix build errors, thanks Krzysztof Klimonda!
   * Use dh_python2.
+  * create-client-dirs.patch: Add a patch from upstream that creates
+    /etc/ipa and /var/lib/ipa-client/sysrestore paths. Stop creating them in
+    rules.
 
  -- Timo Aaltonen <tjaalton@ubuntu.com>  Tue, 01 Nov 2011 10:52:25 -0400
