@@ -15,7 +15,7 @@ usr/sbin/ipa_kpasswd
 usr/sbin/ipactl
 usr/sbin/ipa-upgradeconfig
 usr/sbin/ipa-compliance
-etc/init.d/ipa_kpasswd
+etc/rc.d/init.d/ipa_kpasswd	etc/init.d
 usr/lib/python*/dist-packages/ipaserver/*
 usr/share/ipa/wsgi.py
 usr/share/ipa/*.ldif
