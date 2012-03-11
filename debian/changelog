@@ -29,5 +29,6 @@ freeipa (2.1.4-1) UNRELEASED; urgency=low
     /etc/ipa and /var/lib/ipa-client/sysrestore paths. Stop creating them in
     rules.
   * Add DEP-3 compliant headers to the patches.
+  * control: client; Move libpam-krb5 to Suggests.
 
  -- Timo Aaltonen <tjaalton@ubuntu.com>  Tue, 01 Nov 2011 10:52:25 -0400

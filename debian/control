@@ -86,13 +86,14 @@ Depends: ${shlibs:Depends}, ${misc:Depends}, ${python:Depends},
  krb5-user,
  libcurl3 (>= 7.22.0),
  libnss3-tools,
- libpam-krb5,
  libsasl2-modules-gssapi-mit,
  libxmlrpc-core-c3 (>= 1.16.33-3.1ubuntu5),
  ntp,
  python-ldap,
  sssd,
  wget,
+Suggests:
+ libpam-krb5,
 Description: FreeIPA is a centralized identity framework
  FreeIPA is an integrated solution to provide centrally managed Identity 
  (machine, user, virtual machines, groups, authentication credentials), Policy
