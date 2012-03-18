@@ -1,7 +1,8 @@
 Source: freeipa
 Section: net
 Priority: extra
-Maintainer: Michele Baldessari <michele@pupazzo.org>
+Maintainer: Debian FreeIPA Team <pkg-freeipa-devel@lists.alioth.debian.org>
+Uploaders: Timo Aaltonen <tjaalton@ubuntu.com>
 Build-Depends: quilt, debhelper (>= 9), dh-autoreconf,
 # client
  gettext,
@@ -35,8 +36,8 @@ Build-Depends: quilt, debhelper (>= 9), dh-autoreconf,
  python-lxml,
  python-nose,
 Standards-Version: 3.9.3
-Vcs-Git: git://git.debian.org/git/collab-maint/freeipa.git
-Vcs-Browser: http://anonscm.debian.org/gitweb/?p=collab-maint/freeipa.git
+Vcs-Git: git://git.debian.org/git/pkg-freeipa/freeipa.git
+Vcs-Browser: http://anonscm.debian.org/gitweb/?p=pkg-freeipa/freeipa.git
 Homepage: http://www.freeipa.org
 
 Package: freeipa-server
