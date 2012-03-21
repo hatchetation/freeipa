@@ -2,7 +2,8 @@ Source: freeipa
 Section: net
 Priority: extra
 Maintainer: Ubuntu FreeIPA <freeipa@lists.launchpad.net>
-XSBC-Original-Maintainer: Michele Baldessari <michele@pupazzo.org>
+XSBC-Original-Maintainer:Maintainer: Debian FreeIPA Team <pkg-freeipa-devel@lists.alioth.debian.org>
+Uploaders: Timo Aaltonen <tjaalton@ubuntu.com>
 Build-Depends: quilt, debhelper (>= 9), dh-autoreconf,
 # client
  gettext,
@@ -36,46 +37,46 @@ Build-Depends: quilt, debhelper (>= 9), dh-autoreconf,
  python-lxml,
  python-nose,
 Standards-Version: 3.9.3
-Vcs-Git: git://git.debian.org/git/collab-maint/freeipa.git
-Vcs-Browser: http://anonscm.debian.org/gitweb/?p=collab-maint/freeipa.git
+Vcs-Git: git://git.debian.org/git/pkg-freeipa/freeipa.git
+Vcs-Browser: http://anonscm.debian.org/gitweb/?p=pkg-freeipa/freeipa.git
 Homepage: http://www.freeipa.org
 
-#Package: freeipa-server
-#Architecture: any
-#Depends: ${shlibs:Depends}, ${misc:Depends},
-# freeipa-client (= ${binary:Version}),
-# freeipa-admintools (= ${binary:Version}),
-# python-freeipa (= ${binary:Version}),
-# 389-ds-base,
-# acl,
-# apache2,
-# dogtag-pki-common-theme,
-# dogtag-pki-ca-theme,
-# krb5-kdc,
-# krb5-kdc-ldap,
-# krb5-pkinit,
-# ldap-utils,
-# libnss3-tools,
-# libsasl2-modules-gssapi-mit,
-# libapache2-mod-wsgi,
-# libapache2-mod-auth-kerb,
-# libapache2-mod-nss,
-# ntp,
-# pki-ca,
-# pki-silent,
-# python-ldap,
-# python-krbv,
-# python-pyasn1,
-## not packaged yet
-## slapi-nis,
-# tomcat6,
-#Description: FreeIPA is a centralized identity framework
-# FreeIPA is an integrated solution to provide centrally managed Identity
-# (machine, user, virtual machines, groups, authentication credentials), Policy
-# (configuration settings, access control information) and Audit (events,
-# logs, analysis thereof).
-# .
-# This is the server package
+Package: freeipa-server
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, ${python:Depends},
+ freeipa-client (= ${binary:Version}),
+ freeipa-admintools (= ${binary:Version}),
+ python-freeipa (= ${binary:Version}),
+ 389-ds-base,
+ acl,
+ apache2,
+ dogtag-pki-common-theme,
+ dogtag-pki-ca-theme,
+ krb5-kdc,
+ krb5-kdc-ldap,
+ krb5-pkinit,
+ ldap-utils,
+ libnss3-tools,
+ libsasl2-modules-gssapi-mit,
+ libapache2-mod-wsgi,
+ libapache2-mod-auth-kerb,
+ libapache2-mod-nss,
+ ntp,
+ pki-ca,
+ pki-silent,
+ python-ldap,
+ python-krbv,
+ python-pyasn1,
+# not packaged yet
+# slapi-nis,
+ tomcat6,
+Description: FreeIPA is a centralized identity framework
+ FreeIPA is an integrated solution to provide centrally managed Identity
+ (machine, user, virtual machines, groups, authentication credentials), Policy
+ (configuration settings, access control information) and Audit (events,
+ logs, analysis thereof).
+ .
+ This is the server package
 
 Package: freeipa-client
 Architecture: any
@@ -87,13 +88,14 @@ Depends: ${shlibs:Depends}, ${misc:Depends}, ${python:Depends},
  krb5-user,
  libcurl3 (>= 7.22.0),
  libnss3-tools,
- libpam-krb5,
  libsasl2-modules-gssapi-mit,
  libxmlrpc-core-c3 (>= 1.16.33-3.1ubuntu5),
  ntp,
  python-ldap,
  sssd,
  wget,
+Suggests:
+ libpam-krb5,
 Description: FreeIPA is a centralized identity framework
  FreeIPA is an integrated solution to provide centrally managed Identity 
  (machine, user, virtual machines, groups, authentication credentials), Policy
@@ -102,20 +104,20 @@ Description: FreeIPA is a centralized identity framework
  .
  This is the client package
 
-#Package: freeipa-admintools
-#Architecture: any
-#Depends: ${shlibs:Depends}, ${misc:Depends},
-# freeipa-client (= ${binary:Version}),
-# python-freeipa (= ${binary:Version}),
-# python-krbv,
-# python-ldap,
-#Description: FreeIPA is a centralized identity framework
-# FreeIPA is an integrated solution to provide centrally managed Identity
-# (machine, user, virtual machines, groups, authentication credentials), Policy
-# (configuration settings, access control information) and Audit (events,
-# logs, analysis thereof).
-# .
-# This is the containing some administration tools
+Package: freeipa-admintools
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, ${python:Depends},
+ freeipa-client (= ${binary:Version}),
+ python-freeipa (= ${binary:Version}),
+ python-krbv,
+ python-ldap,
+Description: FreeIPA is a centralized identity framework
+ FreeIPA is an integrated solution to provide centrally managed Identity
+ (machine, user, virtual machines, groups, authentication credentials), Policy
+ (configuration settings, access control information) and Audit (events,
+ logs, analysis thereof).
+ .
+ This is the containing some administration tools
 
 Package: python-freeipa
 Architecture: any
