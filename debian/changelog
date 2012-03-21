@@ -38,5 +38,6 @@ freeipa (2.1.4-1) UNRELEASED; urgency=low
   * Add DEP-3 compliant headers to the patches.
   * control: client; Move libpam-krb5 to Suggests.
   * control: Update the maintainer address and repo location.
+  * control: Fix package descriptions.
 
  -- Timo Aaltonen <tjaalton@ubuntu.com>  Tue, 01 Nov 2011 10:52:25 -0400
