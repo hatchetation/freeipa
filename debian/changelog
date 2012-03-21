@@ -1,6 +1,6 @@
 freeipa (2.1.4-0ubuntu1) precise; urgency=low
 
-  * Merge from unreleased debian git.
+  * Merge from unreleased debian git (LP: #259547, #958599).
   * Build only the client package.
 
  -- Timo Aaltonen <tjaalton@ubuntu.com>  Thu, 22 Mar 2012 00:17:10 +0200
