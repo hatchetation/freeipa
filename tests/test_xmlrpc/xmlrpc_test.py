@@ -51,7 +51,19 @@ fuzzy_hash = Fuzzy('^([a-f0-9][a-f0-9]:)+[a-f0-9][a-f0-9]$', type=basestring)
 # Matches a date, like Tue Apr 26 17:45:35 2016 UTC
 fuzzy_date = Fuzzy('^[a-zA-Z]{3} [a-zA-Z]{3} \d{2} \d{2}:\d{2}:\d{2} \d{4} UTC$')
 
-fuzzy_issuer = Fuzzy(type=basestring, test=lambda issuer: valid_issuer(issuer, api.env.realm))
+fuzzy_issuer = Fuzzy(type=basestring, test=lambda issuer: valid_issuer(issuer))
+
+fuzzy_hex = Fuzzy('^0x[0-9a-fA-F]+$', type=basestring)
+
+# Matches password - password consists of all printable characters without whitespaces
+# The only exception is space, but space cannot be at the beggingin or end of the pwd
+fuzzy_password = Fuzzy('^\S([\S ]*\S)*$')
+
+# Matches generalized time value. Time format is: %Y%m%d%H%M%SZ
+fuzzy_dergeneralizedtime = Fuzzy('^[0-9]{14}Z$')
+
+# match any string
+fuzzy_string = Fuzzy(type=basestring)
 
 try:
     if not api.Backend.xmlclient.isconnected():
@@ -110,11 +122,13 @@ class XMLRPC_test(object):
     Base class for all XML-RPC plugin tests
     """
 
-    def setUp(self):
+    @classmethod
+    def setUpClass(cls):
         if not server_available:
-            raise nose.SkipTest(
-                'Server not available: %r' % api.env.xmlrpc_uri
-            )
+            raise nose.SkipTest('%r: Server not available: %r' %
+                                (cls.__module__, api.env.xmlrpc_uri))
+
+    def setUp(self):
         if not api.Backend.xmlclient.isconnected():
             api.Backend.xmlclient.connect(fallback=False)
 
@@ -168,6 +182,31 @@ KWARGS = """Command %r raised %s with wrong kwargs.
 
 
 class Declarative(XMLRPC_test):
+    """A declarative-style test suite
+
+    A Declarative test suite is controlled by the ``tests`` and
+    ``cleanup_commands`` class variables.
+
+    The ``tests`` is a list of dictionaries with the following keys:
+
+    ``desc``
+        A name/description of the test
+    ``command``
+        A (command, args, kwargs) triple specifying the command to run
+    ``expected``
+        Can be either an ``errors.PublicError`` instance, in which case
+        the command must fail with the given error; or the
+        expected result.
+        The result is checked with ``tests.util.assert_deepequal``.
+    ``extra_check`` (optional)
+        A checking function that is called with the response. It must
+        return true for the test to pass.
+
+    The ``cleanup_commands`` is a list of (command, args, kwargs)
+    triples. These are commands get run both before and after tests,
+    and must not fail.
+    """
+
     cleanup_commands = tuple()
     tests = tuple()
 
@@ -187,7 +226,7 @@ class Declarative(XMLRPC_test):
             )
         try:
             api.Command[cmd](*args, **options)
-        except errors.NotFound:
+        except (errors.NotFound, errors.EmptyModlist):
             pass
 
     def test_generator(self):
@@ -207,7 +246,7 @@ class Declarative(XMLRPC_test):
             nice = '%s[%d]: %s: %s' % (
                 name, i, test['command'][0], test.get('desc', '')
             )
-            func = lambda: self.check(nice, test)
+            func = lambda: self.check(nice, **test)
             func.description = nice
             yield (func,)
 
@@ -215,15 +254,14 @@ class Declarative(XMLRPC_test):
         for tup in self.cleanup_generate('post'):
             yield tup
 
-    def check(self, nice, test):
-        (cmd, args, options) = test['command']
+    def check(self, nice, desc, command, expected, extra_check=None):
+        (cmd, args, options) = command
         if cmd not in api.Command:
             raise nose.SkipTest('%r not in api.Command' % cmd)
-        expected = test['expected']
         if isinstance(expected, errors.PublicError):
             self.check_exception(nice, cmd, args, options, expected)
         else:
-            self.check_output(nice, cmd, args, options, expected)
+            self.check_output(nice, cmd, args, options, expected, extra_check)
 
     def check_exception(self, nice, cmd, args, options, expected):
         klass = expected.__class__
@@ -244,11 +282,11 @@ class Declarative(XMLRPC_test):
         # information through the exception, so we can't test the kw on the
         # client side.  However, if we switch to using JSON-RPC for the default
         # transport, the exception is a free-form data structure (dict).
-#        if e.kw != expected.kw:
-#            raise AssertionError(
-#                KWARGS % (cmd, name, args, options, expected.kw, e.kw)
-#            )
+        # For now just compare the strings
+        assert_deepequal(expected.strerror, e.strerror)
 
-    def check_output(self, nice, cmd, args, options, expected):
-            got = api.Command[cmd](*args, **options)
-            assert_deepequal(expected, got, nice)
+    def check_output(self, nice, cmd, args, options, expected, extra_check):
+        got = api.Command[cmd](*args, **options)
+        assert_deepequal(expected, got, nice)
+        if extra_check and not extra_check(got):
+            raise AssertionError('Extra check %s failed' % extra_check)

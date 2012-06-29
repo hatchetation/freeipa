@@ -21,7 +21,8 @@ import os
 import sys
 import shutil
 import random
-import logging
+import traceback
+from ipapython.ipa_log_manager import *
 
 from ipaserver.install import installutils
 from ipaserver.install import dsinstance
@@ -100,18 +101,20 @@ class IPAUpgrade(service.Service):
 
     def __upgrade(self):
         try:
-            ld = ldapupdate.LDAPUpdate(dm_password='', ldapi=True, live_run=self.live_run)
+            ld = ldapupdate.LDAPUpdate(dm_password='', ldapi=True, live_run=self.live_run, plugins=True)
             if len(self.files) == 0:
                 self.files = ld.get_all_files(ldapupdate.UPDATES_DIR)
             self.modified = ld.update(self.files)
-        except ldapupdate.BadSyntax:
+        except ldapupdate.BadSyntax, e:
+            root_logger.error('Bad syntax in upgrade %s' % str(e))
             self.modified = False
             self.badsyntax = True
         except Exception, e:
             # Bad things happened, return gracefully
             self.modified = False
             self.upgradefailed = True
-            logging.error('Upgrade failed with %s' % str(e))
+            root_logger.error('Upgrade failed with %s' % str(e))
+            root_logger.debug('%s', traceback.format_exc())
 
 def main():
     if os.getegid() != 0:

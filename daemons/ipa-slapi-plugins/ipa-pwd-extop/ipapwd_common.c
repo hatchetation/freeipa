@@ -67,81 +67,6 @@ static const char *ipapwd_def_encsalts[] = {
     NULL
 };
 
-static int new_ipapwd_encsalt(krb5_context krbctx,
-                              const char * const *encsalts,
-                              struct ipapwd_encsalt **es_types,
-                              int *num_es_types)
-{
-    struct ipapwd_encsalt *es;
-    int nes, i;
-    int rc;
-
-    for (i = 0; encsalts[i]; i++) /* count */ ;
-    es = calloc(i + 1, sizeof(struct ipapwd_encsalt));
-    if (!es) {
-        LOG_OOM();
-        rc = LDAP_OPERATIONS_ERROR;
-        goto fail;
-    }
-
-    for (i = 0, nes = 0; encsalts[i]; i++) {
-        char *enc, *salt;
-        krb5_int32 tmpsalt;
-        krb5_enctype tmpenc;
-        krb5_boolean similar;
-        krb5_error_code krberr;
-        int j;
-
-        enc = strdup(encsalts[i]);
-        if (!enc) {
-            LOG_OOM();
-            rc = LDAP_OPERATIONS_ERROR;
-            goto fail;
-        }
-        salt = strchr(enc, ':');
-        if (!salt) {
-            LOG_FATAL("Invalid krb5 enc string\n");
-            free(enc);
-            continue;
-        }
-        *salt = '\0'; /* null terminate the enc type */
-        salt++; /* skip : */
-
-        krberr = krb5_string_to_enctype(enc, &tmpenc);
-        if (krberr) {
-            LOG_FATAL("Invalid krb5 enctype\n");
-            free(enc);
-            continue;
-        }
-
-        krberr = krb5_string_to_salttype(salt, &tmpsalt);
-        for (j = 0; j < nes; j++) {
-            krb5_c_enctype_compare(krbctx, es[j].enc_type, tmpenc, &similar);
-            if (similar && (es[j].salt_type == tmpsalt)) {
-                break;
-            }
-        }
-
-        if (j == nes) {
-            /* not found */
-            es[j].enc_type = tmpenc;
-            es[j].salt_type = tmpsalt;
-            nes++;
-        }
-
-        free(enc);
-    }
-
-    *es_types = es;
-    *num_es_types = nes;
-
-    return LDAP_SUCCESS;
-
-fail:
-    free(es);
-    return rc;
-}
-
 static struct ipapwd_krbcfg *ipapwd_getConfig(void)
 {
     krb5_error_code krberr;
@@ -152,7 +77,7 @@ static struct ipapwd_krbcfg *ipapwd_getConfig(void)
     Slapi_Attr *a;
     Slapi_Value *v;
     BerElement *be = NULL;
-    ber_tag_t tag, tmp;
+    ber_tag_t tag, tvno;
     ber_int_t ttype;
     const struct berval *bval;
     struct berval *mkey = NULL;
@@ -219,12 +144,13 @@ static struct ipapwd_krbcfg *ipapwd_getConfig(void)
         goto free_and_error;
     }
 
-    tag = ber_scanf(be, "{i{iO}}", &tmp, &ttype, &mkey);
+    tag = ber_scanf(be, "{i{iO}}", &tvno, &ttype, &mkey);
     if (tag == LBER_ERROR) {
         LOG_FATAL("Bad Master key encoding ?!\n");
         goto free_and_error;
     }
 
+    config->mkvno = tvno;
     kmkey->magic = KV5M_KEYBLOCK;
     kmkey->enctype = ttype;
     kmkey->length = mkey->bv_len;
@@ -244,17 +170,19 @@ static struct ipapwd_krbcfg *ipapwd_getConfig(void)
     encsalts = slapi_entry_attr_get_charray(realm_entry,
                                             "krbSupportedEncSaltTypes");
     if (encsalts) {
-        ret = new_ipapwd_encsalt(config->krbctx,
-                                 (const char * const *)encsalts,
-                                 &config->supp_encsalts,
-                                 &config->num_supp_encsalts);
+        for (i = 0; encsalts[i]; i++) /* count */ ;
+        ret = parse_bval_key_salt_tuples(config->krbctx,
+                                         (const char * const *)encsalts, i,
+                                         &config->supp_encsalts,
+                                         &config->num_supp_encsalts);
         slapi_ch_array_free(encsalts);
     } else {
         LOG("No configured salt types use defaults\n");
-        ret = new_ipapwd_encsalt(config->krbctx,
-                                 ipapwd_def_encsalts,
-                                 &config->supp_encsalts,
-                                 &config->num_supp_encsalts);
+        for (i = 0; ipapwd_def_encsalts[i]; i++) /* count */ ;
+        ret = parse_bval_key_salt_tuples(config->krbctx,
+                                         ipapwd_def_encsalts, i,
+                                         &config->supp_encsalts,
+                                         &config->num_supp_encsalts);
     }
     if (ret) {
         LOG_FATAL("Can't get Supported EncSalt Types\n");
@@ -266,17 +194,19 @@ static struct ipapwd_krbcfg *ipapwd_getConfig(void)
     encsalts = slapi_entry_attr_get_charray(realm_entry,
                                             "krbDefaultEncSaltTypes");
     if (encsalts) {
-        ret = new_ipapwd_encsalt(config->krbctx,
-                                 (const char * const *)encsalts,
-                                 &config->pref_encsalts,
-                                 &config->num_pref_encsalts);
+        for (i = 0; encsalts[i]; i++) /* count */ ;
+        ret = parse_bval_key_salt_tuples(config->krbctx,
+                                         (const char * const *)encsalts, i,
+                                         &config->pref_encsalts,
+                                         &config->num_pref_encsalts);
         slapi_ch_array_free(encsalts);
     } else {
         LOG("No configured salt types use defaults\n");
-        ret = new_ipapwd_encsalt(config->krbctx,
-                                 ipapwd_def_encsalts,
-                                 &config->pref_encsalts,
-                                 &config->num_pref_encsalts);
+        for (i = 0; ipapwd_def_encsalts[i]; i++) /* count */ ;
+        ret = parse_bval_key_salt_tuples(config->krbctx,
+                                         ipapwd_def_encsalts, i,
+                                         &config->pref_encsalts,
+                                         &config->num_pref_encsalts);
     }
     if (ret) {
         LOG_FATAL("Can't get Preferred EncSalt Types\n");
@@ -399,8 +329,9 @@ static int ipapwd_rdn_count(const char *dn)
     return rdnc;
 }
 
-static int ipapwd_getPolicy(const char *dn,
-                            Slapi_Entry *target, Slapi_Entry **e)
+int ipapwd_getPolicy(const char *dn,
+                     Slapi_Entry *target,
+                     struct ipapwd_policy *policy)
 {
     const char *krbPwdPolicyReference;
     const char *pdn;
@@ -417,6 +348,7 @@ static int ipapwd_getPolicy(const char *dn,
     int buffer_flags=0;
     Slapi_ValueSet* results = NULL;
     char* actual_type_name = NULL;
+    int tmpint;
 
     LOG_TRACE("Searching policy for [%s]\n", dn);
 
@@ -448,8 +380,6 @@ static int ipapwd_getPolicy(const char *dn,
         pdn = slapi_sdn_get_dn(psdn);
         scope = LDAP_SCOPE_SUBTREE;
     }
-
-    *e = NULL;
 
     pb = slapi_pblock_new();
     slapi_search_internal_set_pb(pb,
@@ -483,10 +413,8 @@ static int ipapwd_getPolicy(const char *dn,
 
     /* if there is only one, return that */
     if (i == 1) {
-        *e = slapi_entry_dup(es[0]);
-
-        ret = 0;
-        goto done;
+        pe = es[0];
+        goto fill;
     }
 
     /* count number of RDNs in DN */
@@ -533,8 +461,27 @@ static int ipapwd_getPolicy(const char *dn,
         goto done;
     }
 
-    *e = slapi_entry_dup(pe);
+fill:
+    policy->min_pwd_life = slapi_entry_attr_get_int(pe, "krbMinPwdLife");
+
+    tmpint = slapi_entry_attr_get_int(pe, "krbMaxPwdLife");
+    if (tmpint != 0) {
+        policy->max_pwd_life = tmpint;
+    }
+
+    tmpint = slapi_entry_attr_get_int(pe, "krbPwdMinLength");
+    if (tmpint != 0) {
+        policy->min_pwd_length = tmpint;
+    }
+
+    policy->history_length = slapi_entry_attr_get_int(pe,
+                                                      "krbPwdHistoryLength");
+
+    policy->min_complexity = slapi_entry_attr_get_int(pe,
+                                                      "krbPwdMinDiffChars");
+
     ret = 0;
+
 done:
     if (results) {
         pwd_values_free(&results, &actual_type_name, buffer_flags);
@@ -545,24 +492,6 @@ done:
     }
     if (sdn) slapi_sdn_free(&sdn);
     return ret;
-}
-
-static Slapi_Value *ipapwd_strip_pw_date(Slapi_Value *pw)
-{
-    const char *pwstr;
-
-    pwstr = slapi_value_get_string(pw);
-    return slapi_value_new_string(&pwstr[GENERALIZED_TIME_LENGTH]);
-}
-
-/* searches the directory and finds the policy closest to the DN */
-/* return 0 on success, -1 on error or if no policy is found */
-static int ipapwd_sv_pw_cmp(const void *pv1, const void *pv2)
-{
-    const char *pw1 = slapi_value_get_string(*((Slapi_Value **)pv1));
-    const char *pw2 = slapi_value_get_string(*((Slapi_Value **)pv2));
-
-    return strncmp(pw1, pw2, GENERALIZED_TIME_LENGTH);
 }
 
 
@@ -683,62 +612,19 @@ done:
     return rc;
 }
 
-/* 90 days default pwd max lifetime */
-#define IPAPWD_DEFAULT_PWDLIFE (90 * 24 *3600)
-#define IPAPWD_DEFAULT_MINLEN 0
-
 /* check password strenght and history */
 int ipapwd_CheckPolicy(struct ipapwd_data *data)
 {
-    char *krbPrincipalExpiration = NULL;
-    char *krbLastPwdChange = NULL;
-    char *krbPasswordExpiration = NULL;
-    int krbMaxPwdLife = IPAPWD_DEFAULT_PWDLIFE;
-    int krbPwdMinLength = IPAPWD_DEFAULT_MINLEN;
-    int krbPwdMinDiffChars = 0;
-    int krbMinPwdLife = 0;
-    int pwdCharLen = 0;
-    Slapi_Entry *policy = NULL;
-    Slapi_Attr *passwordHistory = NULL;
-    struct tm tm;
-    int tmp, ret;
-    char *old_pw;
+    struct ipapwd_policy pol = {0};
+    time_t acct_expiration;
+    time_t pwd_expiration;
+    time_t last_pwd_change;
+    char **pwd_history;
+    char *tmpstr;
+    int ret;
 
-    /* check account is not expired. Ignore unixtime = 0 (Jan 1 1970) */
-    krbPrincipalExpiration =
-        slapi_entry_attr_get_charptr(data->target, "krbPrincipalExpiration");
-    if (krbPrincipalExpiration &&
-        (strcasecmp("19700101000000Z", krbPrincipalExpiration) != 0)) {
-        /* if expiration date is set check it */
-        memset(&tm, 0, sizeof(struct tm));
-        ret = sscanf(krbPrincipalExpiration,
-                     "%04u%02u%02u%02u%02u%02u",
-                     &tm.tm_year, &tm.tm_mon, &tm.tm_mday,
-                     &tm.tm_hour, &tm.tm_min, &tm.tm_sec);
-
-        if (ret == 6) {
-            tm.tm_year -= 1900;
-            tm.tm_mon -= 1;
-
-            if (data->timeNow > timegm(&tm)) {
-                LOG_TRACE("Account Expired");
-                return IPAPWD_POLICY_ERROR | LDAP_PWPOLICY_PWDMODNOTALLOWED;
-            }
-        }
-        /* FIXME: else error out ? */
-    }
-    slapi_ch_free_string(&krbPrincipalExpiration);
-
-    /* find the entry with the password policy */
-    ret = ipapwd_getPolicy(data->dn, data->target, &policy);
-    if (ret) {
-        LOG_TRACE("No password policy");
-        goto no_policy;
-    }
-
-    /* Retrieve Max History Len */
-    data->pwHistoryLen =
-                    slapi_entry_attr_get_int(policy, "krbPwdHistoryLength");
+    pol.max_pwd_life = IPAPWD_DEFAULT_PWDLIFE;
+    pol.min_pwd_length = IPAPWD_DEFAULT_MINLEN;
 
     if (data->changetype != IPA_CHANGETYPE_NORMAL) {
         /* We must skip policy checks (Admin change) but
@@ -748,279 +634,51 @@ int ipapwd_CheckPolicy(struct ipapwd_data *data)
             data->expireTime = data->timeNow;
         }
 
-        /* skip policy checks */
-        slapi_entry_free(policy);
-        goto no_policy;
-    }
-
-    /* first of all check current password, if any */
-    old_pw = slapi_entry_attr_get_charptr(data->target, "userPassword");
-    if (old_pw) {
-        Slapi_Value *cpw[2] = {NULL, NULL};
-        Slapi_Value *pw;
-
-        cpw[0] = slapi_value_new_string(old_pw);
-        pw = slapi_value_new_string(data->password);
-        if (!pw) {
-            LOG_OOM();
-            slapi_entry_free(policy);
-            slapi_ch_free_string(&old_pw);
-            slapi_value_free(&cpw[0]);
-            slapi_value_free(&pw);
-            return LDAP_OPERATIONS_ERROR;
-        }
-
-        ret = slapi_pw_find_sv(cpw, pw);
-        slapi_ch_free_string(&old_pw);
-        slapi_value_free(&cpw[0]);
-        slapi_value_free(&pw);
-
-        if (ret == 0) {
-            LOG_TRACE("Password in history\n");
-            slapi_entry_free(policy);
-            return IPAPWD_POLICY_ERROR | LDAP_PWPOLICY_PWDINHISTORY;
-        }
-    }
-
-    krbPasswordExpiration =
-        slapi_entry_attr_get_charptr(data->target, "krbPasswordExpiration");
-    krbLastPwdChange =
-        slapi_entry_attr_get_charptr(data->target, "krbLastPwdChange");
-    /* if no previous change, it means this is probably a new account
-     * or imported, log and just ignore */
-    if (krbLastPwdChange) {
-
-        memset(&tm, 0, sizeof(struct tm));
-        ret = sscanf(krbLastPwdChange,
-                     "%04u%02u%02u%02u%02u%02u",
-                     &tm.tm_year, &tm.tm_mon, &tm.tm_mday,
-                     &tm.tm_hour, &tm.tm_min, &tm.tm_sec);
-
-        if (ret == 6) {
-            tm.tm_year -= 1900;
-            tm.tm_mon -= 1;
-            data->lastPwChange = timegm(&tm);
-        }
-        /* FIXME: *else* report an error ? */
+        /* do not load policies */
     } else {
-        LOG_TRACE("Warning: Last Password Change Time is not available\n");
-    }
 
-    /* Check min age */
-    krbMinPwdLife = slapi_entry_attr_get_int(policy, "krbMinPwdLife");
-    /* if no default then treat it as no limit */
-    if (krbMinPwdLife != 0) {
-
-        /* check for reset cases */
-        if (krbLastPwdChange == NULL ||
-            ((krbPasswordExpiration != NULL) &&
-             strcmp(krbPasswordExpiration, krbLastPwdChange) == 0)) {
-            /* Expiration and last change time are the same or
-             * missing this happens only when a password is reset
-             * by an admin or the account is new or no expiration
-             * policy is set, PASS */
-            LOG_TRACE("Ignore krbMinPwdLife Expiration, not enough info\n");
-
-        } else if (data->timeNow < data->lastPwChange + krbMinPwdLife) {
-            LOG_TRACE("Too soon to change password\n");
-            slapi_entry_free(policy);
-            slapi_ch_free_string(&krbPasswordExpiration);
-            slapi_ch_free_string(&krbLastPwdChange);
-            return IPAPWD_POLICY_ERROR | LDAP_PWPOLICY_PWDTOOYOUNG;
+        /* find the entry with the password policy */
+        ret = ipapwd_getPolicy(data->dn, data->target, &pol);
+        if (ret) {
+            LOG_TRACE("No password policy, use defaults");
         }
     }
 
-    /* free strings or we leak them */
-    slapi_ch_free_string(&krbPasswordExpiration);
-    slapi_ch_free_string(&krbLastPwdChange);
+    tmpstr = slapi_entry_attr_get_charptr(data->target,
+                                          "krbPrincipalExpiration");
+    acct_expiration = ipapwd_gentime_to_time_t(tmpstr);
+    slapi_ch_free_string(&tmpstr);
 
-    /* Retrieve min length */
-    tmp = slapi_entry_attr_get_int(policy, "krbPwdMinLength");
-    if (tmp != 0) {
-        krbPwdMinLength = tmp;
-    }
+    tmpstr = slapi_entry_attr_get_charptr(data->target,
+                                          "krbPasswordExpiration");
+    pwd_expiration = ipapwd_gentime_to_time_t(tmpstr);
+    slapi_ch_free_string(&tmpstr);
 
-    /* check complexity */
-    /* FIXME: this code is partially based on Directory Server code,
-     *        the plan is to merge this code later making it available
-     *        trough a pulic DS API for slapi plugins */
-    krbPwdMinDiffChars =
-                    slapi_entry_attr_get_int(policy, "krbPwdMinDiffChars");
-    if (krbPwdMinDiffChars != 0) {
-        int num_digits = 0;
-        int num_alphas = 0;
-        int num_uppers = 0;
-        int num_lowers = 0;
-        int num_specials = 0;
-        int num_8bit = 0;
-        int num_repeated = 0;
-        int max_repeated = 0;
-        int num_categories = 0;
-        char *p, *pwd;
+    tmpstr = slapi_entry_attr_get_charptr(data->target,
+                                          "krbLastPwdChange");
+    last_pwd_change = ipapwd_gentime_to_time_t(tmpstr);
+    slapi_ch_free_string(&tmpstr);
 
-        pwd = strdup(data->password);
+    pwd_history = slapi_entry_attr_get_charray(data->target,
+                                               "passwordHistory");
 
-        /* check character types */
-        p = pwd;
-        while (p && *p) {
-            if (ldap_utf8isdigit(p)) {
-                num_digits++;
-            } else if (ldap_utf8isalpha(p)) {
-                num_alphas++;
-                if (slapi_utf8isLower((unsigned char *)p)) {
-                    num_lowers++;
-                } else {
-                    num_uppers++;
-                }
-            } else {
-                /* check if this is an 8-bit char */
-                if (*p & 128) {
-                    num_8bit++;
-                } else {
-                    num_specials++;
-                }
-            }
+    /* check policy */
+    ret = ipapwd_check_policy(&pol, data->password,
+                                    data->timeNow,
+                                    acct_expiration,
+                                    pwd_expiration,
+                                    last_pwd_change,
+                                    pwd_history);
 
-            /* check for repeating characters. If this is the
-               first char of the password, no need to check */
-            if (pwd != p) {
-                int len = ldap_utf8len(p);
-                char *prev_p = ldap_utf8prev(p);
-
-                if (len == ldap_utf8len(prev_p)) {
-                    if (memcmp(p, prev_p, len) == 0) {
-                        num_repeated++;
-                        if (max_repeated < num_repeated) {
-                            max_repeated = num_repeated;
-                        }
-                    } else {
-                        num_repeated = 0;
-                    }
-                } else {
-                    num_repeated = 0;
-                }
-            }
-
-            p = ldap_utf8next(p);
-        }
-
-        free(pwd);
-        p = pwd = NULL;
-
-        /* tally up the number of character categories */
-        if (num_digits > 0) ++num_categories;
-        if (num_uppers > 0) ++num_categories;
-        if (num_lowers > 0) ++num_categories;
-        if (num_specials > 0) ++num_categories;
-        if (num_8bit > 0) ++num_categories;
-
-        /* FIXME: the kerberos plicy schema does not define separated
-         *        threshold values, so just treat anything as a category,
-         *        we will fix this when we merge with DS policies */
-
-        if (max_repeated > 1) --num_categories;
-
-        if (num_categories < krbPwdMinDiffChars) {
-            LOG_TRACE("Password not complex enough\n");
-            slapi_entry_free(policy);
-            return IPAPWD_POLICY_ERROR | LDAP_PWPOLICY_INVALIDPWDSYNTAX;
-        }
-    }
-
-    /* Check password history */
-    ret = slapi_entry_attr_find(data->target,
-                                "passwordHistory", &passwordHistory);
-    if (ret == 0) {
-        int err, hint, count, i, j;
-        const char *pwstr;
-        Slapi_Value **pH;
-        Slapi_Value *pw;
-
-        hint = 0;
-        count = 0;
-        err = slapi_attr_get_numvalues(passwordHistory, &count);
-        /* check history only if we have one */
-        if (count > 0 && data->pwHistoryLen > 0) {
-            pH = calloc(count + 2, sizeof(Slapi_Value *));
-            if (!pH) {
-                LOG_OOM();
-                slapi_entry_free(policy);
-                return LDAP_OPERATIONS_ERROR;
-            }
-
-            i = 0;
-            hint = slapi_attr_first_value(passwordHistory, &pw);
-            while (hint != -1) {
-                pwstr = slapi_value_get_string(pw);
-                /* if shorter than GENERALIZED_TIME_LENGTH, it
-                 * is garbage, we never set timeless entries */
-                if (pwstr &&
-                    (strlen(pwstr) > GENERALIZED_TIME_LENGTH)) {
-                    pH[i] = pw;
-                    i++;
-                }
-                hint = slapi_attr_next_value(passwordHistory, hint, &pw);
-            }
-
-            qsort(pH, i, sizeof(Slapi_Value *), ipapwd_sv_pw_cmp);
-
-            if (i > data->pwHistoryLen) {
-                i = data->pwHistoryLen;
-                pH[i] = NULL;
-            }
-
-            for (j = 0; pH[j]; j++) {
-                pH[j] = ipapwd_strip_pw_date(pH[j]);
-            }
-
-            pw = slapi_value_new_string(data->password);
-            if (!pw) {
-                LOG_OOM();
-                slapi_entry_free(policy);
-                free(pH);
-                return LDAP_OPERATIONS_ERROR;
-            }
-
-            err = slapi_pw_find_sv(pH, pw);
-
-            for (j = 0; pH[j]; j++) {
-                slapi_value_free(&pH[j]);
-            }
-            slapi_value_free(&pw);
-            free(pH);
-
-            if (err == 0) {
-                LOG_TRACE("Password in history\n");
-                slapi_entry_free(policy);
-                return IPAPWD_POLICY_ERROR | LDAP_PWPOLICY_PWDINHISTORY;
-            }
-        }
-    }
-
-    /* Calculate max age */
-    tmp = slapi_entry_attr_get_int(policy, "krbMaxPwdLife");
-    if (tmp != 0) {
-        krbMaxPwdLife = tmp;
-    }
-
-    slapi_entry_free(policy);
-
-no_policy:
-
-    /* check min lenght */
-    pwdCharLen = ldap_utf8characters(data->password);
-
-    if (pwdCharLen < krbPwdMinLength) {
-        LOG_TRACE("Password too short (%d < %d)\n",
-                  pwdCharLen, krbPwdMinLength);
-        return IPAPWD_POLICY_ERROR | LDAP_PWPOLICY_PWDTOOSHORT;
-    }
+    slapi_ch_array_free(pwd_history);
 
     if (data->expireTime == 0) {
-        data->expireTime = data->timeNow + krbMaxPwdLife;
+        data->expireTime = data->timeNow + pol.max_pwd_life;
     }
 
-    return IPAPWD_POLICY_OK;
+    data->policy = pol;
+
+    return ret;
 }
 
 /* Searches the dn in directory,
@@ -1075,7 +733,7 @@ int ipapwd_get_cur_kvno(Slapi_Entry *target)
             LOG_TRACE("Error retrieving berval from Slapi_Value\n");
             goto next;
         }
-        be = ber_init(cbval);
+        be = ber_init(discard_const(cbval));
         if (!be) {
             LOG_TRACE("ber_init() failed!\n");
             goto next;
@@ -1217,10 +875,12 @@ int ipapwd_SetPassword(struct ipapwd_krbcfg *krbcfg,
                           "userPassword", data->password);
 
     /* set password history */
-    pwvals = ipapwd_setPasswordHistory(smods, data);
-    if (pwvals) {
-        slapi_mods_add_mod_values(smods, LDAP_MOD_REPLACE,
-                                  "passwordHistory", pwvals);
+    if (data->policy.history_length > 0) {
+        pwvals = ipapwd_setPasswordHistory(smods, data);
+        if (pwvals) {
+            slapi_mods_add_mod_values(smods, LDAP_MOD_REPLACE,
+                                      "passwordHistory", pwvals);
+        }
     }
 
     /* FIXME:
@@ -1249,111 +909,45 @@ Slapi_Value **ipapwd_setPasswordHistory(Slapi_Mods *smods,
                                         struct ipapwd_data *data)
 {
     Slapi_Value **pH = NULL;
-    Slapi_Attr *passwordHistory = NULL;
-    char timestr[GENERALIZED_TIME_LENGTH+1];
-    char *histr, *old_pw;
-    struct tm utctime;
-    int ret, pc;
+    char **pwd_history = NULL;
+    char **new_pwd_history = NULL;
+    int n = 0;
+    int ret;
+    int i;
 
-    old_pw = slapi_entry_attr_get_charptr(data->target, "userPassword");
-    if (!old_pw) {
-        /* no old password to store, just return */
-        return NULL;
+    pwd_history = slapi_entry_attr_get_charray(data->target,
+                                               "passwordHistory");
+
+    ret = ipapwd_generate_new_history(data->password, data->timeNow,
+                                      data->policy.history_length,
+                                      pwd_history, &new_pwd_history, &n);
+
+    if (ret) {
+        LOG_FATAL("failed to generate new password history!\n");
+        goto done;
     }
 
-    if (!gmtime_r(&(data->timeNow), &utctime)) {
-        LOG_FATAL("failed to retrieve current date (buggy gmtime_r ?)\n");
-        return NULL;
-    }
-    strftime(timestr, GENERALIZED_TIME_LENGTH+1, "%Y%m%d%H%M%SZ", &utctime);
-
-    histr = slapi_ch_smprintf("%s%s", timestr, old_pw);
-    if (!histr) {
+    pH = (Slapi_Value **)slapi_ch_calloc(n + 1, sizeof(Slapi_Value *));
+    if (!pH) {
         LOG_OOM();
-        return NULL;
+        goto done;
     }
 
-    /* retrieve current history */
-    ret = slapi_entry_attr_find(data->target,
-                                "passwordHistory", &passwordHistory);
-    if (ret == 0) {
-        int err, hint, count, i, j;
-        const char *pwstr;
-        Slapi_Value *pw;
-
-        hint = 0;
-        count = 0;
-        err = slapi_attr_get_numvalues(passwordHistory, &count);
-        /* if we have one */
-        if (count > 0 && data->pwHistoryLen > 0) {
-            pH = calloc(count + 2, sizeof(Slapi_Value *));
-            if (!pH) {
-                LOG_OOM();
-                free(histr);
-                return NULL;
-            }
-
-            i = 0;
-            hint = slapi_attr_first_value(passwordHistory, &pw);
-            while (hint != -1) {
-                pwstr = slapi_value_get_string(pw);
-                /* if shorter than GENERALIZED_TIME_LENGTH, it
-                 * is garbage, we never set timeless entries */
-                if (pwstr &&
-                    (strlen(pwstr) > GENERALIZED_TIME_LENGTH)) {
-                    pH[i] = pw;
-                    i++;
-                }
-                hint = slapi_attr_next_value(passwordHistory, hint, &pw);
-            }
-
-            qsort(pH, i, sizeof(Slapi_Value *), ipapwd_sv_pw_cmp);
-
-            if (i >= data->pwHistoryLen) {
-                /* need to rotate out the first entry */
-                for (j = 0; j < data->pwHistoryLen; j++) {
-                    pH[j] = pH[j + 1];
-                }
-
-                i = data->pwHistoryLen;
-                pH[i] = NULL;
-                i--;
-            }
-
-            pc = i;
-
-            /* copy only interesting entries */
-            for (i = 0; i < pc; i++) {
-                pH[i] = slapi_value_dup(pH[i]);
-                if (pH[i] == NULL) {
-                    LOG_OOM();
-                    while (i) {
-                        i--;
-                        slapi_value_free(&pH[i]);
-                    }
-                    free(pH);
-                    free(histr);
-                    return NULL;
-                }
-            }
-        }
-    }
-
-    if (pH == NULL) {
-        pH = calloc(2, sizeof(Slapi_Value *));
-        if (!pH) {
+    for (i = 0; i < n; i++) {
+        pH[i] = slapi_value_new_string(new_pwd_history[i]);
+        if (!pH[i]) {
+            ipapwd_free_slapi_value_array(&pH);
             LOG_OOM();
-            free(histr);
-            return NULL;
+            goto done;
         }
-        pc = 0;
     }
 
-    /* add new history value */
-    pH[pc] = slapi_value_new_string(histr);
-
-    free(histr);
-
+done:
+    slapi_ch_array_free(pwd_history);
+    for (i = 0; i < n; i++) {
+        free(new_pwd_history[i]);
+    }
+    free(new_pwd_history);
     return pH;
 }
 
@@ -1403,9 +997,8 @@ int ipapwd_set_extradata(const char *dn,
                          time_t unixtime)
 {
     Slapi_Mods *smods;
-    Slapi_Value *va[3] = { NULL };
+    Slapi_Value *va[2] = { NULL };
     struct berval bv;
-    char mkvno[4] = { 0x00, 0x08, 0x01, 0x00 };
     char *xdata;
     int xd_len;
     int p_len;
@@ -1419,11 +1012,6 @@ int ipapwd_set_extradata(const char *dn,
     }
 
     smods = slapi_mods_new();
-
-    /* always append a master key kvno of 1 for now */
-    bv.bv_val = mkvno;
-    bv.bv_len = 4;
-    va[0] = slapi_value_new_berval(&bv);
 
     /* data type id */
     xdata[0] = 0x00;
@@ -1442,13 +1030,12 @@ int ipapwd_set_extradata(const char *dn,
 
     bv.bv_val = xdata;
     bv.bv_len = xd_len;
-    va[1] = slapi_value_new_berval(&bv);
+    va[0] = slapi_value_new_berval(&bv);
 
     slapi_mods_add_mod_values(smods, LDAP_MOD_REPLACE, "krbExtraData", va);
 
     ret = ipapwd_apply_mods(dn, smods);
 
-    slapi_value_free(&va[1]);
     slapi_value_free(&va[0]);
     slapi_mods_free(&smods);
 

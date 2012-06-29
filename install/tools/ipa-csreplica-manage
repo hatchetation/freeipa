@@ -23,7 +23,7 @@ import sys
 import os
 
 import ldap, krbV
-import logging
+from ipapython.ipa_log_manager import *
 
 from ipapython import ipautil
 from ipaserver.install import replication, installutils
@@ -116,7 +116,7 @@ class CSReplicationManager(replication.ReplicationManager):
         try:
             self.conn.modify_s(dn, mod)
         except Exception, e:
-            logging.debug("Failed to remove referral value: %s" % convert_error(e))
+            root_logger.debug("Failed to remove referral value: %s" % convert_error(e))
 
 def parse_options():
     from optparse import OptionParser
@@ -154,13 +154,6 @@ def parse_options():
         cmdstr = " | ".join(commands.keys())
         parser.error("must provide a command [%s]" % cmdstr)
 
-    # set log level
-    if options.verbose:
-        # if verbose, output events at INFO level if not already
-        mylogger = logging.getLogger()
-        if mylogger.getEffectiveLevel() > logging.INFO:
-            mylogger.setLevel(logging.INFO)
-        # else user has already configured logging externally lower
     return options, args
 
 def list_replicas(realm, host, replica, dirman_passwd, verbose):
@@ -274,12 +267,26 @@ def del_link(realm, replica1, replica2, dirman_passwd, force=False):
     repl1.delete_agreement(replica2)
     repl1.delete_referral(replica2)
 
+    print "Deleted replication agreement from '%s' to '%s'" % (replica1, replica2)
+
 def del_master(realm, hostname, options):
 
     force_del = False
 
     delrepl = None
-    # 1. Connect to the dogtag DS to be removed.
+
+    # 1. Connect to the local dogtag DS server
+    try:
+        thisrepl = CSReplicationManager(realm, options.host,
+                                        options.dirman_passwd)
+    except Exception, e:
+        sys.exit("Failed to connect to server %s: %s" % (options.host, convert_error(e)))
+
+    # 2. Ensure we have an agreement with the master
+    if thisrepl.get_replication_agreement(hostname) is None:
+        sys.exit("'%s' has no replication agreement for '%s'" % (options.host, hostname))
+
+    # 3. Connect to the dogtag DS to be removed.
     try:
         delrepl = CSReplicationManager(realm, hostname, options.dirman_passwd)
     except Exception, e:
@@ -290,21 +297,14 @@ def del_master(realm, hostname, options):
             print "Unable to connect to replica %s, forcing removal" % hostname
             force_del = True
 
-    # 2. Connect to the local dogtag DS server
-    try:
-        thisrepl = CSReplicationManager(realm, options.host,
-                                        options.dirman_passwd)
-    except Exception, e:
-        sys.exit("Failed to connect to server %s: %s" % (options.host, convert_error(e)))
-
-    # 2. Get list of agreements.
+    # 4. Get list of agreements.
     if delrepl is None:
         # server not up, just remove it from this server
         replica_names = [options.host]
     else:
         replica_names = delrepl.find_ipa_replication_agreements()
 
-    # 3. Remove each agreement
+    # 5. Remove each agreement
     for r in replica_names:
         try:
             del_link(realm, r, hostname, options.dirman_passwd, force=True)
@@ -341,7 +341,7 @@ def add_link(realm, replica1, replica2, dirman_passwd, options):
     except Exception, e:
         sys.exit("Failed to get data from '%s': %s" % (replica1, convert_error(e)))
 
-    repl1.setup_replication(replica2, PORT, 0, "cn=Directory Manager", dirman_passwd, True)
+    repl1.setup_replication(replica2, PORT, 0, "cn=Directory Manager", dirman_passwd, True, True)
     print "Connected '%s' to '%s'" % (replica1, replica2)
 
 def re_initialize(realm, options):
@@ -357,10 +357,10 @@ def re_initialize(realm, options):
     filter = "(&(nsDS5ReplicaHost=%s)(|(objectclass=nsDSWindowsReplicationAgreement)(objectclass=nsds5ReplicationAgreement)))" % thishost
     entry = repl.conn.search_s("cn=config", ldap.SCOPE_SUBTREE, filter)
     if len(entry) == 0:
-        logging.error("Unable to find %s -> %s replication agreement" % (options.fromhost, thishost))
+        root_logger.error("Unable to find %s -> %s replication agreement" % (options.fromhost, thishost))
         sys.exit(1)
     if len(entry) > 1:
-        logging.error("Found multiple agreements for %s. Only initializing the first one returned: %s" % (thishost, entry[0].dn))
+        root_logger.error("Found multiple agreements for %s. Only initializing the first one returned: %s" % (thishost, entry[0].dn))
 
     repl.initialize_replication(entry[0].dn, repl.conn)
     repl.wait_for_repl_init(repl.conn, entry[0].dn)
@@ -378,8 +378,9 @@ def main():
 
     # Just initialize the environment. This is so the installer can have
     # access to the plugin environment
-    api_env = {}
-    api_env['in_server'] = True
+    api_env = {'in_server' : True,
+               'verbose'   : options.verbose,
+              }
 
     if os.getegid() != 0:
         api_env['log'] = None # turn off logging for non-root

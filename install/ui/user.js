@@ -21,143 +21,371 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-/* REQUIRES: ipa.js, details.js, search.js, add.js, entity.js */
+/* REQUIRES: ipa.js, details.js, search.js, add.js, facet.js, entity.js */
 
+IPA.user = {};
 
-IPA.entity_factories.user = function() {
+IPA.user.entity = function(spec) {
 
-    var link = true;
-    if (IPA.nav && IPA.nav.name == 'self-service') {
-        link = false;
-    }
+    var that = IPA.entity(spec);
 
-    var builder = IPA.entity_builder();
+    that.init = function() {
+        that.entity_init();
 
-    builder.
-        entity('user').
-        search_facet({
+        var self_service = IPA.nav.name === 'self-service';
+        var link = self_service ? false : undefined;
+
+        that.builder.search_facet({
+            row_disabled_attribute: 'nsaccountlock',
             columns: [
                 'uid',
                 'givenname',
                 'sn',
+                {
+                    name: 'nsaccountlock',
+                    label: IPA.messages.status.label,
+                    formatter: IPA.boolean_status_formatter({
+                        invert_value: true
+                    })
+                },
                 'uidnumber',
                 'mail',
                 'telephonenumber',
                 'title'
             ]
         }).
-        details_facet({ sections: [
-            {
-                name: 'identity',
-                label: IPA.messages.details.identity,
-                fields: [
-                    'title',
-                    'givenname',
-                    'sn',
-                    'cn',
-                    'displayname',
-                    'initials'
-                ]
-            },
-            {
-                name: 'account',
-                fields: [
-                    {
-                        factory: IPA.user_status_widget,
-                        name: 'nsaccountlock',
-                        label: IPA.messages.objects.user.account_status
-                    },
-                    'uid',
-                    { factory: IPA.user_password_widget, name: 'userpassword' },
-                    'uidnumber',
-                    'gidnumber',
-                    'loginshell',
-                    'homedirectory'
-                ]
-            },
-            {
-                name: 'contact',
-                fields: [
-                    { factory: IPA.multivalued_text_widget, name: 'mail' },
-                    { factory: IPA.multivalued_text_widget, name: 'telephonenumber' },
-                    { factory: IPA.multivalued_text_widget, name: 'pager' },
-                    { factory: IPA.multivalued_text_widget, name: 'mobile' },
-                    { factory: IPA.multivalued_text_widget,
-                      name: 'facsimiletelephonenumber' }
-                ]
-            },
-            {
-                name: 'mailing',
-                fields: ['street', 'l', 'st', 'postalcode']
-            },
-            {
-                name: 'employee',
-                fields:
-                ['ou',
-                 {
-                     factory:IPA.entity_select_widget,
-                     name: 'manager',
-                     other_entity: 'user',
-                     other_field: 'uid'
-                 }
-                ]
-            },
-            {
-                name: 'misc',
-                fields: ['carlicense']
-            }]}).
+        details_facet({
+            factory: IPA.user.details_facet,
+            sections: [
+                {
+                    name: 'identity',
+                    label: IPA.messages.details.identity,
+                    fields: [
+                        'title',
+                        'givenname',
+                        'sn',
+                        'cn',
+                        'displayname',
+                        'initials'
+                    ]
+                },
+                {
+                    name: 'account',
+                    fields: [
+                        {
+                            factory: IPA.user_status_widget,
+                            name: 'nsaccountlock',
+                            label: IPA.messages.status.label
+                        },
+                        'uid',
+                        {
+                            factory: IPA.user_password_widget,
+                            name: 'userpassword'
+                        },
+                        {
+                            name: 'krbpasswordexpiration',
+                            label: IPA.messages.objects.user.krbpasswordexpiration,
+                            read_only: true,
+                            formatter: IPA.utc_date_formatter()
+                        },
+                        'uidnumber',
+                        'gidnumber',
+                        'loginshell',
+                        'homedirectory',
+                        {
+                            type: 'sshkeys',
+                            name: 'ipasshpubkey',
+                            label: IPA.messages.objects.sshkeystore.keys
+                        }
+                    ]
+                },
+                {
+                    name: 'pwpolicy',
+                    label: IPA.messages.objects.pwpolicy.identity,
+                    fields: [
+                        {
+                            name: 'krbmaxpwdlife',
+                            label: IPA.get_entity_param('pwpolicy', 'krbmaxpwdlife').label,
+                            read_only: true
+                        },
+                        {
+                            name: 'krbminpwdlife',
+                            label: IPA.get_entity_param('pwpolicy', 'krbminpwdlife').label,
+                            read_only: true
+                        },
+                        {
+                            name: 'krbpwdhistorylength',
+                            label: IPA.get_entity_param('pwpolicy', 'krbpwdhistorylength').label,
+                            read_only: true
+                        },
+                        {
+                            name: 'krbpwdmindiffchars',
+                            label: IPA.get_entity_param('pwpolicy', 'krbpwdmindiffchars').label,
+                            read_only: true
+                        },
+                        {
+                            name: 'krbpwdminlength',
+                            label: IPA.get_entity_param('pwpolicy', 'krbpwdminlength').label,
+                            read_only: true
+                        },
+                        {
+                            name: 'krbpwdmaxfailure',
+                            label: IPA.get_entity_param('pwpolicy', 'krbpwdmaxfailure').label,
+                            read_only: true
+                        },
+                        {
+                            name: 'krbpwdfailurecountinterval',
+                            label: IPA.get_entity_param('pwpolicy', 'krbpwdfailurecountinterval').label,
+                            read_only: true
+                        },
+                        {
+                            name: 'krbpwdlockoutduration',
+                            label: IPA.get_entity_param('pwpolicy', 'krbpwdlockoutduration').label,
+                            read_only: true
+                        }
+                    ]
+                },
+                {
+                    name: 'krbtpolicy',
+                    label: IPA.messages.objects.krbtpolicy.identity,
+                    fields: [
+                        {
+                            name: 'krbmaxrenewableage',
+                            label: IPA.get_entity_param('krbtpolicy', 'krbmaxrenewableage').label,
+                            read_only: true
+                        },
+                        {
+                            name: 'krbmaxticketlife',
+                            label: IPA.get_entity_param('krbtpolicy', 'krbmaxticketlife').label,
+                            read_only: true
+                        }
+                    ]
+                },
+                {
+                    name: 'contact',
+                    fields: [
+                        { type: 'multivalued', name: 'mail' },
+                        { type: 'multivalued', name: 'telephonenumber' },
+                        { type: 'multivalued', name: 'pager' },
+                        { type: 'multivalued', name: 'mobile' },
+                        { type: 'multivalued', name: 'facsimiletelephonenumber' }
+                    ]
+                },
+                {
+                    name: 'mailing',
+                    fields: ['street', 'l', 'st', 'postalcode']
+                },
+                {
+                    name: 'employee',
+                    fields: [
+                        'ou',
+                        {
+                            type: 'entity_select',
+                            name: 'manager',
+                            other_entity: 'user',
+                            other_field: 'uid'
+                        }
+                    ]
+                },
+                {
+                    name: 'misc',
+                    fields: [ 'carlicense' ]
+                }
+            ]
+        }).
         association_facet({
             name: 'memberof_group',
             associator: IPA.serial_associator,
-            link: link
+            link: link,
+            read_only: self_service
         }).
         association_facet({
             name: 'memberof_netgroup',
             associator: IPA.serial_associator,
-            link: link
+            link: link,
+            read_only: self_service
         }).
         association_facet({
             name: 'memberof_role',
             associator: IPA.serial_associator,
-            link: link
+            link: link,
+            read_only: self_service
         }).
         association_facet({
             name: 'memberof_hbacrule',
             associator: IPA.serial_associator,
             add_method: 'add_user',
             remove_method: 'remove_user',
-            link: link
+            link: link,
+            read_only: self_service
         }).
         association_facet({
             name: 'memberof_sudorule',
             associator: IPA.serial_associator,
             add_method: 'add_user',
             remove_method: 'remove_user',
-            link: link
+            link: link,
+            read_only: self_service
         }).
         standard_association_facets({
             link: link
         }).
         adder_dialog({
-            fields: [
+            factory: IPA.user_adder_dialog,
+            sections: [
                 {
-                    factory : IPA.text_widget,
-                    optional: true,
-                    name:'uid'
+                    fields: [
+                        {
+                            name: 'uid',
+                            required: false
+                        },
+                        'givenname',
+                        'sn'
+                    ]
                 },
-                'givenname',
-                'sn'
+                {
+                    fields: [
+                        {
+                            name: 'userpassword',
+                            label: IPA.messages.password.new_password,
+                            type: 'password'
+                        },
+                        {
+                            name: 'userpassword2',
+                            label: IPA.messages.password.verify_password,
+                            type: 'password'
+                        }
+                    ]
+                }
             ]
         });
+    };
 
-    return builder.build();
+    return that;
+};
+
+IPA.user.details_facet = function(spec) {
+
+    spec = spec || {};
+
+    var that = IPA.details_facet(spec);
+
+    that.refresh_on_success = function(data, text_status, xhr) {
+        // do not load data from batch
+
+        that.show_content();
+    };
+
+    that.create_refresh_command = function() {
+
+        var pkey = IPA.nav.get_state(that.entity.name+'-pkey');
+
+        var batch = IPA.batch_command({
+            name: 'user_details_refresh'
+        });
+
+        var user_command = that.details_facet_create_refresh_command();
+
+        user_command.on_success = function(data, text_status, xhr) {
+            // create data that mimics user-show output
+            var user_data = {};
+            user_data.result = data;
+            that.load(user_data);
+        };
+
+        batch.add_command(user_command);
+
+        var pwpolicy_command = IPA.command({
+            entity: 'pwpolicy',
+            method: 'show',
+            options: {
+                user: pkey,
+                all: true,
+                rights: true
+            }
+        });
+
+        pwpolicy_command.on_success = function(data, text_status, xhr) {
+            // TODO: Use nested fields: that.fields.get_field('pwpolicy').get_fields();
+            var fields = that.fields.get_fields();
+            for (var i=0; i<fields.length; i++) {
+                var field = fields[i];
+
+                // load result into pwpolicy fields
+                if (field.widget_name.match(/^pwpolicy\./)) {
+                    field.load(data.result);
+                }
+            }
+        };
+
+        batch.add_command(pwpolicy_command);
+
+        var krbtpolicy_command = IPA.command({
+            entity: 'krbtpolicy',
+            method: 'show',
+            args: [ pkey ],
+            options: {
+                all: true,
+                rights: true
+            }
+        });
+
+        krbtpolicy_command.on_success = function(data, text_status, xhr) {
+            // TODO: Use nested fields: that.fields.get_field('krbtpolicy').get_fields();
+            var fields = that.fields.get_fields();
+            for (var i=0; i<fields.length; i++) {
+                var field = fields[i];
+
+                // load result into krbtpolicy fields
+                if (field.widget_name.match(/^krbtpolicy\./)) {
+                    field.load(data.result);
+                }
+            }
+        };
+
+        batch.add_command(krbtpolicy_command);
+
+        return batch;
+    };
+
+    return that;
+};
+
+IPA.user_adder_dialog = function(spec) {
+
+    var that = IPA.entity_adder_dialog(spec);
+
+    that.validate = function() {
+        var valid = that.dialog_validate();
+
+        var field1 = that.fields.get_field('userpassword');
+        var field2 = that.fields.get_field('userpassword2');
+
+        var password1 = field1.save()[0];
+        var password2 = field2.save()[0];
+
+        if (password1 !== password2) {
+            field2.show_error(IPA.messages.password.password_must_match);
+            valid = false;
+        }
+
+        return valid;
+    };
+
+    that.save = function(record) {
+        that.dialog_save(record);
+        delete record.userpassword2;
+    };
+
+    return that;
 };
 
 IPA.user_status_widget = function(spec) {
 
     spec = spec || {};
 
-    var that = IPA.widget(spec);
+    var that = IPA.input_widget(spec);
+
 
     that.create = function(container) {
 
@@ -199,12 +427,13 @@ IPA.user_status_widget = function(spec) {
         }).appendTo(that.link_span);
     };
 
-    that.update = function() {
+    that.update = function(values) {
 
-        if (!that.record) return;
+        //if (!that.record) return;
 
-        var lock_field = 'nsaccountlock';
-        var locked_field = that.record[lock_field];
+        //var lock_field = 'nsaccountlock';
+        //var locked_field = that.record[lock_field];
+        var locked_field = values;
         var locked = false;
 
         if (locked_field instanceof Array) {
@@ -220,19 +449,19 @@ IPA.user_status_widget = function(spec) {
         var action;
 
         if (locked) {
-            status = IPA.messages.objects.user.inactive;
-            action = 'activate';
+            status = IPA.messages.status.disabled;
+            action = 'enable';
 
         } else {
-            status = IPA.messages.objects.user.active;
-            action = 'deactivate';
+            status = IPA.messages.status.enabled;
+            action = 'disable';
         }
 
         that.status_span.html(status);
         that.status_link.attr('href', action);
 
-        var message = IPA.messages.objects.user.activation_link;
-        var action_label = IPA.messages.objects.user[action];
+        var message = IPA.messages.objects.user.status_link;
+        var action_label = IPA.messages.status[action];
         message = message.replace('${action}', action_label);
 
         that.status_link.html(message);
@@ -245,16 +474,21 @@ IPA.user_status_widget = function(spec) {
         }
     };
 
+    that.clear = function() {
+        that.link_span.css('display', 'none');
+        that.status_span.text('');
+    };
+
     that.show_activation_dialog = function() {
 
         var action = that.status_link.attr('href');
 
-        var message = IPA.messages.objects.user.activation_confirmation;
-        var action_label = IPA.messages.objects.user[action];
+        var message = IPA.messages.objects.user.status_confirmation;
+        var action_label = IPA.messages.status[action];
         message = message.replace('${action}', action_label.toLocaleLowerCase());
 
         var dialog = IPA.dialog({
-            'title': IPA.messages.dialogs.confirmation
+            title: IPA.messages.dialogs.confirmation
         });
 
         dialog.create = function() {
@@ -266,7 +500,7 @@ IPA.user_status_widget = function(spec) {
             label: action_label,
             click: function() {
                 that.set_status(
-                    action == 'activate',
+                    action,
                     function(data, textStatus, xhr) {
                         var facet = that.entity.get_facet();
                         facet.refresh();
@@ -287,10 +521,9 @@ IPA.user_status_widget = function(spec) {
         dialog.open(that.container);
     };
 
-    that.set_status = function(enabled, on_success, on_error) {
+    that.set_status = function(method, on_success, on_error) {
 
         var pkey = IPA.nav.get_state('user-pkey');
-        var method = enabled ? 'enable' : 'disable';
 
         IPA.command({
             entity: 'user',
@@ -301,6 +534,10 @@ IPA.user_status_widget = function(spec) {
         }).execute();
     };
 
+    that.widgets_created = function() {
+        that.widget = that;
+    };
+
     return that;
 };
 
@@ -308,9 +545,11 @@ IPA.user_password_widget = function(spec) {
 
     spec = spec || {};
 
-    var that = IPA.widget(spec);
+    var that = IPA.input_widget(spec);
 
     that.create = function(container) {
+
+        that.widget_create(container);
 
         $('<a/>', {
             href: 'jslink',
@@ -325,33 +564,44 @@ IPA.user_password_widget = function(spec) {
 
     that.show_dialog = function() {
 
-        that.pkey = IPA.nav.get_state('user-pkey');
-        that.self_service = that.pkey === IPA.whoami.uid[0];
+        var pkey = IPA.nav.get_state('user-pkey');
+        var self_service = pkey === IPA.whoami.uid[0];
 
-        var dialog = IPA.dialog({
-            title: IPA.messages.password.reset_password,
-            width: 400
-        });
-
-        if (that.self_service) {
-            dialog.add_field(IPA.text_widget({
-                name: 'current_password',
-                label: IPA.messages.password.current_password,
-                type: 'password'
-            }));
+        var sections = [];
+        if (self_service) {
+            sections.push({
+                fields: [
+                    {
+                        name: 'current_password',
+                        label: IPA.messages.password.current_password,
+                        type: 'password'
+                    }
+                ]
+            });
         }
 
-        dialog.add_field(IPA.text_widget({
-            name: 'password1',
-            label: IPA.messages.password.new_password,
-            type: 'password'
-        }));
+        sections.push({
+            fields: [
+                {
+                    name: 'password1',
+                    label: IPA.messages.password.new_password,
+                    type: 'password'
+                },
+                {
+                    name: 'password2',
+                    label: IPA.messages.password.verify_password,
+                    type: 'password'
+                }
+            ]
+        });
 
-        dialog.add_field(IPA.text_widget({
-            name: 'password2',
-            label: IPA.messages.password.verify_password,
-            type: 'password'
-        }));
+        var dialog = IPA.dialog({
+            entity: that.entity,
+            title: IPA.messages.password.reset_password,
+            width: 400,
+            sections: sections
+        });
+
 
         dialog.create_button({
             name: 'reset_password',
@@ -363,7 +613,7 @@ IPA.user_password_widget = function(spec) {
 
                 var current_password;
 
-                if (that.self_service) {
+                if (self_service) {
                     current_password = record.current_password[0];
                     if (!current_password) {
                         alert(IPA.messages.password.current_password_required);
@@ -380,11 +630,15 @@ IPA.user_password_widget = function(spec) {
                 }
 
                 that.set_password(
+                    pkey,
                     current_password,
                     new_password,
                     function(data, text_status, xhr) {
                         alert(IPA.messages.password.password_change_complete);
                         dialog.close();
+                        // refresh password expiration field
+                        var facet = IPA.current_entity.get_facet();
+                        facet.refresh();
                     },
                     function(xhr, text_status, error_thrown) {
                         dialog.close();
@@ -404,18 +658,11 @@ IPA.user_password_widget = function(spec) {
         dialog.open(that.container);
     };
 
-    that.set_password = function(current_password, password, on_success, on_error) {
-
-        var args;
-        if (that.self_service) {
-            args = [];
-        } else {
-            args = [that.pkey];
-        }
+    that.set_password = function(pkey, current_password, password, on_success, on_error) {
 
         var command = IPA.command({
             method: 'passwd',
-            args: args,
+            args: [ pkey ],
             options: {
                 current_password: current_password,
                 password: password
@@ -429,3 +676,5 @@ IPA.user_password_widget = function(spec) {
 
     return that;
 };
+
+IPA.register('user', IPA.user.entity);

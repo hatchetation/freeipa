@@ -18,6 +18,12 @@ dn: $SUFFIX
 add:aci: '(targetattr = "ipausersearchfields || ipagroupsearchfields || ipasearchtimelimit || ipasearchrecordslimit || ipacustomfields || ipahomesrootdir || ipadefaultloginshell || ipadefaultprimarygroup || ipamaxusernamelength || ipapwdexpadvnotify || ipauserobjectclasses || ipagroupobjectclasses || ipadefaultemaildomain || ipamigrationenabled || ipacertificatesubjectbase || ipaconfigstring")(target = "ldap:///cn=ipaconfig,cn=etc,$SUFFIX" )(version 3.0 ; acl "permission:Write IPA Configuration"; allow (write) groupdn = "ldap:///cn=Write IPA Configuration,cn=permissions,cn=pbac,$SUFFIX";)'
 
 # Host-Based Access Control
+dn: cn=HBAC Administrator,cn=privileges,cn=pbac,$SUFFIX
+default:objectClass: nestedgroup
+default:objectClass: groupofnames
+default:objectClass: top
+default:cn: HBAC Administrator
+default:description: HBAC Administrator
 
 dn: cn=Add HBAC rule,cn=permissions,cn=pbac,$SUFFIX
 default:objectClass: groupofnames
@@ -82,13 +88,6 @@ default:objectClass: top
 default:cn: Manage HBAC service group membership
 default:member: cn=HBAC Administrator,cn=privileges,cn=pbac,$SUFFIX
 
-dn: cn=HBAC Administrator,cn=privileges,cn=pbac,$SUFFIX
-default:objectClass: nestedgroup
-default:objectClass: groupofnames
-default:objectClass: top
-default:cn: HBAC Administrator
-default:description: HBAC Administrator
-
 dn: $SUFFIX
 add:aci: '(target = "ldap:///ipauniqueid=*,cn=hbac,$SUFFIX")(version 3.0;acl "permission:Add HBAC rule";allow (add) groupdn = "ldap:///cn=Add HBAC rule,cn=permissions,cn=pbac,$SUFFIX";)'
 add:aci: '(target = "ldap:///ipauniqueid=*,cn=hbac,$SUFFIX")(version 3.0;acl "permission:Delete HBAC rule";allow (delete) groupdn = "ldap:///cn=Delete HBAC rule,cn=permissions,cn=pbac,$SUFFIX";)'
@@ -101,6 +100,13 @@ add:aci: '(target = "ldap:///cn=*,cn=hbacservicegroups,cn=hbac,$SUFFIX")(version
 add:aci: '(targetattr = "member")(target = "ldap:///cn=*,cn=hbacservicegroups,cn=hbac,$SUFFIX")(version 3.0;acl "permission:Manage HBAC service group membership";allow (write) groupdn = "ldap:///cn=Manage HBAC service group membership,cn=permissions,cn=pbac,$SUFFIX";)'
 
 # SUDO
+
+dn: cn=Sudo Administrator,cn=privileges,cn=pbac,$SUFFIX
+default:objectClass: nestedgroup
+default:objectClass: groupofnames
+default:objectClass: top
+default:cn: Sudo Administrator
+default:description: Sudo Administrator
 
 dn: cn=Add Sudo rule,cn=permissions,cn=pbac,$SUFFIX
 default:objectClass: groupofnames
@@ -165,13 +171,6 @@ default:objectClass: top
 default:cn: Manage Sudo command group membership
 default:member: cn=Sudo Administrator,cn=privileges,cn=pbac,$SUFFIX
 
-dn: cn=Sudo Administrator,cn=privileges,cn=pbac,$SUFFIX
-default:objectClass: nestedgroup
-default:objectClass: groupofnames
-default:objectClass: top
-default:cn: Sudo Administrator
-default:description: Sudo Administrator
-
 dn: $SUFFIX
 add:aci: '(target = "ldap:///ipauniqueid=*,cn=sudorules,cn=sudo,$SUFFIX")(version 3.0;acl "permission:Add Sudo rule";allow (add) groupdn = "ldap:///cn=Add Sudo rule,cn=permissions,cn=pbac,$SUFFIX";)'
 add:aci: '(target = "ldap:///ipauniqueid=*,cn=sudorules,cn=sudo,$SUFFIX")(version 3.0;acl "permission:Delete Sudo rule";allow (delete) groupdn = "ldap:///cn=Delete Sudo rule,cn=permissions,cn=pbac,$SUFFIX";)'
@@ -184,6 +183,13 @@ add:aci: '(target = "ldap:///cn=*,cn=sudocmdgroups,cn=sudo,$SUFFIX")(version 3.0
 add:aci: '(targetattr = "member")(target = "ldap:///cn=*,cn=sudocmdgroups,cn=sudo,$SUFFIX")(version 3.0;acl "permission:Manage Sudo command group membership";allow (write) groupdn = "ldap:///cn=Manage Sudo command group membership,cn=permissions,cn=pbac,$SUFFIX";)'
 
 # Password Policy
+dn: cn=Password Policy Administrator,cn=privileges,cn=pbac,$SUFFIX
+default:objectClass: nestedgroup
+default:objectClass: groupofnames
+default:objectClass: top
+default:cn: Password Policy Administrator
+default:description: Password Policy Administrator
+
 dn: cn=Add Group Password Policy costemplate,cn=permissions,cn=pbac,$SUFFIX
 default:objectClass: groupofnames
 default:objectClass: ipapermission
@@ -226,13 +232,6 @@ default:objectClass: top
 default:cn: Modify Group Password Policy
 default:member: cn=Password Policy Administrator,cn=privileges,cn=pbac,$SUFFIX
 
-dn: cn=Password Policy Administrator,cn=privileges,cn=pbac,$SUFFIX
-default:objectClass: nestedgroup
-default:objectClass: groupofnames
-default:objectClass: top
-default:cn: Password Policy Administrator
-default:description: Password Policy Administrator
-
 dn: $SUFFIX
 add:aci: '(target = "ldap:///cn=*,cn=costemplates,cn=accounts,$SUFFIX")(version 3.0;acl "permission:Add Group Password Policy costemplate";allow (add) groupdn = "ldap:///cn=Add Group Password Policy costemplate,cn=permissions,cn=pbac,$SUFFIX";)'
 add:aci: '(target = "ldap:///cn=*,cn=costemplates,cn=accounts,$SUFFIX")(version 3.0;acl "permission:Delete Group Password Policy costemplate";allow (delete) groupdn = "ldap:///cn=Delete Group Password Policy costemplate,cn=permissions,cn=pbac,$SUFFIX";)'
@@ -268,3 +267,71 @@ dn: $SUFFIX
 replace:aci:'(target = "ldap:///idnsname=*,cn=dns,$SUFFIX")(version 3.0;acl "Add DNS entries";allow (add) groupdn = "ldap:///cn=add dns entries,cn=permissions,cn=pbac,$SUFFIX";)::(target = "ldap:///idnsname=*,cn=dns,$SUFFIX")(version 3.0;acl "permission:add dns entries";allow (add) groupdn = "ldap:///cn=add dns entries,cn=permissions,cn=pbac,$SUFFIX";)'
 replace:aci:'(target = "ldap:///idnsname=*,cn=dns,$SUFFIX")(version 3.0;acl "Remove DNS entries";allow (delete) groupdn = "ldap:///cn=remove dns entries,cn=permissions,cn=pbac,$SUFFIX";)::(target = "ldap:///idnsname=*,cn=dns,$SUFFIX")(version 3.0;acl "permission:remove dns entries";allow (delete) groupdn = "ldap:///cn=remove dns entries,cn=permissions,cn=pbac,$SUFFIX";)'
 replace:aci:'(targetattr = "idnsname || cn || idnsallowdynupdate || dnsttl || dnsclass || arecord || aaaarecord || a6record || nsrecord || cnamerecord || ptrrecord || srvrecord || txtrecord || mxrecord || mdrecord || hinforecord || minforecord || afsdbrecord || sigrecord || keyrecord || locrecord || nxtrecord || naptrrecord || kxrecord || certrecord || dnamerecord || dsrecord || sshfprecord || rrsigrecord || nsecrecord || idnsname || idnszoneactive || idnssoamname || idnssoarname || idnssoaserial || idnssoarefresh || idnssoaretry || idnssoaexpire || idnssoaminimum || idnsupdatepolicy")(target = "ldap:///idnsname=*,cn=dns,$SUFFIX")(version 3.0;acl "Update DNS entries";allow (write) groupdn = "ldap:///cn=update dns entries,cn=permissions,cn=pbac,$SUFFIX";)::(targetattr = "idnsname || cn || idnsallowdynupdate || dnsttl || dnsclass || arecord || aaaarecord || a6record || nsrecord || cnamerecord || ptrrecord || srvrecord || txtrecord || mxrecord || mdrecord || hinforecord || minforecord || afsdbrecord || sigrecord || keyrecord || locrecord || nxtrecord || naptrrecord || kxrecord || certrecord || dnamerecord || dsrecord || sshfprecord || rrsigrecord || nsecrecord || idnsname || idnszoneactive || idnssoamname || idnssoarname || idnssoaserial || idnssoarefresh || idnssoaretry || idnssoaexpire || idnssoaminimum || idnsupdatepolicy")(target = "ldap:///idnsname=*,cn=dns,$SUFFIX")(version 3.0;acl "permission:update dns entries";allow (write) groupdn = "ldap:///cn=update dns entries,cn=permissions,cn=pbac,$SUFFIX";)'
+
+# SELinux User Mapping
+dn: cn=SELinux User Map Administrators,cn=privileges,cn=pbac,$SUFFIX
+default:objectClass: top
+default:objectClass: groupofnames
+default:objectClass: nestedgroup
+default:cn: SELinux User Map Administrators
+default:description: SELinux User Map Administrators
+
+dn: cn=Add SELinux User Maps,cn=permissions,cn=pbac,$SUFFIX
+default:objectClass: top
+default:objectClass: groupofnames
+default:objectClass: ipapermission
+default:cn: Add SELinux User Maps
+default:member: cn=SELinux User Map Administrators,cn=privileges,cn=pbac,$SUFFIX
+
+dn: cn=Remove SELinux User Maps,cn=permissions,cn=pbac,$SUFFIX
+default:objectClass: top
+default:objectClass: groupofnames
+default:objectClass: ipapermission
+default:cn: Remove SELinux User Maps
+default:member: cn=SELinux User Map Administrators,cn=privileges,cn=pbac,$SUFFIX
+
+dn: cn=Modify SELinux User Maps,cn=permissions,cn=pbac,$SUFFIX
+default:objectClass: top
+default:objectClass: groupofnames
+default:objectClass: ipapermission
+default:cn: Modify SELinux User Maps
+default:member: cn=SELinux User Map Administrators,cn=privileges,cn=pbac,$SUFFIX
+
+dn: $SUFFIX
+add:aci:'(target = "ldap:///ipauniqueid=*,cn=usermap,cn=selinux,$SUFFIX")(version 3.0;acl "permission:Add SELinux User Maps";allow (add) groupdn = "ldap:///cn=Add SELinux User Maps,cn=permissions,cn=pbac,$SUFFIX";)'
+
+dn: $SUFFIX
+add:aci:'(target = "ldap:///ipauniqueid=*,cn=usermap,cn=selinux,$SUFFIX")(version 3.0;acl "permission:Remove SELinux User Maps";allow (delete) groupdn = "ldap:///cn=Remove SELinux User Maps,cn=permissions,cn=pbac,$SUFFIX";)'
+
+dn: $SUFFIX
+add:aci:'(targetattr = "cn || memberuser || memberhost || seealso || ipaselinuxuser || ipaenabledflag")(target = "ldap:///ipauniqueid=*,cn=usermap,cn=selinux,$SUFFIX")(version 3.0;acl "permission:Modify SELinux User Maps";allow (write) groupdn = "ldap:///cn=Modify SELinux User Maps,cn=permissions,cn=pbac,$SUFFIX";)'
+
+# SSH public keys
+dn: cn=Manage User SSH Public Keys,cn=permissions,cn=pbac,$SUFFIX
+default:objectClass: top
+default:objectClass: groupofnames
+default:objectClass: ipapermission
+default:cn: Manage User SSH Public Keys
+default:member: cn=User Administrators,cn=privileges,cn=pbac,$SUFFIX
+
+dn: cn=Manage Host SSH Public Keys,cn=permissions,cn=pbac,$SUFFIX
+default:objectClass: top
+default:objectClass: groupofnames
+default:objectClass: ipapermission
+default:cn: Manage Host SSH Public Keys
+default:member: cn=Host Administrators,cn=privileges,cn=pbac,$SUFFIX
+
+dn: $SUFFIX
+add:aci:'(targetattr = "ipasshpubkey")(target = "ldap:///uid=*,cn=users,cn=accounts,$SUFFIX")(version 3.0;acl "permission:Manage User SSH Public Keys";allow (write) groupdn = "ldap:///cn=Manage User SSH Public Keys,cn=permissions,cn=pbac,$SUFFIX";)'
+
+dn: $SUFFIX
+add:aci:'(targetattr = "ipasshpubkey")(target = "ldap:///fqdn=*,cn=computers,cn=accounts,$SUFFIX")(version 3.0;acl "permission:Manage Host SSH Public Keys";allow (write) groupdn = "ldap:///cn=Manage Host SSH Public Keys,cn=permissions,cn=pbac,$SUFFIX";)'
+
+# Limit the change password permission so it can't change the passwords
+# of administrators
+dn: $SUFFIX
+replace:aci:'(target = "ldap:///uid=*,cn=users,cn=accounts,$SUFFIX")(targetattr = "userpassword || krbprincipalkey || sambalmpassword || sambantpassword || passwordhistory")(version 3.0;acl "permission:Change a user password";allow (write) groupdn = "ldap:///cn=Change a user password,cn=permissions,cn=pbac,$SUFFIX";)::(targetfilter = "(!(memberOf=cn=admins,cn=groups,cn=accounts,$SUFFIX))")(target = "ldap:///uid=*,cn=users,cn=accounts,$SUFFIX")(targetattr = "userpassword || krbprincipalkey || sambalmpassword || sambantpassword || passwordhistory")(version 3.0;acl "permission:Change a user password";allow (write) groupdn = "ldap:///cn=Change a user password,cn=permissions,cn=pbac,$SUFFIX";)'
+
+# Don't allow the default 'manage group membership' to be able to manage the
+# admins group
+replace:aci:'(targetattr = "member")(target = "ldap:///cn=*,cn=groups,cn=accounts,$SUFFIX")(version 3.0;acl "permission:Modify Group membership";allow (write) groupdn = "ldap:///cn=Modify Group membership,cn=permissions,cn=pbac,$SUFFIX";)::(targetfilter = "(!(cn=admins))")(targetattr = "member")(target = "ldap:///cn=*,cn=groups,cn=accounts,$SUFFIX")(version 3.0;acl "permission:Modify Group membership";allow (write) groupdn = "ldap:///cn=Modify Group membership,cn=permissions,cn=pbac,$SUFFIX";)'

@@ -36,6 +36,8 @@ fqdn1 = u'testhost1.%s' % api.env.domain
 host_dn1 = DN(('fqdn',fqdn1),('cn','computers'),('cn','accounts'),
               api.env.basedn)
 
+invalidhostgroup1 = u'@invalid'
+
 
 class test_hostgroup(Declarative):
 
@@ -49,7 +51,8 @@ class test_hostgroup(Declarative):
         dict(
             desc='Try to retrieve non-existent %r' % hostgroup1,
             command=('hostgroup_show', [hostgroup1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(
+                reason=u'%s: host group not found' % hostgroup1),
         ),
 
 
@@ -58,14 +61,24 @@ class test_hostgroup(Declarative):
             command=('hostgroup_mod', [hostgroup1],
                 dict(description=u'Updated hostgroup 1')
             ),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(
+                reason=u'%s: host group not found' % hostgroup1),
         ),
 
 
         dict(
             desc='Try to delete non-existent %r' % hostgroup1,
             command=('hostgroup_del', [hostgroup1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(
+                reason=u'%s: host group not found' % hostgroup1),
+        ),
+
+
+        dict(
+            desc='Test an invalid hostgroup name %r' % invalidhostgroup1,
+            command=('hostgroup_add', [invalidhostgroup1], dict(description=u'Test')),
+            expected=errors.ValidationError(name='hostgroup_name',
+                error=u'may only include letters, numbers, _, -, and .'),
         ),
 
 
@@ -96,7 +109,8 @@ class test_hostgroup(Declarative):
             command=('hostgroup_add', [hostgroup1],
                 dict(description=u'Test hostgroup 1')
             ),
-            expected=errors.DuplicateEntry(),
+            expected=errors.DuplicateEntry(message=
+                u'host group with name "%s" already exists' % hostgroup1),
         ),
 
 

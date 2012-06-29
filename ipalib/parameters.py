@@ -100,6 +100,11 @@ a more detailed description for clarity.
 """
 
 import re
+import decimal
+import base64
+import csv
+from xmlrpclib import MAXINT, MININT
+
 from types import NoneType
 from util import make_repr
 from text import _ as ugettext
@@ -108,8 +113,6 @@ from errors import ConversionError, RequirementError, ValidationError
 from errors import PasswordMismatch
 from constants import NULLS, TYPE_ERROR, CALLABLE_ERROR
 from text import Gettext, FixMe
-import csv
-from xmlrpclib import MAXINT, MININT
 
 
 class DefaultFrom(ReadOnly):
@@ -195,6 +198,8 @@ class DefaultFrom(ReadOnly):
         self.callback = callback
         if len(keys) == 0:
             fc = callback.func_code
+            if fc.co_flags & 0x0c:
+                raise ValueError("callback: variable-length argument list not allowed")
             self.keys = fc.co_varnames[:fc.co_argcount]
         else:
             self.keys = keys
@@ -285,6 +290,75 @@ def _(message):
 class Param(ReadOnly):
     """
     Base class for all parameters.
+
+    Param attributes:
+    =================
+    The behavior of Param class and subclasses can be controlled using the
+    following set of attributes:
+
+      - cli_name: option name in CLI
+      - cli_short_name: one character version of cli_name
+      - label: very short description of the parameter. This value is used in
+        when the Command output is printed to CLI or in a Command help
+      - doc: parameter long description used in help
+      - required: the parameter is marked as required for given Command
+      - multivalue: indicates if the attribute is multivalued
+      - primary_key: Command's parameter primary key is used for unique
+        identification of an LDAP object and for sorting
+      - normalizer: a custom function for Param value normalization
+      - encoder: a custom function used to override Param subclass default
+        encoder
+      - default_from: a custom function for generating default values of
+        parameter instance
+      - autofill: by default, only `required` parameters get a default value
+        from the default_from function. When autofill is enabled, optional
+        attributes get the default value filled too
+      - query: this attribute is controlled by framework. When the `query`
+        is enabled, framework assumes that the value is only queried and not
+        inserted in the LDAP. Validation is then relaxed - custom
+        parameter validators are skipped and only basic class validators are
+        executed to check the parameter value
+      - attribute: this attribute is controlled by framework and enabled for
+        all LDAP objects parameters (unless parameter has "virtual_attribute"
+        flag). All parameters with enabled `attribute` are being encoded and
+        placed to an entry passed to LDAP Create/Update calls
+      - include: a list of contexts where this parameter should be included.
+        `Param.use_in_context()` provides further information.
+      - exclude: a list of contexts where this parameter should be excluded.
+        `Param.use_in_context()` provides further information.
+      - flags: there are several flags that can be used to further tune the
+        parameter behavior:
+            * no_display (Output parameters only): do not display the parameter
+            * no_create: do not include the parameter for crud.Create based
+              commands
+            * no_update: do not include the parameter for crud.update based
+              commands
+            * virtual_attribute: the parameter is not stored physically in the
+              LDAP and thus attribute `attribute` is not enabled
+            * suppress_empty (Output parameters only): do not display parameter
+              value when empty
+            * ask_create: CLI asks for parameter value even when the parameter
+              is not `required`. Applied for all crud.Create based commands
+            * ask_update: CLI asks for parameter value even when the parameter
+              is not `required`. Applied for all crud.Update based commands
+            * req_update: The parameter is `required` in all crud.Update based
+              commands
+            * nonempty: This is an internal flag; a required attribute should
+              be used instead of it.
+              The value of this parameter must not be empty, but it may
+              not be given at all. All crud.Update commands automatically
+              convert required parameters to `nonempty` ones, so the value
+              can be unspecified (unchanged) but cannot be deleted.
+      - hint: this attribute is currently not used
+      - alwaysask: when enabled, CLI asks for parameter value even when the
+        parameter is not `required`
+      - sortorder: used to sort a list of parameters for Command. See
+        `Command.finalize()` for further information
+      - csv: this multivalue attribute is given in CSV format
+      - csv_separator: character that separates values in CSV (comma by
+        default)
+      - csv_skipspace: if true, leading whitespace will be ignored in
+        individual CSV values
     """
 
     # This is a dummy type so that most of the functionality of Param can be
@@ -307,8 +381,8 @@ class Param(ReadOnly):
         ('multivalue', bool, False),
         ('primary_key', bool, False),
         ('normalizer', callable, None),
+        ('encoder', callable, None),
         ('default_from', DefaultFrom, None),
-        ('create_default', callable, None),
         ('autofill', bool, False),
         ('query', bool, False),
         ('attribute', bool, False),
@@ -318,6 +392,10 @@ class Param(ReadOnly):
         ('hint', (str, Gettext), None),
         ('alwaysask', bool, False),
         ('sortorder', int, 2), # see finalize()
+        ('csv', bool, False),
+        ('csv_separator', str, ','),
+        ('csv_skipspace', bool, True),
+        ('option_group', unicode, None),
 
         # The 'default' kwarg gets appended in Param.__init__():
         # ('default', self.type, None),
@@ -406,20 +484,6 @@ class Param(ReadOnly):
                 class_rules.append(getattr(self, rule_name))
         check_name(self.cli_name)
 
-        # Check that only default_from or create_default was provided:
-        assert not hasattr(self, '_get_default'), self.nice
-        if callable(self.default_from):
-            if callable(self.create_default):
-                raise ValueError(
-                    '%s: cannot have both %r and %r' % (
-                        self.nice, 'default_from', 'create_default')
-                )
-            self._get_default = self.default_from
-        elif callable(self.create_default):
-            self._get_default = self.create_default
-        else:
-            self._get_default = None
-
         # Check that only 'include' or 'exclude' was provided:
         if None not in (self.include, self.exclude):
             raise ValueError(
@@ -430,11 +494,16 @@ class Param(ReadOnly):
                 )
             )
 
+        # Check that if csv is set, multivalue is set too
+        if self.csv and not self.multivalue:
+            raise ValueError('%s: cannot have csv without multivalue' % self.nice)
+
         # Check that all the rules are callable
         self.class_rules = tuple(class_rules)
         self.rules = rules
         if self.query:
-            self.all_rules = self.class_rules
+            # by definition a query enforces no class or parameter rules
+            self.all_rules = ()
         else:
             self.all_rules = self.class_rules + self.rules
         for rule in self.all_rules:
@@ -483,10 +552,22 @@ class Param(ReadOnly):
         else:
             value = self.convert(self.normalize(value))
         if hasattr(self, 'env'):
-            self.validate(value, self.env.context)  #pylint: disable=E1101
+            self.validate(value, self.env.context, supplied=self.name in kw)  #pylint: disable=E1101
         else:
-            self.validate(value)
+            self.validate(value, supplied=self.name in kw)
         return value
+
+    def get_param_name(self):
+        """
+        Return the right name of an attribute depending on usage.
+
+        Normally errors should use cli_name, our "friendly" name. When
+        using the API directly or *attr return the real name.
+        """
+        name = self.cli_name
+        if not name:
+            name = self.name
+        return name
 
     def kw(self):
         """
@@ -600,6 +681,58 @@ class Param(ReadOnly):
         kw.update(overrides)
         return klass(name, *self.rules, **kw)
 
+    # The following 2 functions were taken from the Python
+    # documentation at http://docs.python.org/library/csv.html
+    def __utf_8_encoder(self, unicode_csv_data):
+        for line in unicode_csv_data:
+            yield line.encode('utf-8')
+
+    def __unicode_csv_reader(self, unicode_csv_data, dialect=csv.excel, **kwargs):
+        # csv.py doesn't do Unicode; encode temporarily as UTF-8:
+        csv_reader = csv.reader(self.__utf_8_encoder(unicode_csv_data),
+                                dialect=dialect,
+                                delimiter=self.csv_separator, quotechar='"',
+                                skipinitialspace=self.csv_skipspace,
+                                **kwargs)
+        for row in csv_reader:
+            # decode UTF-8 back to Unicode, cell by cell:
+            yield [unicode(cell, 'utf-8') for cell in row]
+
+    def split_csv(self, value):
+        """Split CSV strings into individual values.
+
+        For CSV params, ``value`` is a tuple of strings. Each of these is split
+        on commas, and the results are concatenated into one tuple.
+
+        For example::
+
+            >>> param = Param('telephones', multivalue=True, csv=True)
+            >>> param.split_csv((u'1, 2', u'3', u'4, 5, 6'))
+            (u'1', u'2', u'3', u'4', u'5', u'6')
+
+        If ``value`` is not a tuple (or list), it is only split::
+
+            >>> param = Param('telephones', multivalue=True, csv=True)
+            >>> param.split_csv(u'1, 2, 3')
+            (u'1', u'2', u'3')
+
+        For non-CSV params, return the value unchanged.
+        """
+        if self.csv:
+            if type(value) not in (tuple, list):
+                value = (value,)
+            newval = []
+            for v in value:
+                if isinstance(v, basestring):
+                    lines = unicode(v).splitlines()
+                    for row in self.__unicode_csv_reader(lines):
+                        newval.extend(row)
+                else:
+                    newval.append(v)
+            return tuple(newval)
+        else:
+            return value
+
     def normalize(self, value):
         """
         Normalize ``value`` using normalizer callback.
@@ -623,15 +756,15 @@ class Param(ReadOnly):
 
         :param value: A proposed value for this parameter.
         """
-        if self.normalizer is None:
-            return value
         if self.multivalue:
-            if type(value) in (tuple, list):
-                return tuple(
-                    self._normalize_scalar(v) for v in value
-                )
-            return (self._normalize_scalar(value),)  # Return a tuple
-        return self._normalize_scalar(value)
+            if type(value) not in (tuple, list):
+                value = (value,)
+        if self.multivalue:
+            return tuple(
+                self._normalize_scalar(v) for v in value
+            )
+        else:
+            return self._normalize_scalar(value)
 
     def _normalize_scalar(self, value):
         """
@@ -640,6 +773,8 @@ class Param(ReadOnly):
         This method is called once for each value in a multivalue.
         """
         if type(value) is not unicode:
+            return value
+        if self.normalizer is None:
             return value
         try:
             return self.normalizer(value)
@@ -717,15 +852,16 @@ class Param(ReadOnly):
             error=ugettext(self.type_error),
         )
 
-    def validate(self, value, context=None):
+    def validate(self, value, context=None, supplied=None):
         """
         Check validity of ``value``.
 
         :param value: A proposed value for this parameter.
         :param context: The context we are running in.
+        :param supplied: True if this parameter was supplied explicitly.
         """
         if value is None:
-            if self.required:
+            if self.required or (supplied and 'nonempty' in self.flags):
                 if context == 'cli':
                     raise RequirementError(name=self.cli_name)
                 else:
@@ -757,16 +893,43 @@ class Param(ReadOnly):
         for rule in self.all_rules:
             error = rule(ugettext, value)
             if error is not None:
-                name = self.cli_name
-                if not name:
-                    name = self.name
                 raise ValidationError(
-                    name=name,
+                    name=self.get_param_name(),
                     value=value,
                     index=index,
                     error=error,
                     rule=rule,
                 )
+
+    def encode(self, value, force=False):
+        """
+        Encode Python native type value to chosen backend format. Encoding is
+        applied for parameters representing actual attributes (attribute=True).
+
+        The default encode method `Param._encode` can be overriden in a `Param`
+        instance with `encoder` attribute:
+
+        >>> s = Str('my_str', encoder=lambda x:encode(x))
+
+        Note that the default method of encoding values is defined in
+        `Param._encode()`.
+
+        :param value: Encoded value
+        :param force: If set to true, encoding takes place even for Params
+            not marked as attribute
+        """
+        if not self.attribute and not force: #pylint: disable=E1101
+            return value
+        if self.encoder is not None: #pylint: disable=E1101
+            return self.encoder(value) #pylint: disable=E1101
+
+        return self._encode(value)
+
+    def _encode(self, value):
+        """
+        Encode a value to backend format.
+        """
+        return value
 
     def get_default(self, **kw):
         """
@@ -819,59 +982,9 @@ class Param(ReadOnly):
         >>> kw = dict(first=u'John', department=u'Engineering')
         >>> login.get_default(**kw)
         u'my-static-login-default'
-
-        The second, less common way to construct a dynamic default is to provide
-        a callback via the ``create_default`` keyword argument.  Unlike a
-        ``default_from`` callback, your ``create_default`` callback will not get
-        wrapped in any dispatcher.  Instead, it will be called directly, which
-        means your callback must accept arbitrary keyword arguments, although
-        whether your callback utilises these values is up to your
-        implementation.  For example:
-
-        >>> def make_csr(**kw):
-        ...     print '  make_csr(%r)' % (kw,)  # Note output below
-        ...     return 'Certificate Signing Request'
-        ...
-        >>> csr = Bytes('csr', create_default=make_csr)
-
-        Your ``create_default`` callback will be called with whatever keyword
-        arguments are passed to `Param.get_default()`.  For example:
-
-        >>> kw = dict(arbitrary='Keyword', arguments='Here')
-        >>> csr.get_default(**kw)
-          make_csr({'arguments': 'Here', 'arbitrary': 'Keyword'})
-        'Certificate Signing Request'
-
-        And your ``create_default`` callback is called even if
-        `Param.get_default()` is called with *zero* keyword arguments.
-        For example:
-
-        >>> csr.get_default()
-          make_csr({})
-        'Certificate Signing Request'
-
-        The ``create_default`` callback will most likely be used as a
-        pre-execute hook to perform some special client-side operation.  For
-        example, the ``csr`` parameter above might make a call to
-        ``/usr/bin/openssl``.  However, often a ``create_default`` callback
-        could also be implemented as a ``default_from`` callback.  When this is
-        the case, a ``default_from`` callback should be used as they are more
-        structured and therefore less error-prone.
-
-        The ``default_from`` and ``create_default`` keyword arguments are
-        mutually exclusive.  If you provide both, a ``ValueError`` will be
-        raised.  For example:
-
-        >>> homedir = Str('home',
-        ...     default_from=lambda login: '/home/%s' % login,
-        ...     create_default=lambda **kw: '/lets/use/this',
-        ... )
-        Traceback (most recent call last):
-          ...
-        ValueError: Str('home'): cannot have both 'default_from' and 'create_default'
         """
-        if self._get_default is not None:
-            default = self._get_default(**kw)
+        if self.default_from is not None:
+            default = self.default_from(**kw)
             if default is not None:
                 try:
                     return self.convert(self.normalize(default))
@@ -973,7 +1086,7 @@ class Flag(Bool):
 
 class Number(Param):
     """
-    Base class for the `Int` and `Float` parameters.
+    Base class for the `Int` and `Decimal` parameters.
     """
 
     def _convert_scalar(self, value, index=None):
@@ -1043,7 +1156,7 @@ class Int(Number):
                 return int(value)
             except ValueError:
                 pass
-        raise ConversionError(name=self.name, index=index,
+        raise ConversionError(name=self.get_param_name(), index=index,
             error=ugettext(self.type_error),
         )
 
@@ -1086,11 +1199,8 @@ class Int(Number):
         for rule in self.all_rules:
             error = rule(ugettext, value)
             if error is not None:
-                name = self.cli_name
-                if not name:
-                    name = self.name
                 raise ValidationError(
-                    name=name,
+                    name=self.get_param_name(),
                     value=value,
                     index=index,
                     error=error,
@@ -1098,36 +1208,59 @@ class Int(Number):
                 )
 
 
-class Float(Number):
+class Decimal(Number):
     """
-    A parameter for floating-point values (stored in the ``float`` type).
+    A parameter for floating-point values (stored in the ``Decimal`` type).
+
+    Python Decimal type helps overcome problems tied to plain "float" type,
+    e.g. problem with representation or value comparison. In order to safely
+    transfer the value over RPC libraries, it is being converted to string
+    which is then converted back to Decimal number.
     """
 
-    type = float
+    type = decimal.Decimal
     type_error = _('must be a decimal number')
 
     kwargs = Param.kwargs + (
-        ('minvalue', float, None),
-        ('maxvalue', float, None),
+        ('minvalue', decimal.Decimal, None),
+        ('maxvalue', decimal.Decimal, None),
+        ('precision', int, None),
     )
 
     def __init__(self, name, *rules, **kw):
-        #pylint: disable=E1003
-        super(Number, self).__init__(name, *rules, **kw)
+        for kwparam in ('minvalue', 'maxvalue', 'default'):
+            value = kw.get(kwparam)
+            if value is None:
+                continue
+            if isinstance(value, (basestring, float)):
+                try:
+                    value = decimal.Decimal(value)
+                except Exception, e:
+                    raise ValueError(
+                       '%s: cannot parse kwarg %s: %s' % (
+                        name, kwparam, str(e)))
+                kw[kwparam] = value
 
-        if (self.minvalue > self.maxvalue) and (self.minvalue is not None and self.maxvalue is not None):
+        super(Decimal, self).__init__(name, *rules, **kw)
+
+        if (self.minvalue > self.maxvalue) \
+            and (self.minvalue is not None and \
+                 self.maxvalue is not None):
             raise ValueError(
-                '%s: minvalue > maxvalue (minvalue=%r, maxvalue=%r)' % (
+                '%s: minvalue > maxvalue (minvalue=%s, maxvalue=%s)' % (
                     self.nice, self.minvalue, self.maxvalue)
             )
+
+        if self.precision is not None and self.precision < 0:
+            raise ValueError('%s: precision must be at least 0' % self.nice)
 
     def _rule_minvalue(self, _, value):
         """
         Check min constraint.
         """
-        assert type(value) is float
+        assert type(value) is decimal.Decimal
         if value < self.minvalue:
-            return _('must be at least %(minvalue)f') % dict(
+            return _('must be at least %(minvalue)s') % dict(
                 minvalue=self.minvalue,
             )
 
@@ -1135,12 +1268,39 @@ class Float(Number):
         """
         Check max constraint.
         """
-        assert type(value) is float
+        assert type(value) is decimal.Decimal
         if value > self.maxvalue:
-            return _('can be at most %(maxvalue)f') % dict(
+            return _('can be at most %(maxvalue)s') % dict(
                 maxvalue=self.maxvalue,
             )
 
+    def _enforce_precision(self, value):
+        assert type(value) is decimal.Decimal
+        if self.precision is not None:
+            quantize_exp = decimal.Decimal(10) ** -self.precision
+            return value.quantize(quantize_exp)
+
+        return value
+
+    def _convert_scalar(self, value, index=None):
+        if isinstance(value, (basestring, float)):
+            try:
+                value = decimal.Decimal(value)
+            except Exception, e:
+                raise ConversionError(name=self.get_param_name(), index=index,
+                                      error=unicode(e))
+
+        if isinstance(value, decimal.Decimal):
+            x = self._enforce_precision(value)
+            return x
+
+        return super(Decimal, self)._convert_scalar(value, index)
+
+    def _normalize_scalar(self, value):
+        if isinstance(value, decimal.Decimal):
+            value = self._enforce_precision(value)
+
+        return super(Decimal, self)._normalize_scalar(value)
 
 class Data(Param):
     """
@@ -1262,6 +1422,14 @@ class Bytes(Data):
                 length=self.length,
             )
 
+    def _convert_scalar(self, value, index=None):
+        if isinstance(value, unicode):
+            try:
+                value = base64.b64decode(value)
+            except TypeError:
+                raise ConversionError(name=self.get_param_name(), index=index, error=self.type_error)
+        return super(Bytes, self)._convert_scalar(value, index)
+
 
 class Str(Data):
     """
@@ -1296,7 +1464,7 @@ class Str(Data):
         """
         if type(value) is self.type:
             return value
-        if type(value) in (int, float):
+        if type(value) in (int, float, decimal.Decimal):
             return self.type(value)
         if type(value) in (tuple, list):
             raise ConversionError(name=self.name, index=index,
@@ -1358,7 +1526,8 @@ class IA5Str(Str):
         if isinstance(value, basestring):
             for i in xrange(len(value)):
                 if ord(value[i]) > 127:
-                    raise ConversionError(name=self.name, index=index,
+                    raise ConversionError(name=self.get_param_name(),
+                        index=index,
                         error=_('The character \'%(char)r\' is not allowed.') %
                             dict(char=value[i],)
                     )
@@ -1434,47 +1603,12 @@ class StrEnum(Enum):
     type = unicode
 
 
-class List(Param):
+class Any(Param):
     """
-    Base class for parameters as a list of values. The input is a delimited
-    string.
+    A parameter capable of holding values of any type. For internal use only.
     """
-    type = tuple
 
-    kwargs = Param.kwargs + (
-        ('separator', str, ','),
-        ('skipspace', bool, True),
-    )
-
-    # The following 2 functions were taken from the Python
-    # documentation at http://docs.python.org/library/csv.html
-    def __utf_8_encoder(self, unicode_csv_data):
-        for line in unicode_csv_data:
-            yield line.encode('utf-8')
-
-    def __unicode_csv_reader(self, unicode_csv_data, dialect=csv.excel, **kwargs):
-        # csv.py doesn't do Unicode; encode temporarily as UTF-8:
-        csv_reader = csv.reader(self.__utf_8_encoder(unicode_csv_data),
-                                dialect=dialect,
-                                delimiter=self.separator, escapechar='\\',
-                                skipinitialspace=self.skipspace,
-                                **kwargs)
-        for row in csv_reader:
-            # decode UTF-8 back to Unicode, cell by cell:
-            yield [unicode(cell, 'utf-8') for cell in row]
-
-    def __init__(self, name, *rules, **kw):
-        kw['multivalue'] = True
-        super(List, self).__init__(name, *rules, **kw)
-
-    def normalize(self, value):
-        if value and not type(value) in (list, tuple):
-            reader = self.__unicode_csv_reader([value])
-            value = []
-            for row in reader:
-                value = value + row
-            value = tuple(value)
-        return super(List, self).normalize(value)
+    type = object
 
     def _convert_scalar(self, value, index=None):
         return value
@@ -1677,10 +1811,10 @@ class AccessTime(Str):
         try:
             self._check(value)
         except ValueError, e:
-            raise ValidationError(name=self.cli_name, error=e.args[0])
+            raise ValidationError(name=self.get_param_name(), error=e.args[0])
         except IndexError:
             raise ValidationError(
-                name=self.cli_name, error='incomplete time value'
+                name=self.get_param_name(), error='incomplete time value'
             )
         return None
 

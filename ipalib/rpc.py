@@ -31,6 +31,7 @@ Also see the `ipaserver.rpcserver` module.
 """
 
 from types import NoneType
+from decimal import Decimal
 import threading
 import sys
 import os
@@ -41,21 +42,15 @@ import kerberos
 from ipalib.backend import Connectible
 from ipalib.errors import public_errors, PublicError, UnknownError, NetworkError, KerberosError, XMLRPCMarshallError
 from ipalib import errors
-from ipalib.request import context
+from ipalib.request import context, Connection
 from ipapython import ipautil, dnsclient
 import httplib
 import socket
 from ipapython.nsslib import NSSHTTPS, NSSConnection
 from nss.error import NSPRError
 from urllib2 import urlparse
-
-# Some Kerberos error definitions from krb5.h
-KRB5KDC_ERR_S_PRINCIPAL_UNKNOWN = (-1765328377L)
-KRB5KRB_AP_ERR_TKT_EXPIRED      = (-1765328352L)
-KRB5_FCC_PERM                   = (-1765328190L)
-KRB5_FCC_NOFILE                 = (-1765328189L)
-KRB5_CC_FORMAT                  = (-1765328185L)
-KRB5_REALM_CANT_RESOLVE         = (-1765328164L)
+from ipalib.krb_utils import KRB5KDC_ERR_S_PRINCIPAL_UNKNOWN, KRB5KRB_AP_ERR_TKT_EXPIRED, \
+                             KRB5_FCC_PERM, KRB5_FCC_NOFILE, KRB5_CC_FORMAT, KRB5_REALM_CANT_RESOLVE
 
 def xml_wrap(value):
     """
@@ -86,6 +81,9 @@ def xml_wrap(value):
         )
     if type(value) is str:
         return Binary(value)
+    if type(value) is Decimal:
+        # transfer Decimal as a string
+        return unicode(value)
     assert type(value) in (unicode, int, float, bool, NoneType)
     return value
 
@@ -217,16 +215,41 @@ class LanguageAwareTransport(Transport):
 class SSLTransport(LanguageAwareTransport):
     """Handles an HTTPS transaction to an XML-RPC server."""
 
+    def __nss_initialized(self, dbdir):
+        """
+        If there is another connections open it may have already
+        initialized NSS. This is likely to lead to an NSS shutdown
+        failure.  One way to mitigate this is to tell NSS to not
+        initialize if it has already been done in another open connection.
+
+        Returns True if another connection is using the same db.
+        """
+        for value in context.__dict__.values():
+            if not isinstance(value, Connection):
+                continue
+            if not isinstance(value.conn._ServerProxy__transport, SSLTransport):
+                continue
+            if hasattr(value.conn._ServerProxy__transport, 'dbdir') and \
+              value.conn._ServerProxy__transport.dbdir == dbdir:
+                return True
+        return False
+
     def make_connection(self, host):
-        host, self._extra_headers, x509 = self.get_host_info(host)
         host, self._extra_headers, x509 = self.get_host_info(host)
         # Python 2.7 changed the internal class used in xmlrpclib from
         # HTTP to HTTPConnection. We need to use the proper subclass
+
+        # If we an existing connection exists using the same NSS database
+        # there is no need to re-initialize. Pass thsi into the NSS
+        # connection creator.
+        dbdir = '/etc/pki/nssdb'
+        no_init = self.__nss_initialized(dbdir)
         (major, minor, micro, releaselevel, serial) = sys.version_info
         if major == 2 and minor < 7:
-            conn = NSSHTTPS(host, 443, dbdir="/etc/pki/nssdb")
+            conn = NSSHTTPS(host, 443, dbdir=dbdir, no_init=no_init)
         else:
-            conn = NSSConnection(host, 443, dbdir="/etc/pki/nssdb")
+            conn = NSSConnection(host, 443, dbdir=dbdir, no_init=no_init)
+        self.dbdir=dbdir
         conn.connect()
         return conn
 
@@ -234,6 +257,7 @@ class KerbTransport(SSLTransport):
     """
     Handles Kerberos Negotiation authentication to an XML-RPC server.
     """
+    flags = kerberos.GSS_C_MUTUAL_FLAG | kerberos.GSS_C_SEQUENCE_FLAG
 
     def _handle_exception(self, e, service=None):
         (major, minor) = ipautil.get_gsserror(e)
@@ -259,10 +283,7 @@ class KerbTransport(SSLTransport):
         service = "HTTP@" + host.split(':')[0]
 
         try:
-            (rc, vc) = kerberos.authGSSClientInit(service,
-                                                kerberos.GSS_C_DELEG_FLAG |
-                                                kerberos.GSS_C_MUTUAL_FLAG |
-                                                kerberos.GSS_C_SEQUENCE_FLAG)
+            (rc, vc) = kerberos.authGSSClientInit(service, self.flags)
         except kerberos.GSSError, e:
             self._handle_exception(e)
 
@@ -286,6 +307,14 @@ class KerbTransport(SSLTransport):
         return (host, extra_headers, x509)
 
 
+class DelegatedKerbTransport(KerbTransport):
+    """
+    Handles Kerberos Negotiation authentication and TGT delegation to an
+    XML-RPC server.
+    """
+    flags = kerberos.GSS_C_DELEG_FLAG |  kerberos.GSS_C_MUTUAL_FLAG | \
+            kerberos.GSS_C_SEQUENCE_FLAG
+
 class xmlclient(Connectible):
     """
     Forwarding backend plugin for XML-RPC client.
@@ -305,7 +334,7 @@ class xmlclient(Connectible):
         """
         if not hasattr(self.conn, '_ServerProxy__transport'):
             return None
-        if isinstance(self.conn._ServerProxy__transport, KerbTransport):
+        if type(self.conn._ServerProxy__transport) in (KerbTransport, DelegatedKerbTransport):
             scheme = "https"
         else:
             scheme = "http"
@@ -339,14 +368,18 @@ class xmlclient(Connectible):
 
         return servers
 
-    def create_connection(self, ccache=None, verbose=False, fallback=True):
+    def create_connection(self, ccache=None, verbose=False, fallback=True,
+                          delegate=False):
         servers = self.get_url_list()
         serverproxy = None
         for server in servers:
             kw = dict(allow_none=True, encoding='UTF-8')
             kw['verbose'] = verbose
             if server.startswith('https://'):
-                kw['transport'] = KerbTransport()
+                if delegate:
+                    kw['transport'] = DelegatedKerbTransport()
+                else:
+                    kw['transport'] = KerbTransport()
             else:
                 kw['transport'] = LanguageAwareTransport()
             self.log.info('trying %s' % server)

@@ -3,6 +3,7 @@
  *    Pavel Zuna <pzuna@redhat.com>
  *    Adam Young <ayoung@redhat.com>
  *    Endi Dewata <edewata@redhat.com>
+ *    John Dennis <jdennis@redhat.com>
  *
  * Copyright (C) 2010 Red Hat
  * see file 'COPYING' for use and warranty information
@@ -25,17 +26,14 @@
 /* REQUIRES: jquery.ordered-map.js */
 /*global $:true, location:true */
 
-var IPA = ( function () {
+var IPA = function() {
 
     var that = {
         jsonrpc_id: 0
     };
 
-    that.use_static_files = false;
-    that.json_url = '/ipa/json';
-    if (that.use_static_files){
-        that.json_url = 'test/data';
-    }
+    // live server path
+    that.url = '/ipa/ui/';
 
     that.ajax_options = {
         type: 'POST',
@@ -51,60 +49,34 @@ var IPA = ( function () {
 
     that.entities = $.ordered_map();
     that.entity_factories = {};
+    that.field_factories = {};
+    that.widget_factories = {};
 
     that.network_call_count = 0;
 
-    /* initialize the IPA JSON-RPC helper
-     * arguments:
-     *   url - JSON-RPC URL to use (optional) */
-    that.init = function (url, use_static_files, on_success, on_error) {
-        if (url) {
-            that.json_url = url;
-        }
+    /* initialize the IPA JSON-RPC helper */
+    that.init = function(params) {
 
-        if (use_static_files) {
-            that.use_static_files = use_static_files;
+        // if current path matches live server path, use live data
+        if (that.url && window.location.pathname.substring(0, that.url.length) === that.url) {
+            that.json_url = params.url || '/ipa/session/json';
+            that.login_url = params.url || '/ipa/session/login_kerberos';
+
+        } else { // otherwise use fixtures
+            that.json_path = params.url || "test/data";
+            // that.login_url is not needed for fixtures
         }
 
         $.ajaxSetup(that.ajax_options);
-
-        var methods = IPA.command({
-            name: 'ipa_init_methods',
-            method: 'json_metadata',
-            options: {
-                methodname: 'all'
-            },
-            on_success: function(data, text_status, xhr) {
-                if(!that.metadata) that.metadata = {};
-                that.metadata.methods = data.result.methods;
-            }
-        });
-
-        var objects = IPA.command({
-            name: 'ipa_init_objects',
-            method: 'json_metadata',
-            options: {
-                objname: 'all'
-            },
-            on_success: function(data, text_status, xhr) {
-                if(!that.metadata) that.metadata = {};
-                that.metadata.objects = data.result.objects;
-            }
-        });
-
-        var metadata_command = IPA.concurrent_command({
-            commands: [
-                methods,
-                objects
-            ],
-            on_success: on_success
-        });
 
         var batch = IPA.batch_command({
             name: 'ipa_init',
             retry: false,
             on_success: function() {
-                metadata_command.execute();
+                that.init_metadata({
+                    on_success: params.on_success,
+                    on_error: params.on_error
+                });
             },
             on_error: function(xhr, text_status, error_thrown) {
 
@@ -125,8 +97,8 @@ var IPA = ( function () {
 
                     dialog.on_cancel = function() {
                         dialog.close();
-                        if (on_error) {
-                            on_error.call(ajax, xhr, text_status, error_thrown);
+                        if (params.on_error) {
+                            params.on_error.call(ajax, xhr, text_status, error_thrown);
                         }
                     };
 
@@ -151,6 +123,7 @@ var IPA = ( function () {
             },
             on_success: function(data, text_status, xhr) {
                 that.whoami = data.result[0];
+                that.principal = that.whoami.krbprincipalname[0];
             }
         }));
 
@@ -158,6 +131,7 @@ var IPA = ( function () {
             method: 'env',
             on_success: function(data, text_status, xhr) {
                 that.env = data.result;
+                that.version = that.env.version;
             }
         }));
 
@@ -169,47 +143,94 @@ var IPA = ( function () {
             }
         }));
 
-        batch.add_command(IPA.command({
-            entity: 'hbacrule',
-            method: 'find',
-            options:{"accessruletype":"deny"},
-            on_success: function(data, text_status, xhr) {
-                that.hbac_deny_rules = data;
-            }
-        }));
-
         batch.execute();
+    };
+
+    that.init_metadata = function(params) {
+
+        var objects = IPA.command({
+            name: 'ipa_init_objects',
+            method: 'json_metadata',
+            options: {
+                object: 'all'
+            },
+            on_success: function(data, text_status, xhr) {
+                that.metadata.objects = data.result.objects;
+            }
+        });
+
+        var commands = IPA.command({
+            name: 'ipa_init_commands',
+            method: 'json_metadata',
+            options: {
+                command: 'all'
+            },
+            on_success: function(data, text_status, xhr) {
+                that.metadata.commands = data.result.commands;
+            }
+        });
+
+        var metadata_command = IPA.concurrent_command({
+            commands: [
+                objects,
+                commands
+            ],
+            on_success: params.on_success,
+            on_error: params.on_error
+        });
+
+        metadata_command.execute();
+    };
+
+    that.register = function(name, factory) {
+        that.remove_entity(name);
+        that.entity_factories[name] = factory;
+    };
+
+    that.create_entity = function(name) {
+        var factory = that.entity_factories[name];
+        if (!factory) return null;
+
+        try {
+            var builder = IPA.entity_builder();
+
+            builder.entity({
+                factory: factory,
+                name: name
+            });
+
+            var entity = builder.build();
+            entity.init();
+
+            return entity;
+
+        } catch (e) {
+            if (e.expected) {
+                /*expected exceptions thrown by builder just mean that
+                  entities are not to be registered. */
+                return null;
+            }
+
+            if (e.message) {
+                alert(e.message);
+            } else {
+                alert(e);
+            }
+
+            return null;
+        }
     };
 
     that.get_entities = function() {
         return that.entities.values;
     };
 
-
-
     that.get_entity = function(name) {
+        if (typeof name === 'object') return name;
         var entity = that.entities.get(name);
-        if (!entity){
-            var factory = that.entity_factories[name];
-            if (!factory){
-                return null;
-            }
-            try {
-                entity = factory();
-                that.add_entity(entity);
-            } catch (e) {
-                if (e.expected){
-                    /*expected exceptions thrown by builder just mean that
-                      entities are not to be registered. */
-                    return null;
-                }
-                if (e.message){
-                    alert(e.message);
-                }else{
-                    alert(e);
-                }
-                return null;
-            }
+        if (!entity) {
+            entity = that.create_entity(name);
+            if (entity) that.add_entity(entity);
         }
         return entity;
     };
@@ -265,7 +286,121 @@ var IPA = ( function () {
     };
 
     return that;
-}());
+}();
+
+IPA.get_credentials = function() {
+    var status;
+
+    function error_handler(xhr, text_status, error_thrown) {
+        status = xhr.status;
+    }
+
+    function success_handler(data, text_status, xhr) {
+        status = xhr.status;
+    }
+
+    var request = {
+        url: IPA.login_url,
+        async: false,
+        type: "GET",
+        success: success_handler,
+        error: error_handler
+    };
+
+    $.ajax(request);
+
+    return status;
+};
+
+IPA.logout = function() {
+
+    function show_error(message) {
+        var dialog = IPA.message_dialog({
+            message: message,
+            title: IPA.messages.login.logout_error
+        });
+        dialog.open();
+    }
+
+    function redirect () {
+        window.location = 'logout.html';
+    }
+
+    function success_handler(data, text_status, xhr) {
+        if (data && data.error) {
+            show_error(data.error.message);
+        } else {
+            redirect();
+        }
+    }
+
+    function error_handler(xhr, text_status, error_thrown) {
+        if (xhr.status === 401) {
+            redirect();
+        } else {
+            show_error(text_status);
+        }
+    }
+
+    var command = {
+        method: 'session_logout',
+        params: [[], {}]
+    };
+
+    var request = {
+        url: IPA.json_url || IPA.json_path + '/session_logout.json',
+        data: JSON.stringify(command),
+        success: success_handler,
+        error: error_handler
+    };
+
+    $.ajax(request);
+};
+
+IPA.login_password = function(username, password) {
+
+    var result = 'invalid';
+
+    function success_handler(data, text_status, xhr) {
+        result = 'success';
+    }
+
+    function error_handler(xhr, text_status, error_thrown) {
+
+        if (xhr.status === 401) {
+            var reason = xhr.getResponseHeader("X-IPA-Rejection-Reason");
+
+            //change result from invalid only if we have a header which we
+            //understand
+            if (reason === 'password-expired') {
+                result = 'expired';
+            }
+        }
+    }
+
+    var data = {
+        user: username,
+        password: password
+    };
+
+    var request = {
+        url: '/ipa/session/login_password',
+        data: data,
+        contentType: 'application/x-www-form-urlencoded',
+        processData: true,
+        dataType: 'html',
+        async: false,
+        type: 'POST',
+        success: success_handler,
+        error: error_handler
+    };
+
+    IPA.display_activity_icon();
+    $.ajax(request);
+    IPA.hide_activity_icon();
+
+    return result;
+};
 
 /**
  * Call an IPA command over JSON-RPC.
@@ -316,6 +451,10 @@ IPA.command = function(spec) {
         that.options[name] = value;
     };
 
+    that.set_options = function(options) {
+        $.extend(that.options, options);
+    };
+
     that.add_option = function(name, value) {
         var values = that.options[name];
         if (!values) {
@@ -327,6 +466,10 @@ IPA.command = function(spec) {
 
     that.get_option = function(name) {
         return that.options[name];
+    };
+
+    that.remove_option = function(name) {
+        delete that.options[name];
     };
 
     that.execute = function() {
@@ -352,21 +495,61 @@ IPA.command = function(spec) {
             dialog.open();
         }
 
+        function auth_dialog_open(xhr, text_status, error_thrown) {
+
+            var ajax = this;
+
+            var dialog = IPA.unauthorized_dialog({
+                xhr: xhr,
+                text_status: text_status,
+                error_thrown: error_thrown,
+                close_on_escape: false,
+                command: that
+            });
+
+            dialog.open();
+        }
+
+        /*
+         * Special error handler used the first time this command is
+         * submitted. It checks to see if the session credentials need
+         * to be acquired and if so sends a request to a special url
+         * to establish the sesion credentials. If acquiring the
+         * session credentials is successful it simply resubmits the
+         * exact same command after setting the error handler back to
+         * the normal error handler. If aquiring the session
+         * credentials fails the normal error handler is invoked to
+         * process the error returned from the attempt to aquire the
+         * session credentials.
+         */
+        function error_handler_login(xhr, text_status, error_thrown) {
+            if (xhr.status === 401) {
+                var login_status = IPA.get_credentials();
+
+                if (login_status === 200) {
+                    that.request.error = error_handler;
+                    $.ajax(that.request);
+                    return;
+                }
+            }
+            // error_handler() calls IPA.hide_activity_icon()
+            error_handler.call(this, xhr, text_status, error_thrown);
+        }
+
+        /*
+         * Normal error handler, handles all errors.
+         * error_handler_login() is initially used to trap the
+         * special case need to aquire session credentials, this is
+         * not a true error, rather it's an indication an extra step
+         * needs to be taken before normal processing can continue.
+         */
         function error_handler(xhr, text_status, error_thrown) {
 
             IPA.hide_activity_icon();
 
             if (xhr.status === 401) {
-                error_thrown = {}; // error_thrown is string
-                error_thrown.name = IPA.get_message('ajax.401.title',
-                    'Kerberos ticket no longer valid.');
-                error_thrown.message = IPA.get_message('ajax.401.message',
-                    "Your kerberos ticket is no longer valid. "+
-                    "Please run kinit and then click 'Retry'. "+
-                    "If this is your first time running the IPA Web UI "+
-                    "<a href='/ipa/config/unauthorized.html'>"+
-                    "follow these directions</a> to configure your browser.");
-
+                auth_dialog_open(xhr, text_status, error_thrown);
+                return;
             } else if (!error_thrown) {
                 error_thrown = {
                     name: xhr.responseText || IPA.get_message('errors.unknown_error', 'Unknown Error'),
@@ -398,6 +581,12 @@ IPA.command = function(spec) {
                     url: this.url,
                     message: data ? xhr.statusText : IPA.get_message('errors.no_response', 'No response')
                 });
+
+            } else if (IPA.version && data.version && IPA.version !== data.version) {
+                window.location.reload();
+
+            } else if (IPA.principal && data.principal && IPA.principal !== data.principal) {
+                window.location.reload();
 
             } else if (data.error) {
                 // error_handler() calls IPA.hide_activity_icon()
@@ -440,28 +629,20 @@ IPA.command = function(spec) {
             }
         }
 
-        var url = IPA.json_url;
-
-        var command = that.get_command();
-
-        if (IPA.use_static_files) {
-            url += '/' + (that.name ? that.name : command) + '.json';
-        }
-
-        var data = {
-            method: command,
+        that.data = {
+            method: that.get_command(),
             params: [that.args, that.options]
         };
 
-        var request = {
-            url: url,
-            data: JSON.stringify(data),
+        that.request = {
+            url: IPA.json_url || IPA.json_path + '/' + (that.name || that.data.method) + '.json',
+            data: JSON.stringify(that.data),
             success: success_handler,
-            error: error_handler
+            error: error_handler_login
         };
 
         IPA.display_activity_icon();
-        $.ajax(request);
+        $.ajax(that.request);
     };
 
     that.get_failed = function(command, result, text_status, xhr) {
@@ -541,96 +722,104 @@ IPA.batch_command = function (spec) {
     that.execute = function() {
         that.errors.clear();
 
-        IPA.command({
+        var command = IPA.command({
             name: that.name,
             entity: that.entity,
             method: that.method,
             args: that.args,
             options: that.options,
-            retry: that.retry,
-            on_success: function(data, text_status, xhr) {
+            retry: that.retry
+        });
 
-                for (var i=0; i<that.commands.length; i++) {
-                    var command = that.commands[i];
-                    var result = data.result.results[i];
+        command.on_success = that.batch_command_on_success;
+        command.on_error = that.batch_command_on_error;
 
-                    var name = '';
-                    var message = '';
+        command.execute();
+    };
 
-                    if (!result) {
-                        name = IPA.get_message('errors.internal_error', 'Internal Error')+' '+xhr.status;
-                        message = result ? xhr.statusText : IPA.get_message('errors.internal_error', 'Internal Error');
+    that.batch_command_on_success = function(data, text_status, xhr) {
 
-                        that.errors.add(command, name, message, text_status);
+        for (var i=0; i<that.commands.length; i++) {
+            var command = that.commands[i];
+            var result = data.result.results[i];
 
-                        if (command.on_error) command.on_error.call(
-                            this,
-                            xhr,
-                            text_status,
-                            {
-                                name: name,
-                                message: message
-                            }
-                        );
+            var name = '';
+            var message = '';
 
-                    } else if (result.error) {
-                        name = IPA.get_message('errors.ipa_error', 'IPA Error')+(result.error.code ? ' '+result.error.code : '');
-                        message = result.error.message || result.error;
+            if (!result) {
+                name = IPA.get_message('errors.internal_error', 'Internal Error')+' '+xhr.status;
+                message = result ? xhr.statusText : IPA.get_message('errors.internal_error', 'Internal Error');
 
-                        that.errors.add(command, name, message, text_status);
+                that.errors.add(command, name, message, text_status);
 
-                        if (command.on_error) command.on_error.call(
-                            this,
-                            xhr,
-                            text_status,
-                            {
-                                name: name,
-                                code: result.error.code,
-                                message: message,
-                                data: result
-                            }
-                        );
-
-                    } else {
-                        var failed = that.get_failed(command, result, text_status, xhr);
-                        that.errors.add_range(failed);
-
-                        if (command.on_success) command.on_success.call(this, result, text_status, xhr);
+                if (command.on_error) command.on_error.call(
+                    this,
+                    xhr,
+                    text_status,
+                    {
+                        name: name,
+                        message: message
                     }
-                }
-                //check for partial errors and show error dialog
-                if(that.show_error && that.errors.errors.length > 0) {
-                    var ajax = this;
-                    var dialog = IPA.error_dialog({
-                        xhr: xhr,
-                        text_status: text_status,
-                        error_thrown: {
-                            name: IPA.get_message('dialogs.batch_error_title', 'Operations Error'),
-                            message: that.error_message
-                        },
-                        command: that,
-                        errors: that.errors.errors,
-                        visible_buttons: ['ok']
-                    });
+                );
 
-                    dialog.on_ok = function() {
-                        dialog.close();
-                        if (that.on_success) that.on_success.call(ajax, data, text_status, xhr);
-                    };
+            } else if (result.error) {
+                name = IPA.get_message('errors.ipa_error', 'IPA Error')+(result.error.code ? ' '+result.error.code : '');
+                message = result.error.message || result.error;
 
-                    dialog.open();
+                that.errors.add(command, name, message, text_status);
 
-                } else {
-                    if (that.on_success) that.on_success.call(this, data, text_status, xhr);
-                }
-            },
-            on_error: function(xhr, text_status, error_thrown) {
-                // TODO: undefined behavior
-                if (that.on_error) {
-                    that.on_error.call(this, xhr, text_status, error_thrown);
-                }
+                if (command.on_error) command.on_error.call(
+                    this,
+                    xhr,
+                    text_status,
+                    {
+                        name: name,
+                        code: result.error.code,
+                        message: message,
+                        data: result
+                    }
+                );
+
+            } else {
+                var failed = that.get_failed(command, result, text_status, xhr);
+                that.errors.add_range(failed);
+
+                if (command.on_success) command.on_success.call(this, result, text_status, xhr);
             }
-        }).execute();
+        }
+
+        //check for partial errors and show error dialog
+        if (that.show_error && that.errors.errors.length > 0) {
+            var ajax = this;
+            var dialog = IPA.error_dialog({
+                xhr: xhr,
+                text_status: text_status,
+                error_thrown: {
+                    name: IPA.get_message('dialogs.batch_error_title', 'Operations Error'),
+                    message: that.error_message
+                },
+                command: that,
+                errors: that.errors.errors,
+                visible_buttons: [ 'ok' ]
+            });
+
+            dialog.on_ok = function() {
+                dialog.close();
+                if (that.on_success) that.on_success.call(ajax, data, text_status, xhr);
+            };
+
+            dialog.open();
+
+        } else {
+            if (that.on_success) that.on_success.call(this, data, text_status, xhr);
+        }
+    };
+
+    that.batch_command_on_error = function(xhr, text_status, error_thrown) {
+        // TODO: undefined behavior
+        if (that.on_error) {
+            that.on_error.call(this, xhr, text_status, error_thrown);
+        }
     };
 
     return that;
@@ -724,8 +913,8 @@ IPA.concurrent_command = function(spec) {
 
         for(var i=0; i < that.commands.length; i++) {
             var command_info = that.commands[i];
-            all_completed &= command_info.completed;
-            all_success &= command_info.success;
+            all_completed = all_completed &&  command_info.completed;
+            all_success = all_success && command_info.success;
         }
 
         if(all_completed) {
@@ -797,9 +986,9 @@ IPA.get_entity_param = function(entity_name, name) {
     return null;
 };
 
-IPA.get_method_arg = function(method_name, name) {
+IPA.get_command_arg = function(command_name, arg_name) {
 
-    var metadata = IPA.metadata.methods[method_name];
+    var metadata = IPA.metadata.commands[command_name];
     if (!metadata) {
         return null;
     }
@@ -810,7 +999,7 @@ IPA.get_method_arg = function(method_name, name) {
     }
 
     for (var i=0; i<args.length; i++) {
-        if (args[i].name === name) {
+        if (args[i].name === arg_name) {
             return args[i];
         }
     }
@@ -818,9 +1007,9 @@ IPA.get_method_arg = function(method_name, name) {
     return null;
 };
 
-IPA.get_method_option = function(method_name, name) {
+IPA.get_command_option = function(command_name, option_name) {
 
-    var metadata = IPA.metadata.methods[method_name];
+    var metadata = IPA.metadata.commands[command_name];
     if (!metadata) {
         return null;
     }
@@ -831,7 +1020,7 @@ IPA.get_method_option = function(method_name, name) {
     }
 
     for (var i=0; i<options.length; i++) {
-        if (options[i].name === name) {
+        if (options[i].name === option_name) {
             return options[i];
         }
     }
@@ -861,9 +1050,13 @@ IPA.get_member_attribute = function(obj_name, member) {
 };
 
 IPA.create_network_spinner = function(){
-    return $('<span />',{
-        'class':'network-activity-indicator',
-        html: '<img src="spinner_small.gif" />'});
+    var span = $('<span/>', {
+        'class': 'network-activity-indicator'
+    });
+    $('<img/>', {
+        src: 'images/spinner-small.gif'
+    }).appendTo(span);
+    return span;
 };
 
 IPA.dirty_dialog = function(spec) {
@@ -998,40 +1191,39 @@ IPA.error_dialog = function(spec) {
         * ticket, the messages including the button labels have not
         * been loaded yet, so the button labels need default values.
         */
-        var label;
 
-        if(that.visible_buttons.indexOf('retry') > -1) {
-            label = IPA.get_message('buttons.retry', 'Retry');
-            that.create_button({
-                name: 'retry',
-                label: label,
-                click: function() {
-                    that.on_retry();
-                }
-            });
-        }
+        var visible = that.visible_buttons.indexOf('retry') > -1;
+        var label = IPA.get_message('buttons.retry', 'Retry');
+        that.create_button({
+            name: 'retry',
+            label: label,
+            visible: visible,
+            click: function() {
+                that.on_retry();
+            }
+        });
 
-        if(that.visible_buttons.indexOf('ok') > -1) {
-            label = IPA.get_message('buttons.ok', 'OK');
-            that.create_button({
-                name: 'ok',
-                label: label,
-                click: function() {
-                    that.on_ok();
-                }
-            });
-        }
+        visible = that.visible_buttons.indexOf('ok') > -1;
+        label = IPA.get_message('buttons.ok', 'OK');
+        that.create_button({
+            name: 'ok',
+            label: label,
+            visible: visible,
+            click: function() {
+                that.on_ok();
+            }
+        });
 
-        if(that.visible_buttons.indexOf('cancel') > -1) {
-            label = IPA.get_message('buttons.cancel', 'Cancel');
-            that.create_button({
-                name: 'cancel',
-                label: label,
-                click: function() {
-                    that.on_cancel();
-                }
-            });
-        }
+        visible = that.visible_buttons.indexOf('cancel') > -1;
+        label = IPA.get_message('buttons.cancel', 'Cancel');
+        that.create_button({
+            name: 'cancel',
+            label: label,
+            visible: visible,
+            click: function() {
+                that.on_cancel();
+            }
+        });
     };
 
     that.on_retry = function() {
@@ -1079,4 +1271,325 @@ IPA.error_list = function() {
 
     that.clear();
     return that;
+};
+
+IPA.create_4304_error_handler = function(adder_dialog) {
+
+    var set_pkey = function(result) {
+
+        var pkey_name = adder_dialog.entity.metadata.primary_key;
+        var args = adder_dialog.command.args;
+        var pkey = args[args.length-1];
+        result[pkey_name] = pkey;
+    };
+
+    return function (xhr, text_status, error_thrown) {
+
+        var ajax = this;
+        var command = adder_dialog.command;
+        var data = error_thrown.data;
+        var dialog = null;
+
+        if (data && data.error && data.error.code === 4304) {
+            dialog = IPA.message_dialog({
+                message: data.error.message,
+                title: adder_dialog.title,
+                on_ok: function() {
+                    data.result = { result: {} };
+                    set_pkey(data.result.result);
+                    command.on_success.call(ajax, data, text_status, xhr);
+                }
+            });
+        } else {
+            dialog = IPA.error_dialog({
+                xhr: xhr,
+                text_status: text_status,
+                error_thrown: error_thrown,
+                command: command
+            });
+        }
+
+        dialog.open(adder_dialog.container);
+    };
+};
+
+IPA.unauthorized_dialog = function(spec) {
+
+    spec = spec || {};
+
+    spec.sections = [
+        {
+            fields: [
+                {
+                    name: 'username',
+                    required: true,
+                    label: IPA.get_message('login.username', "Username")
+                },
+                {
+                    name: 'password',
+                    type: 'password',
+                    required: true,
+                    label: IPA.get_message('login.password', "Password")
+                }
+            ]
+        }
+    ];
+
+    spec.visible_buttons = spec.visible_buttons || ['retry'];
+
+    var that = IPA.error_dialog(spec);
+
+    that.title = spec.title || IPA.get_message('ajax.401.title',
+                    'Kerberos ticket no longer valid.');
+
+    that.message = spec.message || IPA.get_message('ajax.401.message',
+                    "Your kerberos ticket is no longer valid. "+
+                    "Please run kinit and then click 'Retry'. "+
+                    "If this is your first time running the IPA Web UI "+
+                    "<a href='/ipa/config/unauthorized.html'>"+
+                    "follow these directions</a> to configure your browser.");
+
+    that.form_auth_failed = "<p><strong>Please re-enter your username or password</strong></p>" +
+                "<p>The password or username you entered is incorrect. " +
+                "Please try again (make sure your caps lock is off).</p>" +
+                "<p>If the problem persists, contact your administrator.</p>";
+
+    that.password_expired = "<p><strong>Password expired</strong></p>" +
+                "<p>Please run kinit to reset the password and then try to login again.</p>" +
+                "<p>If the problem persists, contact your administrator.</p>";
+
+    that.create = function() {
+
+        that.krb_message_contatiner = $('<div\>').appendTo(that.container);
+
+        $('<p/>', {
+            html: that.message
+        }).appendTo(that.krb_message_contatiner);
+
+        var text = IPA.get_message('login.use', "Or you can use ");
+        var fb_title = $('<p/>', {
+            text: text
+        }).appendTo(that.krb_message_contatiner);
+
+        text = IPA.get_message('login.form_auth', "form-based authentication");
+        that.form_auth_link = $('<a/>', {
+            text: text,
+            href: '#',
+            click: function() {
+                that.show_form();
+                return false;
+            },
+            keydown: function(event) {
+                if (event.keyCode === 13) { //enter
+                    that.show_form();
+                    return false;
+                }
+            }
+        }).appendTo(fb_title);
+
+        fb_title.append('.');
+
+        that.create_form();
+    };
+
+    that.create_form = function() {
+
+        that.form = $('<div>', {
+            'class': 'auth-dialog',
+            style: 'display: none;',
+            keyup: that.on_form_keyup
+        }).appendTo(that.container);
+
+        var text = IPA.get_message('login.login', "Login");
+        $('<h3/>', {
+            text: text
+        }).appendTo(that.form);
+
+        that.error_box = $('<div/>', {
+            'class': 'error-box',
+            style: 'display:none',
+            html: that.form_auth_failed
+        }).appendTo(that.form);
+
+
+        var widgets = that.widgets.get_widgets();
+        for (var i=0; i<widgets.length; i++) {
+            var widget = widgets[i];
+
+            var div = $('<div/>', {
+                name: widget.name,
+                'class': 'dialog-section'
+            }).appendTo(that.form);
+
+            widget.create(div);
+        }
+    };
+
+    that.create_login_buttons = function() {
+
+        var visible = that.visible_buttons.indexOf('login') > -1;
+        var label = IPA.get_message('login.login', "Login");
+        that.create_button({
+            name: 'login',
+            label: label,
+            visible: visible,
+            click: function() {
+                that.on_login();
+            }
+        });
+
+        visible = that.visible_buttons.indexOf('back') > -1;
+        label = IPA.get_message('buttons.back', "Back");
+        that.create_button({
+            name: 'back',
+            label: label,
+            visible: visible,
+            click: function() {
+                that.on_back();
+            }
+        });
+    };
+
+    that.open = function() {
+        that.dialog_open();
+        that.form_auth_link.focus();
+    };
+
+    that.on_form_keyup = function(event) {
+
+        if (that.switching) {
+            that.switching = false;
+            return;
+        }
+
+        if (event.keyCode === 13) { // enter
+            that.on_login();
+            event.preventDefault();
+        } else if (event.keyCode === 27) { // escape
+            that.on_back();
+            event.preventDefault();
+        }
+    };
+
+    that.show_form = function() {
+
+        that.switching = true;
+
+        that.krb_message_contatiner.css('display', 'none');
+        that.form.css('display', 'block');
+        that.display_buttons(['login', 'back']);
+
+        var user_field = that.fields.get_field('username');
+        user_field.widget.focus_input();
+    };
+
+    that.on_back = function() {
+
+        that.krb_message_contatiner.css('display', 'block');
+        that.form.css('display', 'none');
+        that.display_buttons(['retry']);
+        that.form_auth_link.focus();
+    };
+
+    that.on_login = function() {
+
+        if (!that.validate()) return;
+
+        var record = {};
+        that.save(record);
+
+        IPA.display_activity_icon();
+
+        var result = IPA.login_password(record.username[0], record.password[0]);
+
+        IPA.hide_activity_icon();
+
+        if (result === 'success') {
+            that.on_login_success();
+        } else if (result === 'expired') {
+            that.error_box.html(that.password_expired);
+            that.error_box.css('display', 'block');
+        }else {
+            that.error_box.html(that.form_auth_failed);
+            that.error_box.css('display', 'block');
+        }
+    };
+
+    that.on_login_success = function() {
+        that.error_box.css('display', 'none');
+        that.on_retry();
+    };
+
+    that.create_login_buttons();
+
+    return that;
+};
+
+IPA.limit_text = function(value, max_length) {
+
+    if (!value) return '';
+
+    var limited_text = value;
+
+    if (value.length && value.length > max_length) {
+        limited_text = value.substring(0, max_length - 3)+'...';
+    }
+
+    return limited_text;
+};
+
+IPA.create_options = function(values) {
+
+    var options = [];
+
+    for (var i=0; i<values.length; i++) {
+        var val = values[i];
+        var option = val;
+
+        if (typeof val === 'string') {
+            option = {
+                value: val,
+                label: val
+            };
+        }
+
+        options.push(option);
+    }
+
+    return options;
+};
+
+IPA.is_empty = function(value) {
+
+    var empty = false;
+
+    if (!value) empty = true;
+
+    if (value instanceof Array) {
+        empty = empty || value.length === 0 ||
+                (value.length === 1) && (value[0] === '');
+    }
+
+    if (value === '') empty = true;
+
+    return empty;
+};
+
+IPA.array_diff = function(a, b) {
+
+    if (a === b || (!a && !b)) return false;
+
+    if (!a || !b) return true;
+
+    if (a.length !== b.length) return true;
+
+    for (var i=0; i<a.length; i++) {
+        if (a[i] !== b[i]) return true;
+    }
+
+    return false;
+};
+
+IPA.config = {
+    default_priority: 500
 };

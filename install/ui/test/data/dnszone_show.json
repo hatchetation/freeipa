@@ -18,6 +18,11 @@
                 "dsrecord": "rscwo",
                 "hinforecord": "rscwo",
                 "idnsallowdynupdate": "rscwo",
+                "idnsallowquery": "rscwo",
+                "idnsallowsyncptr": "rscwo",
+                "idnsallowtransfer": "rscwo",
+                "idnsforwarders": "rscwo",
+                "idnsforwardpolicy": "rscwo",
                 "idnsname": "rscwo",
                 "idnssoaexpire": "rscwo",
                 "idnssoaminimum": "rscwo",
@@ -47,12 +52,27 @@
                 "sshfprecord": "rscwo",
                 "txtrecord": "rscwo"
             },
-            "dn": "idnsname=henson.ayoung.boston.devel.redhat.com,cn=dns,dc=ayoung,dc=boston,dc=devel,dc=redhat,dc=com",
+            "dn": "idnsname=example.com,cn=dns,dc=example,dc=com",
             "idnsallowdynupdate": [
                 "FALSE"
             ],
+            "idnsallowquery": [
+                "any"
+            ],
+            "idnsallowsyncptr": [
+                "TRUE"
+            ],
+            "idnsallowtransfer": [
+                "none"
+            ],
+            "idnsforwarders": [
+                "2003:beef::24"
+            ],
+            "idnsforwardpolicy": [
+                "only"
+            ],
             "idnsname": [
-                "henson.ayoung.boston.devel.redhat.com"
+                "example.com"
             ],
             "idnssoaexpire": [
                 "1209600"
@@ -61,7 +81,7 @@
                 "3600"
             ],
             "idnssoamname": [
-                "ayoung.boston.devel.redhat.com"
+                "example.com"
             ],
             "idnssoarefresh": [
                 "3600"
@@ -70,7 +90,7 @@
                 "900"
             ],
             "idnssoarname": [
-                "root.henson.ayoung.boston.devel.redhat.com."
+                "root.example.com."
             ],
             "idnssoaserial": [
                 "2010021201"
@@ -85,6 +105,6 @@
             ]
         },
         "summary": null,
-        "value": "henson.ayoung.boston.devel.redhat.com"
+        "value": "example.com"
     }
 }

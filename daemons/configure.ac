@@ -174,7 +174,7 @@ if test "$with_ldap" = "yes"; then
   if test "$with_ldap_lber" = "yes" ; then
     OPENLDAP_LIBS="${OPENLDAP_LIBS} -llber"
   fi
-  OPENLDAP_LIBS="${OPENLDAP_LIBS} -lldap"
+  OPENLDAP_LIBS="${OPENLDAP_LIBS} -lldap_r"
 else
   AC_MSG_ERROR([OpenLDAP not found])
 fi
@@ -225,6 +225,7 @@ AM_PATH_PYTHON(2.3)
 if test "x$PYTHON" = "x" ; then
   AC_MSG_ERROR([Python not found])
 fi
+
 
 dnl ---------------------------------------------------------------------------
 dnl - Set the data install directory since we don't use pkgdatadir
@@ -288,7 +289,7 @@ AC_SUBST(LDFLAGS)
 
 AC_CONFIG_FILES([
     Makefile
-    ipa-kpasswd/Makefile
+    ipa-kdb/Makefile
     ipa-slapi-plugins/Makefile
     ipa-slapi-plugins/ipa-enrollment/Makefile
     ipa-slapi-plugins/ipa-lockout/Makefile

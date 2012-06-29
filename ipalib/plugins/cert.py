@@ -32,7 +32,6 @@ from ipalib import util
 from ipalib.plugins.virtual import *
 from ipalib.plugins.service import split_principal
 import base64
-import logging
 import traceback
 from ipalib.text import _
 from ipalib.request import context
@@ -233,37 +232,32 @@ class cert_request(VirtualCommand):
     )
 
     has_output_params = (
-        Str('certificate?',
+        Str('certificate',
             label=_('Certificate'),
-            flags=['no_create', 'no_update', 'no_search'],
         ),
-        Str('subject?',
+        Str('subject',
             label=_('Subject'),
-            flags=['no_create', 'no_update', 'no_search'],
         ),
-        Str('issuer?',
+        Str('issuer',
             label=_('Issuer'),
-            flags=['no_create', 'no_update', 'no_search'],
         ),
-        Str('valid_not_before?',
+        Str('valid_not_before',
             label=_('Not Before'),
-            flags=['no_create', 'no_update', 'no_search'],
         ),
-        Str('valid_not_after?',
+        Str('valid_not_after',
             label=_('Not After'),
-            flags=['no_create', 'no_update', 'no_search'],
         ),
-        Str('md5_fingerprint?',
+        Str('md5_fingerprint',
             label=_('Fingerprint (MD5)'),
-            flags=['no_create', 'no_update', 'no_search'],
         ),
-        Str('sha1_fingerprint?',
+        Str('sha1_fingerprint',
             label=_('Fingerprint (SHA1)'),
-            flags=['no_create', 'no_update', 'no_search'],
         ),
-        Str('serial_number?',
+        Str('serial_number',
             label=_('Serial number'),
-            flags=['no_create', 'no_update', 'no_search'],
+        ),
+        Str('serial_number_hex',
+            label=_('Serial number (hex)'),
         ),
     )
 
@@ -457,8 +451,11 @@ class cert_show(VirtualCommand):
         Str('sha1_fingerprint',
             label=_('Fingerprint (SHA1)'),
         ),
-        Str('revocation_reason?',
+        Str('revocation_reason',
             label=_('Revocation reason'),
+        ),
+        Str('serial_number_hex',
+            label=_('Serial number (hex)'),
         ),
     )
 
@@ -529,7 +526,7 @@ class cert_revoke(VirtualCommand):
 
     # FIXME: The default is 0.  Is this really an Int param?
     takes_options = (
-        Int('revocation_reason?',
+        Int('revocation_reason',
             label=_('Reason'),
             doc=_('Reason for revoking the certificate (0-10)'),
             minvalue=0,
@@ -566,10 +563,10 @@ class cert_remove_hold(VirtualCommand):
     takes_args = _serial_number
 
     has_output_params = (
-        Flag('unrevoked?',
+        Flag('unrevoked',
             label=_('Unrevoked'),
         ),
-        Str('error_string?',
+        Str('error_string',
             label=_('Error'),
         ),
     )

@@ -22,32 +22,47 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-/* REQUIRES: ipa.js, details.js, search.js, add.js, entity.js */
+/* REQUIRES: ipa.js, details.js, search.js, add.js, facet.js, entity.js */
 
-IPA.entity_factories.group =  function () {
+IPA.group = {};
 
-    return IPA.entity_builder().
-        entity('group').
-        search_facet({
-            columns:['cn','gidnumber','description']
+IPA.group.entity = function(spec) {
+
+    var that = IPA.entity(spec);
+
+    that.init = function() {
+        that.entity_init();
+
+        that.builder.search_facet({
+            columns: [
+                'cn',
+                'gidnumber',
+                'description'
+            ]
         }).
-        details_facet({sections:
-            [{
-                name:'details',
-                fields:['cn','description','gidnumber']
-            }]}).
+        details_facet({
+            sections: [
+                {
+                    name: 'details',
+                    fields: [
+                        'cn',
+                        {
+                            type: 'textarea',
+                            name: 'description'
+                        },
+                        'gidnumber'
+                    ]
+                }
+            ]
+        }).
         association_facet({
             name: 'member_user',
             columns:[
-                {
-                    name: 'uid',
-                    primary_key: true,
-                    link: true
-                },
-                {name: 'uidnumber'},
-                {name: 'mail'},
-                {name: 'telephonenumber'},
-                {name: 'title'}
+                'uid',
+                'uidnumber',
+                'mail',
+                'telephonenumber',
+                'title'
             ],
             adder_columns:[
                 {
@@ -91,16 +106,22 @@ IPA.entity_factories.group =  function () {
             factory: IPA.group_adder_dialog,
             fields: [
                 'cn',
-                'description',
                 {
-                    factory: IPA.group_nonposix_checkbox_widget,
+                    type: 'textarea',
+                    name: 'description'
+                },
+                {
+                    type: 'nonposix_checkbox',
                     name: 'nonposix',
                     label: IPA.messages.objects.group.posix,
                     checked: true
                 },
-                'gidnumber']
-        }).
-        build();
+                'gidnumber'
+            ]
+        });
+    };
+
+    return that;
 };
 
 IPA.group_nonposix_checkbox_widget = function (spec) {
@@ -118,28 +139,33 @@ IPA.group_nonposix_checkbox_widget = function (spec) {
     return that;
 };
 
-IPA.group_adder_dialog = function (spec) {
+IPA.widget_factories['nonposix_checkbox'] = IPA.group_nonposix_checkbox_widget;
+IPA.field_factories['nonposix_checkbox'] = IPA.checkbox_field;
+
+IPA.group_adder_dialog = function(spec) {
 
     spec = spec || {};
 
-    var that = IPA.add_dialog(spec);
+    var that = IPA.entity_adder_dialog(spec);
 
     var init = function() {
 
-        var posix_field = that.get_field('nonposix');
-        posix_field.value_changed.attach(that.on_posix_change);
+        var posix_field = that.fields.get_field('nonposix');
+        posix_field.widget.value_changed.attach(that.on_posix_change);
     };
 
     that.on_posix_change = function (value) {
 
-        var gid_field = that.get_field('gidnumber');
-        if(value) {
+        var gid_field = that.fields.get_field('gidnumber');
+        if (value[0]) {
             gid_field.reset();
         }
-        gid_field.set_enabled(!value);
+        gid_field.set_enabled(!value[0]);
     };
 
     init();
 
     return that;
 };
+
+IPA.register('group', IPA.group.entity);

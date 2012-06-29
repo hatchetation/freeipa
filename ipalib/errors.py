@@ -65,7 +65,9 @@ current block assignments:
 
             - **1100 - 1199**  `KerberosError` and its subclasses
 
-            - **1200 - 1999**  *Reserved for future use*
+            - **1200 - 1299**  `SessionError` and its subclasses
+
+            - **1300 - 1999**  *Reserved for future use*
 
         - **2000 - 2999**  `AuthorizationError` and its subclasses
 
@@ -448,10 +450,10 @@ class RefererError(PublicError):
 
     For example:
 
-    >>> raise RefererError()
+    >>> raise RefererError(referer='referer')
     Traceback (most recent call last):
       ...
-    RefererError: Missing or invalid HTTP Referer
+    RefererError: Missing or invalid HTTP Referer, referer
     """
 
     errno = 911
@@ -597,6 +599,25 @@ class CannotResolveKDC(KerberosError):
     errno = 1107
     format = _('Cannot resolve KDC for requested realm')
 
+
+class SessionError(AuthenticationError):
+    """
+    **1200** Base class for Session errors (*1200 - 1299*).
+
+    For example:
+
+    """
+
+    errno = 1200
+    format= _('Session error')
+
+
+class InvalidSessionPassword(SessionError):
+    """
+    **1201** Raised when we cannot obtain a TGT for a principal.
+    """
+    errno = 1201
+    format= _('Principal %(principal)s cannot be authenticated: %(message)s')
 
 ##############################################################################
 # 2000 - 2999: Authorization errors
@@ -800,6 +821,15 @@ class NotConfiguredError(InvocationError):
 
     errno = 3013
     format = _('Client is not configured. Run ipa-client-install.')
+
+
+class PromptFailed(InvocationError):
+    """
+    **3014** Raise when an interactive prompt failed.
+    """
+
+    errno = 3014
+    format = _('Could not get %(name)s interactively')
 
 
 ##############################################################################
@@ -1529,6 +1559,22 @@ class NotRegisteredError(ExecutionError):
     format = _('Not registered yet')
 
 
+class DependentEntry(ExecutionError):
+    """
+    **4307** Raised when an entry being deleted has dependencies
+
+    For example:
+    >>> raise DependentEntry(label=u'SELinux User Map', key=u'test', dependent=u'test1')
+    Traceback (most recent call last):
+      ...
+    DependentEntry: test cannot be deleted because SELinux User Map test1 requires it
+
+    """
+
+    errno = 4307
+    format = _('%(key)s cannot be deleted because %(label)s %(dependent)s requires it')
+
+
 ##############################################################################
 # 5000 - 5999: Generic errors
 
@@ -1557,5 +1603,5 @@ public_errors = tuple(
 
 if __name__ == '__main__':
     for klass in public_errors:
-        print '%d\t%s' % (klass.code, klass.__name__)
+        print '%d\t%s' % (klass.errno, klass.__name__)
     print '(%d public errors)' % len(public_errors)

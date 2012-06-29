@@ -17,7 +17,6 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 
-import logging
 import socket
 import errno
 import getpass
@@ -34,9 +33,11 @@ import shutil
 from ConfigParser import SafeConfigParser
 
 from ipapython import ipautil, dnsclient, sysrestore
+from ipapython.ipa_log_manager import *
+from ipalib.util import validate_hostname
 
 # Used to determine install status
-IPA_MODULES = ['httpd', 'ipa_kpasswd', 'dirsrv', 'pki-cad', 'pkids', 'install', 'krb5kdc', 'ntpd', 'named']
+IPA_MODULES = ['httpd', 'kadmin', 'dirsrv', 'pki-cad', 'pkids', 'install', 'krb5kdc', 'ntpd', 'named', 'ipa_memcached']
 
 class BadHostError(Exception):
     pass
@@ -90,27 +91,35 @@ def verify_dns_records(host_name, responses, resaddr, family):
     if family not in familykw.keys():
         raise RuntimeError("Unknown faimily %s\n" % family)
 
-    rec = None
+    rec_list = []
     for rsn in responses:
-        if rsn.dns_type == familykw[family]['dns_type']:
-            rec = rsn
-            break
+        if rsn.section == dnsclient.DNS_S_ANSWER and \
+                rsn.dns_type == familykw[family]['dns_type']:
+            rec_list.append(rsn)
 
-    if rec == None:
+    if not rec_list:
         raise IOError(errno.ENOENT,
                       "Warning: Hostname (%s) not found in DNS" % host_name)
 
     if family == 'ipv4':
-        familykw[family]['address'] = socket.inet_ntop(socket.AF_INET,
-                                                       struct.pack('!L',rec.rdata.address))
+        familykw[family]['address'] = [socket.inet_ntop(socket.AF_INET,
+                                                        struct.pack('!L',rec.rdata.address)) \
+                                                                for rec in rec_list]
     else:
-        familykw[family]['address'] = socket.inet_ntop(socket.AF_INET6,
-                                                       struct.pack('!16B', *rec.rdata.address))
+        familykw[family]['address'] = [socket.inet_ntop(socket.AF_INET6,
+                                                        struct.pack('!16B', *rec.rdata.address)) \
+                                                                for rec in rec_list]
 
     # Check that DNS address is the same is address returned via standard glibc calls
-    dns_addr = netaddr.IPAddress(familykw[family]['address'])
-    if dns_addr.format() != resaddr:
-        raise RuntimeError("The network address %s does not match the DNS lookup %s. Check /etc/hosts and ensure that %s is the IP address for %s" % (dns_addr.format(), resaddr, dns_addr.format(), host_name))
+    dns_addrs = [netaddr.IPAddress(addr) for addr in familykw[family]['address']]
+    dns_addr = None
+    for addr in dns_addrs:
+        if addr.format() == resaddr:
+            dns_addr = addr
+            break
+
+    if dns_addr is None:
+        raise RuntimeError("Host address %s does not match any address in DNS lookup."  % resaddr)
 
     rs = dnsclient.query(dns_addr.reverse_dns, dnsclient.DNS_C_IN, dnsclient.DNS_T_PTR)
     if len(rs) == 0:
@@ -150,6 +159,12 @@ def verify_fqdn(host_name, no_host_dns=False, local_hostname=True):
 
     if ipautil.valid_ip(host_name):
         raise BadHostError("IP address not allowed as a hostname")
+
+    try:
+        # make sure that the host name meets the requirements in ipalib
+        validate_hostname(host_name)
+    except ValueError, e:
+        raise BadHostError("Invalid hostname '%s', %s" % (host_name, unicode(e)))
 
     if local_hostname:
         try:
@@ -314,27 +329,6 @@ def port_available(port):
 
     return rv
 
-def standard_logging_setup(log_filename, debug=False, filemode='w'):
-    old_umask = os.umask(077)
-    # Always log everything (i.e., DEBUG) to the log
-    # file.
-    logging.basicConfig(level=logging.DEBUG,
-                        format='%(asctime)s %(levelname)s %(message)s',
-                        filename=log_filename,
-                        filemode=filemode)
-    os.umask(old_umask)
-
-    console = logging.StreamHandler()
-    # If the debug option is set, also log debug messages to the console
-    if debug:
-        console.setLevel(logging.DEBUG)
-    else:
-        # Otherwise, log critical and error messages
-        console.setLevel(logging.ERROR)
-    formatter = logging.Formatter('%(name)-12s: %(levelname)-8s %(message)s')
-    console.setFormatter(formatter)
-    logging.getLogger('').addHandler(console)
-
 def get_password(prompt):
     if os.isatty(sys.stdin.fileno()):
         return getpass.getpass(prompt)
@@ -445,7 +439,8 @@ def get_directive(filename, directive, separator=' '):
     return None
 
 def kadmin(command):
-    ipautil.run(["kadmin.local", "-q", command])
+    ipautil.run(["kadmin.local", "-q", command,
+                                 "-x", "ipa-setup-override-restrictions"])
 
 def kadmin_addprinc(principal):
     kadmin("addprinc -randkey " + principal)
@@ -458,7 +453,7 @@ def create_keytab(path, principal):
         if ipautil.file_exists(path):
             os.remove(path)
     except os.error:
-        logging.critical("Failed to remove %s." % path)
+        root_logger.critical("Failed to remove %s." % path)
 
     kadmin("ktadd -k " + path + " " + principal)
 
@@ -518,14 +513,19 @@ def resolve_host(host_name):
     try:
         addrinfos = socket.getaddrinfo(host_name, None,
                                        socket.AF_UNSPEC, socket.SOCK_STREAM)
+
+        ip_list = []
+
         for ai in addrinfos:
             ip = ai[4][0]
             if ip == "127.0.0.1" or ip == "::1":
                 raise HostnameLocalhost("The hostname resolves to the localhost address")
 
-        return addrinfos[0][4][0]
-    except:
-        return None
+            ip_list.append(ip)
+
+        return ip_list
+    except socket.error:
+        return []
 
 def get_host_name(no_host_dns):
     """
@@ -539,6 +539,87 @@ def get_host_name(no_host_dns):
     hostname = get_fqdn()
     verify_fqdn(hostname, no_host_dns)
     return hostname
+
+def get_server_ip_address(host_name, fstore, unattended, options):
+    # Check we have a public IP that is associated with the hostname
+    try:
+        hostaddr = resolve_host(host_name)
+    except HostnameLocalhost:
+        print >> sys.stderr, "The hostname resolves to the localhost address (127.0.0.1/::1)"
+        print >> sys.stderr, "Please change your /etc/hosts file so that the hostname"
+        print >> sys.stderr, "resolves to the ip address of your network interface."
+        print >> sys.stderr, "The KDC service does not listen on localhost"
+        print >> sys.stderr, ""
+        print >> sys.stderr, "Please fix your /etc/hosts file and restart the setup program"
+        sys.exit(1)
+
+    ip_add_to_hosts = False
+
+    if len(hostaddr) > 1:
+        print >> sys.stderr, "The server hostname resolves to more than one address:"
+        for addr in hostaddr:
+            print >> sys.stderr, "  %s" % addr
+
+        if options.ip_address:
+            if str(options.ip_address) not in hostaddr:
+                print >> sys.stderr, "Address passed in --ip-address did not match any resolved"
+                print >> sys.stderr, "address!"
+                sys.exit(1)
+            print "Selected IP address:", str(options.ip_address)
+            ip = options.ip_address
+        else:
+            if unattended:
+                print >> sys.stderr, "Please use --ip-address option to specify the address"
+                sys.exit(1)
+            else:
+                ip = read_ip_address(host_name, fstore)
+    elif len(hostaddr) == 1:
+        ip = ipautil.CheckedIPAddress(hostaddr[0], match_local=True)
+    else:
+        # hostname is not resolvable
+        ip = options.ip_address
+        ip_add_to_hosts = True
+
+    if ip is None:
+        print "Unable to resolve IP address for host name"
+        if unattended:
+            sys.exit(1)
+
+    if options.ip_address:
+        if options.ip_address != ip and not options.setup_dns:
+            print >>sys.stderr, "Error: the hostname resolves to an IP address that is different"
+            print >>sys.stderr, "from the one provided on the command line.  Please fix your DNS"
+            print >>sys.stderr, "or /etc/hosts file and restart the installation."
+            sys.exit(1)
+
+        ip = options.ip_address
+
+    if ip is None:
+        ip = read_ip_address(host_name, fstore)
+        root_logger.debug("read ip_address: %s\n" % str(ip))
+
+    ip_address = str(ip)
+
+    # check /etc/hosts sanity, add a record when needed
+    hosts_record = record_in_hosts(ip_address)
+
+    if hosts_record is None:
+        if ip_add_to_hosts:
+            print "Adding ["+ip_address+" "+host_name+"] to your /etc/hosts file"
+            fstore.backup_file("/etc/hosts")
+            add_record_to_hosts(ip_address, host_name)
+    else:
+        primary_host = hosts_record[1][0]
+        if primary_host != host_name:
+            print >>sys.stderr, "Error: there is already a record in /etc/hosts for IP address %s:" \
+                    % ip_address
+            print >>sys.stderr, hosts_record[0], " ".join(hosts_record[1])
+            print >>sys.stderr, "Chosen hostname %s does not match configured canonical hostname %s" \
+                    % (host_name, primary_host)
+            print >>sys.stderr, "Please fix your /etc/hosts file and restart the installation."
+            sys.exit(1)
+
+    return ip
 
 def expand_replica_info(filename, password):
     """
@@ -595,7 +676,7 @@ def remove_file(filename):
         if os.path.exists(filename):
             os.unlink(filename)
     except Exception, e:
-        logging.error('Error removing %s: %s' % (filename, str(e)))
+        root_logger.error('Error removing %s: %s' % (filename, str(e)))
 
 def rmtree(path):
     """
@@ -605,7 +686,7 @@ def rmtree(path):
         if os.path.exists(path):
             shutil.rmtree(path)
     except Exception, e:
-        logging.error('Error removing %s: %s' % (path, str(e)))
+        root_logger.error('Error removing %s: %s' % (path, str(e)))
 
 def is_ipa_configured():
     """
@@ -619,15 +700,15 @@ def is_ipa_configured():
 
     for module in IPA_MODULES:
         if sstore.has_state(module):
-            logging.debug('%s is configured' % module)
+            root_logger.debug('%s is configured' % module)
             installed = True
         else:
-            logging.debug('%s is not configured' % module)
+            root_logger.debug('%s is not configured' % module)
 
     if fstore.has_files():
-        logging.debug('filestore has files')
+        root_logger.debug('filestore has files')
         installed = True
     else:
-        logging.debug('filestore is tracking no files')
+        root_logger.debug('filestore is tracking no files')
 
     return installed

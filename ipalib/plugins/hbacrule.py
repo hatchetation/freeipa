@@ -96,10 +96,13 @@ def is_all(options, attribute):
     """
     See if options[attribute] is lower-case 'all' in a safe way.
     """
-    if attribute in options and \
-        options[attribute] is not None and \
-        options[attribute].lower() == 'all':
-        return True
+    if attribute in options and options[attribute] is not None:
+        if type(options[attribute]) in (list, tuple):
+            value = options[attribute][0].lower()
+        else:
+            value = options[attribute].lower()
+        if value == 'all':
+            return True
     else:
         return False
 
@@ -239,6 +242,14 @@ class hbacrule_del(LDAPDelete):
 
     msg_summary = _('Deleted HBAC rule "%(value)s"')
 
+    def pre_callback(self, ldap, dn, *keys, **options):
+        kw = dict(seealso=keys[0])
+        _entries = api.Command.selinuxusermap_find(None, **kw)
+        if _entries['count']:
+            raise errors.DependentEntry(key=keys[0], label=self.api.Object['selinuxusermap'].label_singular, dependent=_entries['result'][0]['cn'][0])
+
+        return dn
+
 api.register(hbacrule_del)
 
 
@@ -254,13 +265,13 @@ class hbacrule_mod(LDAPUpdate):
             self.obj.handle_not_found(*keys)
 
         if is_all(options, 'usercategory') and 'memberuser' in entry_attrs:
-            raise errors.MutuallyExclusiveError(reason="user category cannot be set to 'all' while there are allowed users")
+            raise errors.MutuallyExclusiveError(reason=_("user category cannot be set to 'all' while there are allowed users"))
         if is_all(options, 'hostcategory') and 'memberhost' in entry_attrs:
-            raise errors.MutuallyExclusiveError(reason="host category cannot be set to 'all' while there are allowed hosts")
+            raise errors.MutuallyExclusiveError(reason=_("host category cannot be set to 'all' while there are allowed hosts"))
         if is_all(options, 'sourcehostcategory') and 'sourcehost' in entry_attrs:
-            raise errors.MutuallyExclusiveError(reason="sourcehost category cannot be set to 'all' while there are allowed source hosts")
+            raise errors.MutuallyExclusiveError(reason=_("sourcehost category cannot be set to 'all' while there are allowed sourcehosts"))
         if is_all(options, 'servicecategory') and 'memberservice' in entry_attrs:
-            raise errors.MutuallyExclusiveError(reason="service category cannot be set to 'all' while there are allowed services")
+            raise errors.MutuallyExclusiveError(reason=_("service category cannot be set to 'all' while there are allowed services"))
         return dn
 
 api.register(hbacrule_mod)
@@ -487,35 +498,10 @@ class hbacrule_add_sourcehost(LDAPAddMember):
         if 'sourcehostcategory' in entry_attrs and \
             entry_attrs['sourcehostcategory'][0].lower() == 'all':
             raise errors.MutuallyExclusiveError(reason="source hosts cannot be added when sourcehost category='all'")
-        return dn
+        return add_external_pre_callback('host', ldap, dn, keys, options)
 
     def post_callback(self, ldap, completed, failed, dn, entry_attrs, *keys, **options):
-        completed_external = 0
-        # Sift through the host failures. We assume that these are all
-        # hosts that aren't stored in IPA, aka external hosts.
-        if 'sourcehost' in failed and 'host' in failed['sourcehost']:
-            (dn, entry_attrs_) = ldap.get_entry(dn, ['externalhost'])
-            members = entry_attrs.get('sourcehost', [])
-            external_hosts = entry_attrs_.get('externalhost', [])
-            failed_hosts = []
-            for host in failed['sourcehost']['host']:
-                hostname = host[0].lower()
-                host_dn = self.api.Object['host'].get_dn(hostname)
-                if hostname in external_hosts:
-                    failed_hosts.append((hostname, unicode(errors.AlreadyGroupMember())))
-                elif hostname not in external_hosts and host_dn not in members:
-                    external_hosts.append(hostname)
-                    completed_external += 1
-                else:
-                    failed_hosts.append((hostname, unicode(errors.NotFound())))
-            if completed_external:
-                try:
-                    ldap.update_entry(dn, {'externalhost': external_hosts})
-                except errors.EmptyModlist:
-                    pass
-                entry_attrs['externalhost'] = external_hosts
-            failed['sourcehost']['host'] = failed_hosts
-        return (completed + completed_external, dn)
+        return add_external_post_callback('sourcehost', 'host', 'externalhost', ldap, completed, failed, dn, entry_attrs, keys, options)
 
 api.register(hbacrule_add_sourcehost)
 
@@ -527,29 +513,7 @@ class hbacrule_remove_sourcehost(LDAPRemoveMember):
     member_count_out = ('%i object removed.', '%i objects removed.')
 
     def post_callback(self, ldap, completed, failed, dn, entry_attrs, *keys, **options):
-        # Run through the host failures and gracefully remove any defined as
-        # as an externalhost.
-        if 'sourcehost' in failed and 'host' in failed['sourcehost']:
-            (dn, entry_attrs_) = ldap.get_entry(dn, ['externalhost'])
-            external_hosts = entry_attrs_.get('externalhost', [])
-            failed_hosts = []
-            completed_external = 0
-            for host in failed['sourcehost']['host']:
-                hostname = host[0].lower()
-                if hostname in external_hosts:
-                    external_hosts.remove(hostname)
-                    completed_external += 1
-                else:
-                    failed_hosts.append(hostname)
-            if completed_external:
-                try:
-                    ldap.update_entry(dn, {'externalhost': external_hosts})
-                except errors.EmptyModlist:
-                    pass
-                failed['sourcehost']['host'] = failed_hosts
-                entry_attrs['externalhost'] = external_hosts
-        return (completed + completed_external, dn)
-
+        return remove_external_post_callback('sourcehost', 'host', 'externalhost', ldap, completed, failed, dn, entry_attrs, keys, options)
 
 api.register(hbacrule_remove_sourcehost)
 

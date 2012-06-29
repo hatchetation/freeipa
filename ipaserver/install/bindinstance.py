@@ -20,7 +20,6 @@
 import tempfile
 import os
 import pwd
-import logging
 import netaddr
 
 import installutils
@@ -32,6 +31,9 @@ from ipaserver.install.installutils import resolve_host
 from ipapython import sysrestore
 from ipapython import ipautil
 from ipalib.constants import DNS_ZONE_REFRESH
+from ipalib.parameters import IA5Str
+from ipalib.util import validate_zonemgr, normalize_zonemgr, gen_dns_update_policy
+from ipapython.ipa_log_manager import *
 
 import ipalib
 from ipalib import api, util, errors
@@ -183,7 +185,10 @@ def read_reverse_zone(default, ip_address):
 def add_zone(name, zonemgr=None, dns_backup=None, ns_hostname=None, ns_ip_address=None,
        update_policy=None):
     if update_policy is None:
-        update_policy = "grant %(realm)s krb5-self * A; grant %(realm)s krb5-self * AAAA;" % dict(realm=api.env.realm)
+        update_policy = gen_dns_update_policy(api.env.realm)
+
+    if zonemgr is None:
+        zonemgr = 'hostmaster.%s' % name
 
     if ns_hostname is None:
         # automatically retrieve list of DNS masters
@@ -192,7 +197,13 @@ def add_zone(name, zonemgr=None, dns_backup=None, ns_hostname=None, ns_ip_addres
             raise errors.NotFound("No IPA server with DNS support found!")
         ns_main = dns_masters.pop(0)
         ns_replicas = dns_masters
-        ns_ip_address = resolve_host(ns_main)
+        addresses = resolve_host(ns_main)
+
+        if len(addresses) > 0:
+            # use the first address
+            ns_ip_address = addresses[0]
+        else:
+            ns_ip_address = None
     else:
         ns_main = ns_hostname
         ns_replicas = []
@@ -203,7 +214,9 @@ def add_zone(name, zonemgr=None, dns_backup=None, ns_hostname=None, ns_ip_addres
                                 idnssoarname=unicode(zonemgr),
                                 ip_address=unicode(ns_ip_address),
                                 idnsallowdynupdate=True,
-                                idnsupdatepolicy=unicode(update_policy))
+                                idnsupdatepolicy=unicode(update_policy),
+                                idnsallowquery=u'any',
+                                idnsallowtransfer=u'none',)
     except (errors.DuplicateEntry, errors.EmptyModlist):
         pass
 
@@ -225,7 +238,13 @@ def add_reverse_zone(zone, ns_hostname=None, ns_ip_address=None,
             raise errors.NotFound("No IPA server with DNS support found!")
         ns_main = dns_masters.pop(0)
         ns_replicas = dns_masters
-        ns_ip_address = resolve_host(ns_main)
+        addresses = resolve_host(ns_main)
+
+        if len(addresses) > 0:
+            # use the first address
+            ns_ip_address = addresses[0]
+        else:
+            ns_ip_address = None
     else:
         ns_main = ns_hostname
         ns_replicas = []
@@ -235,7 +254,9 @@ def add_reverse_zone(zone, ns_hostname=None, ns_ip_address=None,
                                 idnssoamname=unicode(ns_main+'.'),
                                 idnsallowdynupdate=True,
                                 ip_address=unicode(ns_ip_address),
-                                idnsupdatepolicy=unicode(update_policy))
+                                idnsupdatepolicy=unicode(update_policy),
+                                idnsallowquery=u'any',
+                                idnsallowtransfer=u'none',)
     except (errors.DuplicateEntry, errors.EmptyModlist):
         pass
 
@@ -286,6 +307,17 @@ def get_rr(zone, name, type):
 
     return []
 
+def zonemgr_callback(option, opt_str, value, parser):
+    """
+    Properly validate and convert --zonemgr Option to IA5String
+    """
+    # validate the value first
+    try:
+        validate_zonemgr(value)
+    except ValueError, e:
+        parser.error("invalid zonemgr: " + unicode(e))
+
+    parser.values.zonemgr = value
 
 class DnsBackup(object):
     def __init__(self, service):
@@ -363,19 +395,33 @@ class BindInstance(service.Service):
         self.domain = domain_name
         self.forwarders = forwarders
         self.host = fqdn.split(".")[0]
-        self.host_domain = '.'.join(fqdn.split(".")[1:])
         self.suffix = util.realm_to_suffix(self.realm)
         self.ntp = ntp
         self.reverse_zone = reverse_zone
         self.zone_refresh = zone_refresh
         self.zone_notif = zone_notif
 
-        if zonemgr:
-            self.zonemgr = zonemgr.replace('@','.')
+        if not zonemgr:
+            self.zonemgr = 'hostmaster.%s' % self.domain
         else:
-            self.zonemgr = 'root.%s.%s' % (self.host, self.domain)
+            self.zonemgr = normalize_zonemgr(zonemgr)
 
         self.__setup_sub_dict()
+
+    @property
+    def host_domain(self):
+        return '.'.join(self.fqdn.split(".")[1:])
+
+    @property
+    def host_in_rr(self):
+        # when a host is not in a default domain, it needs to be referred
+        # with FQDN and not in a domain-relative host name
+        if not self.host_in_default_domain():
+            return normalize_zone(self.fqdn)
+        return self.host
+
+    def host_in_default_domain(self):
+        return normalize_zone(self.host_domain) == normalize_zone(self.domain)
 
     def create_sample_bind_zone(self):
         bind_txt = ipautil.template_file(ipautil.SHARE_DIR + "bind.zone.db.template", self.sub_dict)
@@ -442,7 +488,7 @@ class BindInstance(service.Service):
 
         if self.ntp:
             optional_ntp =  "\n;ntp server\n"
-            optional_ntp += "_ntp._udp\t\tIN SRV 0 100 123\t%s""" % self.host
+            optional_ntp += "_ntp._udp\t\tIN SRV 0 100 123\t%s""" % self.host_in_rr
         else:
             optional_ntp = ""
 
@@ -463,11 +509,11 @@ class BindInstance(service.Service):
         self._ldap_mod("dns.ldif", self.sub_dict)
 
     def __setup_zone(self):
-        if self.host_domain != self.domain:
+        if not self.host_in_default_domain():
             # add DNS domain for host first
-            logging.debug("Host domain (%s) is different from DNS domain (%s)!" \
+            root_logger.debug("Host domain (%s) is different from DNS domain (%s)!" \
                     % (self.host_domain, self.domain))
-            logging.debug("Add DNS zone for host first.")
+            root_logger.debug("Add DNS zone for host first.")
 
             add_zone(self.host_domain, self.zonemgr, dns_backup=self.dns_backup,
                     ns_hostname=api.env.host, ns_ip_address=self.ip_address)
@@ -480,14 +526,14 @@ class BindInstance(service.Service):
     def __add_self(self):
         zone = self.domain
         resource_records = (
-            ("_ldap._tcp", "SRV", "0 100 389 %s" % self.host),
+            ("_ldap._tcp", "SRV", "0 100 389 %s" % self.host_in_rr),
             ("_kerberos", "TXT", self.realm),
-            ("_kerberos._tcp", "SRV", "0 100 88 %s" % self.host),
-            ("_kerberos._udp", "SRV", "0 100 88 %s" % self.host),
-            ("_kerberos-master._tcp", "SRV", "0 100 88 %s" % self.host),
-            ("_kerberos-master._udp", "SRV", "0 100 88 %s" % self.host),
-            ("_kpasswd._tcp", "SRV", "0 100 464 %s" % self.host),
-            ("_kpasswd._udp", "SRV", "0 100 464 %s" % self.host),
+            ("_kerberos._tcp", "SRV", "0 100 88 %s" % self.host_in_rr),
+            ("_kerberos._udp", "SRV", "0 100 88 %s" % self.host_in_rr),
+            ("_kerberos-master._tcp", "SRV", "0 100 88 %s" % self.host_in_rr),
+            ("_kerberos-master._udp", "SRV", "0 100 88 %s" % self.host_in_rr),
+            ("_kpasswd._tcp", "SRV", "0 100 464 %s" % self.host_in_rr),
+            ("_kpasswd._udp", "SRV", "0 100 464 %s" % self.host_in_rr),
         )
 
         for (host, type, rdata) in resource_records:
@@ -496,10 +542,10 @@ class BindInstance(service.Service):
             else:
                 add_rr(zone, host, type, rdata)
         if self.ntp:
-            add_rr(zone, "_ntp._udp", "SRV", "0 100 123 %s" % self.host)
+            add_rr(zone, "_ntp._udp", "SRV", "0 100 123 %s" % self.host_in_rr)
 
         # Add forward and reverse records to self
-        add_fwd_rr(zone, self.host, self.ip_address)
+        add_fwd_rr(self.host_domain, self.host, self.ip_address)
         if self.reverse_zone is not None and dns_zone_exists(self.reverse_zone):
             add_ptr_rr(self.reverse_zone, self.ip_address, self.fqdn)
 
@@ -540,7 +586,7 @@ class BindInstance(service.Service):
         except ldap.TYPE_OR_VALUE_EXISTS:
             pass
         except Exception, e:
-            logging.critical("Could not modify principal's %s entry" % dns_principal)
+            root_logger.critical("Could not modify principal's %s entry" % dns_principal)
             raise e
 
     def __setup_named_conf(self):
@@ -605,6 +651,26 @@ class BindInstance(service.Service):
                 # remove also master NS record from the reverse zone
                 del_rr(rzone, "@", "NS", fqdn+".")
 
+    def check_global_configuration(self):
+        """
+        Check global DNS configuration in LDAP server and inform user when it
+        set and thus overrides his configured options in named.conf.
+        """
+        result = api.Command.dnsconfig_show()
+        global_conf_set = any(param in result['result'] for \
+                              param in api.Object['dnsconfig'].params)
+
+        if not global_conf_set:
+            print "Global DNS configuration in LDAP server is empty"
+            print "You can use 'dnsconfig-mod' command to set global DNS options that"
+            print "would override settings in local named.conf files"
+            return
+
+        print "Global DNS configuration in LDAP server is not empty"
+        print "The following configuration options override local settings in named.conf:"
+        print ""
+        textui = ipalib.cli.textui()
+        api.Command.dnsconfig_show.output_for_cli(textui, result, None, reverse=False)
 
     def uninstall(self):
         if self.is_configured():
@@ -622,7 +688,7 @@ class BindInstance(service.Service):
             try:
                 self.fstore.restore_file(f)
             except ValueError, error:
-                logging.debug(error)
+                root_logger.debug(error)
                 pass
 
         if not enabled is None and not enabled:

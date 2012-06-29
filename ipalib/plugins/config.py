@@ -19,7 +19,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 from ipalib import api
-from ipalib import Bool, Int, Str, IA5Str
+from ipalib import Bool, Int, Str, IA5Str, StrEnum
 from ipalib.plugins.baseldap import *
 from ipalib import _
 from ipalib.errors import ValidationError
@@ -29,42 +29,15 @@ OPERATIONAL_ATTRIBUTES = ('nsaccountlock', 'member', 'memberof',
     'memberindirect', 'memberofindirect',)
 
 __doc__ = _("""
-Manage the IPA configuration
+Server configuration
 
 Manage the default values that IPA uses and some of its tuning parameters.
 
- To show the current configuration:
-   ipa config-show
+NOTES:
 
- To modify the configuration:
-   ipa config-mod --maxusername=99
-
-The available options are:
-
-User management options:
-
-  --maxusername=INT     Max. username length when creating/modifying a user
-  --homedirectory=STR   Default location of home directories (default /home)
-  --defaultshell=STR    Default shell for new users (default /bin/sh)
-  --defaultgroup=STR    Default group for new users (default ipausers). The
-                        group must exist, or adding new users will fail.
-  --emaildomain=STR     Default e-mail domain for new users
-
-Search tuning options. These impact how much data is searched through and
-how many records may be returned on a given search.
-
-  --searchtimelimit=INT Max. amount of time (sec.) for a search (> 0, or -1 for
-                        unlimited)
-  --searchrecordslimit=INT Max. number of records to search (-1 is unlimited)
-
-Server Configuration.
-
-  --enable-migration=BOOL Enable migration mode
-  --pwdexpnotify=INT      Password Expiration Notification (days)
-
-The password notification value is stored here so it will be replicated.
-It is not currently used to notify users in advance of an expiring
-password.
+The password notification value (--pwdexpnotify) is stored here so it will
+be replicated. It is not currently used to notify users in advance of an
+expiring password.
 
 Some attributes are read-only, provided only for information purposes. These
 include:
@@ -73,6 +46,32 @@ Certificate Subject base: the configured certificate subject base,
   e.g. O=EXAMPLE.COM.  This is configurable only at install time.
 Password plug-in features: currently defines additional hashes that the
   password will generate (there may be other conditions).
+
+When setting the order list for mapping SELinux users you may need to
+quote the value so it isn't interpreted by the shell.
+
+EXAMPLES:
+
+ Show basic server configuration:
+   ipa config-show
+
+ Show all configuration options:
+   ipa config-show --all
+
+ Change maximum username length to 99 characters:
+   ipa config-mod --maxusername=99
+
+ Increase default time and size limits for maximum IPA server search:
+   ipa config-mod --searchtimelimit=10 --searchrecordslimit=2000
+
+ Set default user e-mail domain:
+   ipa config-mod --emaildomain=example.com
+
+ Enable migration mode to make "ipa migrate-ds" command operational:
+   ipa config-mod --enable-migration=TRUE
+
+ Define SELinux user map order:
+   ipa config-mod --ipaselinuxusermaporder='guest_u:s0$xguest_u:s0$user_u:s0-s0:c0.c1023$staff_u:s0-s0:c0.c1023$unconfined_u:s0-s0:c0.c1023'
 """)
 
 def validate_searchtimelimit(ugettext, limit):
@@ -90,92 +89,104 @@ class config(LDAPObject):
         'ipadefaultprimarygroup', 'ipadefaultemaildomain', 'ipasearchtimelimit',
         'ipasearchrecordslimit', 'ipausersearchfields', 'ipagroupsearchfields',
         'ipamigrationenabled', 'ipacertificatesubjectbase',
-        'ipapwdexpadvnotify',
+        'ipapwdexpadvnotify', 'ipaselinuxusermaporder',
+        'ipaselinuxusermapdefault', 'ipaconfigstring',
     ]
 
     label = _('Configuration')
     label_singular = _('Configuration')
 
     takes_params = (
-        Int('ipamaxusernamelength?',
+        Int('ipamaxusernamelength',
             cli_name='maxusername',
-            label=_('Max. username length'),
+            label=_('Maximum username length'),
             minvalue=1,
         ),
-        IA5Str('ipahomesrootdir?',
+        IA5Str('ipahomesrootdir',
             cli_name='homedirectory',
             label=_('Home directory base'),
-            doc=_('Default location of home directories.'),
+            doc=_('Default location of home directories'),
         ),
-        Str('ipadefaultloginshell?',
+        Str('ipadefaultloginshell',
             cli_name='defaultshell',
             label=_('Default shell'),
-            doc=_('Default shell for new users.'),
+            doc=_('Default shell for new users'),
         ),
-        Str('ipadefaultprimarygroup?',
+        Str('ipadefaultprimarygroup',
             cli_name='defaultgroup',
             label=_('Default users group'),
-            doc=_('Default group for new users.'),
+            doc=_('Default group for new users'),
         ),
         Str('ipadefaultemaildomain?',
             cli_name='emaildomain',
-            label=_('Default e-mail domain for new users'),
-            doc=_('Default e-mail domain new users.'),
+            label=_('Default e-mail domain'),
+            doc=_('Default e-mail domain'),
         ),
-        Int('ipasearchtimelimit?', validate_searchtimelimit,
+        Int('ipasearchtimelimit', validate_searchtimelimit,
             cli_name='searchtimelimit',
             label=_('Search time limit'),
-            doc=_('Max. amount of time (sec.) for a search (> 0, or -1 for unlimited).'),
+            doc=_('Maximum amount of time (seconds) for a search (> 0, or -1 for unlimited)'),
             minvalue=-1,
         ),
-        Int('ipasearchrecordslimit?',
+        Int('ipasearchrecordslimit',
             cli_name='searchrecordslimit',
             label=_('Search size limit'),
-            doc=_('Max. number of records to search (-1 is unlimited).'),
+            doc=_('Maximum number of records to search (-1 is unlimited)'),
             minvalue=-1,
         ),
-        IA5Str('ipausersearchfields?',
+        IA5Str('ipausersearchfields',
             cli_name='usersearch',
             label=_('User search fields'),
-            doc=_('A comma-separated list of fields to search when searching for users.'),
+            doc=_('A comma-separated list of fields to search in when searching for users'),
         ),
-        IA5Str('ipagroupsearchfields?',
+        IA5Str('ipagroupsearchfields',
             cli_name='groupsearch',
             label='Group search fields',
-            doc=_('A comma-separated list of fields to search when searching for groups.'),
+            doc=_('A comma-separated list of fields to search in when searching for groups'),
         ),
-        Bool('ipamigrationenabled?',
+        Bool('ipamigrationenabled',
             cli_name='enable_migration',
             label=_('Enable migration mode'),
-            doc=_('Enable migration mode.'),
+            doc=_('Enable migration mode'),
         ),
-        Str('ipacertificatesubjectbase?',
+        Str('ipacertificatesubjectbase',
             cli_name='subject',
             label=_('Certificate Subject base'),
-            doc=_('Base for certificate subjects (OU=Test,O=Example).'),
+            doc=_('Base for certificate subjects (OU=Test,O=Example)'),
             flags=['no_update'],
         ),
-        List('ipagroupobjectclasses?',
+        Str('ipagroupobjectclasses+',
             cli_name='groupobjectclasses',
             label=_('Default group objectclasses'),
-            doc=_('Default group objectclasses (comma-separated list).'),
+            doc=_('Default group objectclasses (comma-separated list)'),
+            csv=True,
         ),
-        List('ipauserobjectclasses?',
+        Str('ipauserobjectclasses+',
             cli_name='userobjectclasses',
             label=_('Default user objectclasses'),
-            doc=_('Default user objectclasses (comma-separated list).'),
+            doc=_('Default user objectclasses (comma-separated list)'),
+            csv=True,
         ),
-        Int('ipapwdexpadvnotify?',
+        Int('ipapwdexpadvnotify',
             cli_name='pwdexpnotify',
             label=_('Password Expiration Notification (days)'),
-            doc=_('Number of days\'s notice of impending password expiration.'),
+            doc=_('Number of days\'s notice of impending password expiration'),
             minvalue=0,
         ),
-        Str('ipaconfigstring?',
+        StrEnum('ipaconfigstring*',
             cli_name='ipaconfigstring',
             label=_('Password plugin features'),
-            doc=_('Extra hashes to generate in password plug-in.'),
-            flags=['no_update'],
+            doc=_('Extra hashes to generate in password plug-in'),
+            values=(u'AllowLMhash', u'AllowNThash'),
+            csv=True,
+        ),
+        Str('ipaselinuxusermaporder',
+            label=_('SELinux user map order'),
+            doc=_('Order in increasing priority of SELinux users, delimited by $'),
+        ),
+        Str('ipaselinuxusermapdefault',
+            label=_('Default SELinux user'),
+            doc=_('Default SELinux user when no match is found in SELinux map rule'),
         ),
     )
 
@@ -189,11 +200,6 @@ class config_mod(LDAPUpdate):
     __doc__ = _('Modify configuration options.')
 
     def pre_callback(self, ldap, dn, entry_attrs, attrs_list, *keys, **options):
-        if 'ipamigrationenabled' in entry_attrs:
-            if entry_attrs['ipamigrationenabled']:
-                entry_attrs['ipamigrationenabled'] = 'TRUE'
-            else:
-                entry_attrs['ipamigrationenabled'] = 'FALSE'
         if 'ipadefaultprimarygroup' in entry_attrs:
             group=entry_attrs['ipadefaultprimarygroup']
             try:
@@ -233,10 +239,40 @@ class config_mod(LDAPUpdate):
                 for obj_attr in checked_attrs:
                     if obj_attr in OPERATIONAL_ATTRIBUTES:
                         continue
+                    if obj_attr in self.api.Object[obj].params and \
+                      'virtual_attribute' in \
+                      self.api.Object[obj].params[obj_attr].flags:
+                        # skip virtual attributes
+                        continue
                     if obj_attr not in new_allowed_attrs:
                         raise errors.ValidationError(name=attr,
-                                error=_('%s default attribute %s would not be allowed!') \
-                                % (obj, obj_attr))
+                                error=_('%(obj)s default attribute %(attr)s would not be allowed!') \
+                                % dict(obj=obj, attr=obj_attr))
+
+        if 'ipaselinuxusermapdefault' in options and options['ipaselinuxusermapdefault'] is None:
+            raise errors.ValidationError(name='ipaselinuxusermapdefault',
+                error=_('SELinux user map default user may not be empty'))
+
+        # Make sure the default user is in the list
+        if 'ipaselinuxusermapdefault' in options or \
+          'ipaselinuxusermaporder' in options:
+            config = None
+            if 'ipaselinuxusermapdefault' in options:
+                defaultuser = options['ipaselinuxusermapdefault']
+            else:
+                config = ldap.get_ipa_config()[1]
+                defaultuser = config['ipaselinuxusermapdefault']
+
+            if 'ipaselinuxusermaporder' in options:
+                order = options['ipaselinuxusermaporder']
+            else:
+                if not config:
+                    config = ldap.get_ipa_config()[1]
+                order = config['ipaselinuxusermaporder']
+            userlist = order[0].split('$')
+            if defaultuser not in userlist:
+                raise errors.ValidationError(name='ipaselinuxusermaporder',
+                    error=_('Default SELinux user map default user not in order list'))
 
         return dn
 

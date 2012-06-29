@@ -28,8 +28,8 @@ Groups of users
 
 Manage groups of users. By default, new groups are POSIX groups. You
 can add the --nonposix option to the group-add command to mark a new group
-as non-POSIX, and you can use the same argument to the group-mod command
-to convert a non-POSIX group to a POSIX group. POSIX groups cannot be
+as non-POSIX. You can use the --posix argument with the group-mod command
+to convert a non-POSIX group into a POSIX group. POSIX groups cannot be
 converted to non-POSIX groups.
 
 Every group must have a description.
@@ -95,7 +95,7 @@ class group(LDAPObject):
         'memberofindirect': ['group', 'netgroup', 'role', 'hbacrule',
         'sudorule'],
     }
-    rdnattr = 'cn'
+    rdn_is_primary_key = True
 
     label = _('User Groups')
     label_singular = _('User Group')
@@ -119,6 +119,7 @@ class group(LDAPObject):
             cli_name='gid',
             label=_('GID'),
             doc=_('GID (use this option to set it manually)'),
+            minvalue=1,
         ),
     )
 
@@ -202,7 +203,18 @@ class group_mod(LDAPUpdate):
                 entry_attrs['objectclass'] = old_entry_attrs['objectclass']
                 if not 'gidnumber' in options:
                     entry_attrs['gidnumber'] = 999
+        # Can't check for this in a validator because we lack context
+        if 'gidnumber' in options and options['gidnumber'] is None:
+            raise errors.RequirementError(name='gid')
         return dn
+
+    def exc_callback(self, keys, options, exc, call_func, *call_args, **call_kwargs):
+        # Check again for GID requirement in case someone tried to clear it
+        # using --setattr.
+        if isinstance(exc, errors.ObjectclassViolation):
+            if 'gidNumber' in exc.message and 'posixGroup' in exc.message:
+                raise errors.RequirementError(name='gid')
+        raise exc
 
 api.register(group_mod)
 

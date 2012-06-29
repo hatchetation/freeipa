@@ -30,10 +30,10 @@ IPA.associator = function (spec) {
 
     var that = {};
 
-    that.entity = spec.entity;
+    that.entity = IPA.get_entity(spec.entity);
     that.pkey = spec.pkey;
 
-    that.other_entity = spec.other_entity;
+    that.other_entity = IPA.get_entity(spec.other_entity);
     that.values = spec.values;
 
     that.method = spec.method;
@@ -77,7 +77,7 @@ IPA.serial_associator = function(spec) {
             options[that.entity.name] = that.pkey;
 
             command = IPA.command({
-                entity: that.other_entity,
+                entity: that.other_entity.name,
                 method: that.method,
                 args: args,
                 options: options
@@ -110,28 +110,16 @@ IPA.bulk_associator = function(spec) {
             return;
         }
 
-        var value = that.values.shift();
-        if (!value) {
-            that.on_success();
-            return;
-        }
-
-        while (that.values.length > 0) {
-            value += ',' + that.values.shift();
-        }
-
-        var args = [that.pkey];
-        var options = { 'all': true };
-        options[that.other_entity] = value;
-
         var command = IPA.command({
             entity: that.entity.name,
             method: that.method,
-            args: args,
-            options: options,
+            args: [that.pkey],
+            options: { 'all': true },
             on_success: that.on_success,
             on_error: that.on_error
         });
+
+        command.set_option(that.other_entity.name, that.values);
 
         //alert(JSON.stringify(command.to_json()));
 
@@ -150,19 +138,21 @@ IPA.association_adder_dialog = function(spec) {
 
     var that = IPA.adder_dialog(spec);
 
-    that.entity = spec.entity;
+    that.entity = IPA.get_entity(spec.entity);
     that.pkey = spec.pkey;
-    that.other_entity = spec.other_entity;
+
+    that.other_entity = IPA.get_entity(spec.other_entity);
     that.attribute_member = spec.attribute_member;
+
     that.exclude = spec.exclude || [];
 
     var init = function() {
         if (!that.get_columns().length) {
-            var pkey_name = IPA.metadata.objects[spec.other_entity].primary_key;
+            var pkey_name = that.other_entity.metadata.primary_key;
             that.create_column({
                 entity: that.entity,
                 name: pkey_name,
-                label: IPA.metadata.objects[spec.other_entity].label,
+                label: that.other_entity.metadata.label,
                 primary_key: true,
                 width: '600px'
             });
@@ -174,13 +164,12 @@ IPA.association_adder_dialog = function(spec) {
 
             that.clear_available_values();
 
-            var other_entity = IPA.get_entity(that.other_entity);
-            var pkey_attr = other_entity.metadata.primary_key;
+            var pkey_attr = that.other_entity.metadata.primary_key;
 
             var selected = that.get_selected_values();
 
             var results = data.result;
-            var same_entity = that.entity.name === other_entity.name;
+            var same_entity = that.entity === that.other_entity;
             for (var i=0; i<results.count; i++) {
                 var result = results.result[i];
                 var pkey = result[pkey_attr][0];
@@ -194,7 +183,7 @@ IPA.association_adder_dialog = function(spec) {
         }
 
         var options = { all: true };
-        var relationships = IPA.metadata.objects[that.other_entity].relationships;
+        var relationships = that.other_entity.metadata.relationships;
 
         /* TODO: better generic handling of different relationships! */
         var other_attribute_member = '';
@@ -206,6 +195,8 @@ IPA.association_adder_dialog = function(spec) {
             other_attribute_member = 'memberof';
         else if (that.attribute_member == 'memberof')
             other_attribute_member = 'member';
+        else if (that.attribute_member == 'managedby')
+            other_attribute_member = 'managing';
 
         var relationship = relationships[other_attribute_member];
         if (relationship) {
@@ -214,7 +205,7 @@ IPA.association_adder_dialog = function(spec) {
         }
 
         IPA.command({
-            entity: that.other_entity,
+            entity: that.other_entity.name,
             method: 'find',
             args: [that.get_filter()],
             options: options,
@@ -237,9 +228,10 @@ IPA.association_deleter_dialog = function (spec) {
 
     var that = IPA.deleter_dialog(spec);
 
-    that.entity = spec.entity;
+    that.entity = IPA.get_entity(spec.entity);
     that.pkey = spec.pkey;
-    that.other_entity = spec.other_entity;
+
+    that.other_entity = IPA.get_entity(spec.other_entity);
     that.values = spec.values;
 
     that.associator = spec.associator;
@@ -289,11 +281,11 @@ IPA.association_table_widget = function (spec) {
     spec.attribute_member = spec.attribute_member || spec.name.substring(0, index);
     spec.other_entity = spec.other_entity || spec.name.substring(index+1);
 
-    spec.managed_entity_name = spec.other_entity;
+    spec.managed_entity = IPA.get_entity(spec.other_entity);
 
     var that = IPA.table_widget(spec);
 
-    that.other_entity = spec.other_entity;
+    that.other_entity = IPA.get_entity(spec.other_entity);
     that.attribute_member = spec.attribute_member;
 
     that.associator = spec.associator || IPA.bulk_associator;
@@ -305,6 +297,8 @@ IPA.association_table_widget = function (spec) {
 
     that.adder_columns = $.ordered_map();
 
+    that.needs_refresh = IPA.observer();
+
     that.get_adder_column = function(name) {
         return that.adder_columns.get(name);
     };
@@ -314,45 +308,60 @@ IPA.association_table_widget = function (spec) {
     };
 
     that.create_adder_column = function(spec) {
-        spec.entity_name = that.other_entity;
+        spec.entity = that.other_entity;
         var column = IPA.column(spec);
         that.add_adder_column(column);
         return column;
     };
 
-    that.create = function(container) {
-
-        var column;
-
+    that.create_columns = function() {
         // create a column if none defined
         if (!that.columns.length) {
             that.create_column({
                 name: that.name,
                 label: that.label,
-                entity_name: that.other_entity,
+                entity: that.other_entity,
                 primary_key: true,
                 link: true
             });
         }
+    };
 
+    that.init_columns = function() {
+        var column;
         var columns = that.columns.values;
         for (var i=0; i<columns.length; i++) {
             column = columns[i];
-            column.entity = IPA.get_entity(that.other_entity);
+            column.entity = that.other_entity;
 
             if (column.link) {
                 column.link_handler = function(value) {
-                    IPA.nav.show_page(that.other_entity, 'default', value);
+                    IPA.nav.show_page(that.other_entity.name, 'default', value);
                     return false;
                 };
             }
         }
+    };
 
+    that.init_adder_columns = function() {
+        var column;
         var adder_columns = that.adder_columns.values;
         for (var j=0; j<adder_columns.length; j++) {
             column = adder_columns[j];
-            column.entity_name = that.other_entity;
+            column.entity = that.other_entity;
         }
+    };
+
+    that.init = function() {
+
+        that.create_columns();
+        that.init_columns();
+        that.init_adder_columns();
+    };
+
+    that.create = function(container) {
+
+        that.init();
 
         that.table_create(container);
 
@@ -432,6 +441,7 @@ IPA.association_table_widget = function (spec) {
             $('.action-button', that.table).addClass('action-button-disabled');
             that.unselect_all();
         }
+        that.enabled = enabled;
     };
 
     that.select_changed = function() {
@@ -447,69 +457,31 @@ IPA.association_table_widget = function (spec) {
         }
     };
 
-    that.get_records = function(on_success, on_error) {
-
-        var length = that.values.length;
-        if (!length) return;
-
-        if (length > 100) {
-            length = 100;
-        }
-
-        var batch = IPA.batch_command({
-            'name': that.entity.name+'_'+that.name,
-            'on_success': on_success,
-            'on_error': on_error
-        });
-
-        for (var i=0; i<length; i++) {
-            var value = that.values[i];
-
-            var command = IPA.command({
-                entity: that.other_entity,
-                method: 'show',
-                args: [value],
-                options: {
-                    all: true,
-                    rights: true
-                }
-            });
-
-            batch.add_command(command);
-        }
-
-        batch.execute();
-    };
-
     that.load = function(result) {
         that.values = result[that.name] || [];
-        that.reset();
+        that.update();
         that.unselect_all();
     };
 
-    that.update = function() {
+    that.update = function(values) {
+
+        if (values) that.values = values;
 
         that.empty();
 
+        var i;
         var columns = that.columns.values;
         if (columns.length == 1) { // show pkey only
             var name = columns[0].name;
-            for (var i=0; i<that.values.length; i++) {
+            for (i=0; i<that.values.length; i++) {
                 var record = {};
                 record[name] = that.values[i];
                 that.add_record(record);
             }
-
-        } else { // get and show additional fields
-            that.get_records(
-                function(data, text_status, xhr) {
-                    var results = data.result.results;
-                    for (var i=0; i<results.length; i++) {
-                        var record = results[i].result;
-                        that.add_record(record);
-                    }
-                }
-            );
+        } else {
+            for (i=0; i<that.values.length; i++) {
+                that.add_record(that.values[i]);
+            }
         }
     };
 
@@ -517,7 +489,7 @@ IPA.association_table_widget = function (spec) {
 
         var entity_label = that.entity.metadata.label_singular;
         var pkey = IPA.nav.get_state(that.entity.name+'-pkey');
-        var other_entity_label = IPA.metadata.objects[that.other_entity].label;
+        var other_entity_label = that.other_entity.metadata.label;
 
         var title = that.add_title;
         title = title.replace('${entity}', entity_label);
@@ -572,7 +544,7 @@ IPA.association_table_widget = function (spec) {
             on_success: on_success,
             on_error: on_error
         });
-        command.set_option(that.other_entity, values.join(','));
+        command.set_option(that.other_entity.name, values);
 
         command.execute();
     };
@@ -587,20 +559,21 @@ IPA.association_table_widget = function (spec) {
             return;
         }
 
+        var entity_label = that.entity.metadata.label_singular;
         var pkey = IPA.nav.get_state(that.entity.name+'-pkey');
-        var label = IPA.metadata.objects[that.other_entity].label;
+        var other_entity_label = that.other_entity.metadata.label;
 
         var title = that.remove_title;
-        title = title.replace('${entity}', that.entity.metadata.label_singular);
+        title = title.replace('${entity}', entity_label);
         title = title.replace('${primary_key}', pkey);
-        title = title.replace('${other_entity}', label);
+        title = title.replace('${other_entity}', other_entity_label);
 
         var dialog = IPA.association_deleter_dialog({
-            'title': title,
-            'entity': that.entity,
-            'pkey': pkey,
-            'other_entity': that.other_entity,
-            'values': selected_values,
+            title: title,
+            entity: that.entity,
+            pkey: pkey,
+            other_entity: that.other_entity,
+            values: selected_values,
             method: that.remove_method
         });
 
@@ -634,10 +607,44 @@ IPA.association_table_widget = function (spec) {
             on_error: on_error
         });
 
-        command.set_option(that.other_entity, values.join(','));
+        command.set_option(that.other_entity.name, values);
 
         command.execute();
     };
+
+    that.refresh = function() {
+
+        that.needs_refresh.notify([], that);
+    };
+
+    /*initialization code*/
+    /*this is duplicated in the facet... should be unified*/
+    var i;
+    if (spec.columns){
+        for (i = 0; i < spec.columns.length; i+= 1){
+            spec.columns[i].entity = spec.columns[i].entity || that.other_entity;
+            that.create_column(spec.columns[i]);
+        }
+    }
+    if (spec.adder_columns){
+        for (i = 0; i < spec.adder_columns.length; i+= 1){
+            that.create_adder_column(spec.adder_columns[i]);
+        }
+    }
+
+    // methods that should be invoked by subclasses
+    that.association_table_widget_create_columns = that.create_columns;
+    that.association_table_widget_show_add_dialog = that.show_add_dialog;
+    that.association_table_widget_show_remove_dialog = that.show_remove_dialog;
+
+    return that;
+};
+
+IPA.association_table_field = function (spec) {
+
+    spec = spec || {};
+
+    var that = IPA.field(spec);
 
     that.refresh = function() {
 
@@ -646,8 +653,7 @@ IPA.association_table_widget = function (spec) {
         }
 
         function on_error(xhr, text_status, error_thrown) {
-            var summary = $('span[name=summary]', that.tfoot).empty();
-            summary.append(error_thrown.name+': '+error_thrown.message);
+            that.widget.summary.text(error_thrown.name+': '+error_thrown.message);
         }
 
         var pkey = IPA.nav.get_state(that.entity.name+'-pkey');
@@ -661,28 +667,17 @@ IPA.association_table_widget = function (spec) {
         }).execute();
     };
 
-    /*initialization code*/
-    /*this is duplicated in the facet... should be unified*/
-    var i;
-    if (spec.columns){
-        for (i = 0; i < spec.columns.length; i+= 1){
-            spec.columns[i].entity_name = spec.columns[i].entity_name ||
-                that.other_entity;
-            that.create_column(spec.columns[i]);
-        }
-    }
-    if (spec.adder_columns){
-        for (i = 0; i < spec.adder_columns.length; i+= 1){
-            that.create_adder_column(spec.adder_columns[i]);
-        }
-    }
+    that.widgets_created = function() {
 
-    // methods that should be invoked by subclasses
-    that.association_table_widget_show_add_dialog = that.show_add_dialog;
-    that.association_table_widget_show_remove_dialog = that.show_remove_dialog;
+        that.field_widgets_created();
+        that.widget.needs_refresh.attach(that.refresh);
+    };
 
     return that;
 };
+
+IPA.widget_factories['association_table'] = IPA.association_table_widget;
+IPA.field_factories['association_table'] = IPA.association_table_field;
 
 
 IPA.association_facet = function (spec) {
@@ -697,15 +692,14 @@ IPA.association_facet = function (spec) {
        link must be set before the call to the base class, to affect the  table.
      */
     spec.link = spec.link === undefined ? true : spec.link;
-    spec.managed_entity_name = spec.other_entity;
+    spec.managed_entity = IPA.get_entity(spec.other_entity);
 
     var that = IPA.table_facet(spec);
 
-    that.entity = spec.entity;
     that.attribute_member = spec.attribute_member;
     that.indirect_attribute_member = spec.indirect_attribute_member;
 
-    that.other_entity = spec.other_entity;
+    that.other_entity = IPA.get_entity(spec.other_entity);
 
     that.association_type = 'direct';
     that.facet_group = spec.facet_group;
@@ -721,14 +715,12 @@ IPA.association_facet = function (spec) {
 
     that.adder_columns = $.ordered_map();
 
-    that.page_length = spec.page_length === undefined ? 20 : spec.page_length;
-
     that.get_adder_column = function(name) {
         return that.adder_columns.get(name);
     };
 
     that.add_adder_column = function(column) {
-        column.entity_name = that.managed_entity_name;
+        column.entity = that.other_entity;
         that.adder_columns.put(column.name, column);
     };
 
@@ -742,27 +734,39 @@ IPA.association_facet = function (spec) {
             factory  = IPA.column;
             spec = { name: spec };
         }
-        spec.entity_name = that.other_entity;
+        spec.entity = that.other_entity;
         column = factory(spec);
         that.add_adder_column(column);
         return column;
     };
 
-    function setup_columns(){
+    var init = function() {
+
         var column;
         var i;
 
         var pkey_name;
         if (that.other_entity) {
-            pkey_name = IPA.metadata.objects[that.other_entity].primary_key;
+            pkey_name = that.other_entity.metadata.primary_key;
         }
 
         if (!that.columns.length){
             that.create_column({
-                name: pkey_name,
-                primary_key: true,
-                link: spec.link
+                name: pkey_name
             });
+        }
+
+        var columns = that.columns.values;
+        for (i=0; i<columns.length; i++) {
+            column = columns[i];
+            column.link = spec.link;
+        }
+
+        that.init_table(that.other_entity);
+
+        var adder_columns = spec.adder_columns || [];
+        for (i=0; i<adder_columns.length; i++) {
+            that.create_adder_column(adder_columns[i]);
         }
 
         if (!that.adder_columns.length) {
@@ -772,106 +776,31 @@ IPA.association_facet = function (spec) {
             });
         }
 
-        var label = IPA.metadata.objects[that.other_entity] ?
-            IPA.metadata.objects[that.other_entity].label : that.other_entity;
-
-        that.table = IPA.table_widget({
-            id: that.entity.name+'-'+that.other_entity,
-            'class': 'content-table',
-            name: pkey_name,
-            label: label,
-            entity: that.entity,
-            other_entity: that.other_entity,
-            page_length: that.page_length,
-            scrollable: true,
-            selectable: !that.read_only
-        });
-
-        var columns = that.columns.values;
-
-        that.table.set_columns(columns);
-
-        for (i=0; i<columns.length; i++) {
-            column = columns[i];
-            column.entity_name = that.other_entity;
-
-            if (column.link) {
-                column.link_handler = function(value) {
-                    IPA.nav.show_page(that.other_entity, 'default', value);
-                    return false;
-                };
-            }
-        }
-
-        var adder_columns = that.adder_columns.values;
+        adder_columns = that.adder_columns.values;
         for (i=0; i<adder_columns.length; i++) {
             column = adder_columns[i];
-            column.entity_name = that.other_entity;
+            column.entity = that.other_entity;
         }
+    };
 
-        that.table.prev_page = function() {
-            if (that.table.current_page > 1) {
-                var state = {};
-                state[that.entity_name+'-page'] = that.table.current_page - 1;
-                IPA.nav.push_state(state);
-            }
-        };
-
-        that.table.next_page = function() {
-            if (that.table.current_page < that.table.total_pages) {
-                var state = {};
-                state[that.entity_name+'-page'] = that.table.current_page + 1;
-                IPA.nav.push_state(state);
-            }
-        };
-
-        that.table.set_page = function(page) {
-            if (page < 1) {
-                page = 1;
-            } else if (page > that.total_pages) {
-                page = that.total_pages;
-            }
-            var state = {};
-            state[that.entity_name+'-page'] = page;
-            IPA.nav.push_state(state);
-        };
-
-        that.table.refresh = function() {
-            var state = {};
-            var page = parseInt(IPA.nav.get_state(that.entity_name+'-page'), 10) || 1;
-            if (page < 1) {
-                state[that.entity_name+'-page'] = 1;
-                IPA.nav.push_state(state);
-                return;
-            } else if (page > that.table.total_pages) {
-                state[that.entity_name+'-page'] = that.table.total_pages;
-                IPA.nav.push_state(state);
-                return;
-            }
-            that.table.current_page = page;
-            that.table.current_page_input.val(page);
-            that.refresh_table();
-        };
-
-        that.table.select_changed = function() {
-
-            var values = that.table.get_selected_values();
-
-            if (that.remove_button) {
-                if (values.length === 0) {
-                    that.remove_button.addClass('action-button-disabled');
-                } else {
-                    that.remove_button.removeClass('action-button-disabled');
-                }
-            }
-        };
-    }
+    that.get_records_command_name = function() {
+        return that.entity.name+'_'+that.get_attribute_name();
+    };
 
     that.create_header = function(container) {
 
         that.facet_create_header(container);
 
-        that.pkey = IPA.nav.get_state(that.entity.name+'-pkey');
+        that.refresh_button = IPA.action_button({
+            name: 'refresh',
+            href: 'refresh',
+            label: IPA.messages.buttons.refresh,
+            icon: 'reset-icon',
+            click: function() {
+                that.refresh();
+                return false;
+            }
+        }).appendTo(that.controls);
 
         if (!that.read_only) {
             that.remove_button = IPA.action_button({
@@ -889,7 +818,7 @@ IPA.association_facet = function (spec) {
 
             that.add_button = IPA.action_button({
                 name: 'add',
-                label: IPA.messages.buttons.enroll,
+                label: IPA.messages.buttons.add,
                 icon: 'add-icon',
                 click: function() {
                     if (!that.add_button.hasClass('action-button-disabled')) {
@@ -901,54 +830,63 @@ IPA.association_facet = function (spec) {
         }
 
         if (that.indirect_attribute_member) {
-            var span = $('<span/>', {
+
+            var div = $('<div/>', {
                 'class': 'right-aligned-facet-controls'
             }).appendTo(that.controls);
 
-            span.append(IPA.messages.association.show_results);
-            span.append(' ');
+            div.append(IPA.messages.association.show_results);
+            div.append(' ');
+
+            var name = that.entity.name+'-'+that.attribute_member+'-'+that.other_entity.name+'-type-radio';
+            var direct_id = name + '-direct';
 
             that.direct_radio = $('<input/>', {
+                id: direct_id,
                 type: 'radio',
-                name: 'type',
+                name: name,
                 value: 'direct',
                 click: function() {
                     that.association_type = $(this).val();
                     that.refresh();
                     return true;
                 }
-            }).appendTo(span);
+            }).appendTo(div);
 
-            span.append(' ');
-            span.append(IPA.messages.association.direct_enrollment);
-            span.append(' ');
+            $('<label/>', {
+                text: IPA.messages.association.direct_membership,
+                'for': direct_id
+            }).appendTo(div);
+
+            div.append(' ');
+
+            var indirect_id = name + '-indirect';
 
             that.indirect_radio = $('<input/>', {
+                id: indirect_id,
                 type: 'radio',
-                name: 'type',
+                name: name,
                 value: 'indirect',
                 click: function() {
                     that.association_type = $(this).val();
                     that.refresh();
                     return true;
                 }
-            }).appendTo(span);
+            }).appendTo(div);
 
-            span.append(' ');
-            span.append(IPA.messages.association.indirect_enrollment);
+            $('<label/>', {
+                text: IPA.messages.association.indirect_membership,
+                'for': indirect_id
+            }).appendTo(div);
         }
     };
 
     that.get_attribute_name = function() {
         if (that.association_type == 'direct') {
-            return that.attribute_member+'_'+that.other_entity;
+            return that.attribute_member+'_'+that.other_entity.name;
         } else {
-            return that.indirect_attribute_member+'_'+that.other_entity;
+            return that.indirect_attribute_member+'_'+that.other_entity.name;
         }
-    };
-
-    that.create_content = function(container) {
-        that.table.create(container);
     };
 
     that.show = function() {
@@ -960,15 +898,16 @@ IPA.association_facet = function (spec) {
 
     that.show_add_dialog = function() {
 
+        var entity_label = that.entity.metadata.label_singular;
         var pkey = IPA.nav.get_state(that.entity.name+'-pkey');
-        var label = IPA.metadata.objects[that.other_entity] ? IPA.metadata.objects[that.other_entity].label : that.other_entity;
+        var other_entity_label = that.other_entity.metadata.label;
 
         var title = that.add_title;
-        title = title.replace('${entity}', that.entity.metadata.label_singular);
+        title = title.replace('${entity}', entity_label);
         title = title.replace('${primary_key}', pkey);
-        title = title.replace('${other_entity}', label);
+        title = title.replace('${other_entity}', other_entity_label);
 
-        var pkeys = that.data[that.get_attribute_name()];
+        var pkeys = that.data.result.result[that.get_attribute_name()];
 
         var dialog = IPA.association_adder_dialog({
             title: title,
@@ -989,16 +928,16 @@ IPA.association_facet = function (spec) {
             var pkey = IPA.nav.get_state(that.entity.name+'-pkey');
 
             var associator = that.associator({
-                'entity': that.entity,
-                'pkey': pkey,
-                'other_entity': that.other_entity,
-                'values': dialog.get_selected_values(),
-                'method': that.add_method,
-                'on_success': function() {
+                entity: that.entity,
+                pkey: pkey,
+                other_entity: that.other_entity,
+                values: dialog.get_selected_values(),
+                method: that.add_method,
+                on_success: function() {
                     that.refresh();
                     dialog.close();
                 },
-                'on_error': function() {
+                on_error: function() {
                     that.refresh();
                     dialog.close();
                 }
@@ -1012,7 +951,6 @@ IPA.association_facet = function (spec) {
 
     that.show_remove_dialog = function() {
 
-        var label = IPA.metadata.objects[that.other_entity] ? IPA.metadata.objects[that.other_entity].label : that.other_entity;
         var values = that.table.get_selected_values();
 
         if (!values.length) {
@@ -1021,12 +959,14 @@ IPA.association_facet = function (spec) {
             return;
         }
 
+        var entity_label = that.entity.metadata.label_singular;
         var pkey = IPA.nav.get_state(that.entity.name+'-pkey');
+        var other_entity_label = that.other_entity.metadata.label;
 
         var title = that.remove_title;
-        title = title.replace('${entity}', that.entity.metadata.label_singular);
+        title = title.replace('${entity}', entity_label);
         title = title.replace('${primary_key}', pkey);
-        title = title.replace('${other_entity}', label);
+        title = title.replace('${other_entity}', other_entity_label);
 
         var dialog = IPA.association_deleter_dialog({
             title: title,
@@ -1060,113 +1000,29 @@ IPA.association_facet = function (spec) {
         dialog.open(that.container);
     };
 
-    that.refresh_table = function() {
+    that.get_records_map = function(data) {
 
-        that.table.current_page_input.val(that.table.current_page);
-        that.table.total_pages_span.text(that.table.total_pages);
+        var records_map = $.ordered_map();
+        var association_name = that.get_attribute_name();
+        var pkey_name = that.managed_entity.metadata.primary_key;
 
-        var pkeys = that.data[that.get_attribute_name()];
-        if (!pkeys || !pkeys.length) {
-            that.table.empty();
-            that.table.summary.text(IPA.messages.association.no_entries);
-            return;
-        }
-
-        pkeys.sort();
-        var total = pkeys.length;
-
-        var start = (that.table.current_page - 1) * that.table.page_length + 1;
-        var end = that.table.current_page * that.table.page_length;
-        end = end > total ? total : end;
-
-        var summary = IPA.messages.association.paging;
-        summary = summary.replace('${start}', start);
-        summary = summary.replace('${end}', end);
-        summary = summary.replace('${total}', total);
-        that.table.summary.text(summary);
-
-        var list = pkeys.slice(start-1, end);
-
-        var columns = that.table.columns.values;
-        if (columns.length == 1) { // show pkey only
-            var name = columns[0].name;
-            that.table.empty();
-            for (var i=0; i<list.length; i++) {
-                var entry = {};
-                entry[name] = list[i];
-                that.table.add_record(entry);
-            }
-
-        } else { // get and show additional fields
-            that.get_records(
-                list,
-                function(data, text_status, xhr) {
-                    var results = data.result.results;
-                    that.table.empty();
-                    for (var i=0; i<results.length; i++) {
-                        var record = results[i].result;
-                        that.table.add_record(record);
-                    }
-                },
-                function(xhr, text_status, error_thrown) {
-                    that.table.empty();
-                    var summary = that.table.summary.empty();
-                    summary.append(error_thrown.name+': '+error_thrown.message);
-                }
-            );
-        }
-    };
-
-    that.get_records = function(pkeys, on_success, on_error) {
-
-        var length = pkeys.length;
-        if (!length) return;
-
-        var batch = IPA.batch_command({
-            'name': that.entity.name+'_'+that.get_attribute_name(),
-            'on_success': on_success,
-            'on_error': on_error
-        });
-
-        for (var i=0; i<length; i++) {
+        var pkeys = data.result.result[association_name];
+        for (var i=0; pkeys && i<pkeys.length; i++) {
             var pkey = pkeys[i];
-
-            var command = IPA.command({
-                entity: that.other_entity,
-                method: 'show',
-                args: [pkey],
-                options: { all: true }
-            });
-
-            batch.add_command(command);
+            var record = {};
+            record[pkey_name] = pkey;
+            records_map.put(pkey, record);
         }
 
-        batch.execute();
-    };
-
-    that.load = function(data) {
-        that.facet_load(data);
-
-        var pkeys = that.data[that.get_attribute_name()];
-        if (pkeys) {
-            that.table.total_pages =
-                Math.ceil(pkeys.length / that.table.page_length);
-        } else {
-            that.table.total_pages = 1;
-        }
-
-        that.table.current_page = 1;
-
-        that.table.refresh();
-        that.table.unselect_all();
+        return records_map;
     };
 
     that.refresh = function() {
 
         if (that.association_type == 'direct') {
             if (that.direct_radio) that.direct_radio.attr('checked', true);
-            if (that.add_button) that.add_button.css('display', 'inline');
-            if (that.remove_button) that.remove_button.css('display', 'inline');
+            if (that.add_button) that.add_button.css('display', 'inline-block');
+            if (that.remove_button) that.remove_button.css('display', 'inline-block');
         } else {
             if (that.indirect_radio) that.indirect_radio.attr('checked', true);
             if (that.add_button) that.add_button.css('display', 'none');
@@ -1182,19 +1038,36 @@ IPA.association_facet = function (spec) {
         });
 
         command.on_success = function(data, text_status, xhr) {
-            that.load(data.result.result);
+            that.load(data);
+            that.show_content();
         };
 
-        command.on_error = that.on_error;
+        command.on_error = function(xhr, text_status, error_thrown) {
+            that.redirect_error(error_thrown);
+            that.report_error(error_thrown);
+        };
 
         command.execute();
     };
 
-    /*initialization*/
-    var adder_columns = spec.adder_columns || [];
-    for (var i=0; i<adder_columns.length; i++) {
-        that.create_adder_column(adder_columns[i]);
-    }
-    setup_columns();
+    that.clear = function() {
+        that.header.clear();
+        that.table.clear();
+    };
+
+    that.needs_update = function() {
+        if (that._needs_update !== undefined) return that._needs_update;
+
+        var pkey = IPA.nav.get_state(that.entity.name+'-pkey');
+        if (that.pkey !== pkey) return true;
+
+        var page = parseInt(IPA.nav.get_state(that.entity.name+'-page'), 10) || 1;
+        if (that.table.current_page !== page) return true;
+
+        return that.facet_needs_update();
+    };
+
+    init();
+
     return that;
 };

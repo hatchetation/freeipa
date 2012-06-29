@@ -174,7 +174,7 @@ IPA.navigation = function(spec) {
         // update new facet state with new state
         $.extend(facet.state, param_state);
 
-        var entity = tab.entity.containing_entity;
+        var entity = tab.entity.get_containing_entity();
         while (entity) {
             var facet2 = entity.get_facet();
 
@@ -186,12 +186,12 @@ IPA.navigation = function(spec) {
                 if (key_value) facet.state[key_name] = key_value;
             }
 
-            entity = entity.containing_entity;
+            entity = entity.get_containing_entity();
         }
 
         // push entity path and facet state
         state = {};
-        $.extend(state, that.get_path_state(tab.entity.name));
+        $.extend(state, that.get_path_state(tab.name));
         $.extend(state, facet.state);
         $.bbq.pushState(state, 2);
 
@@ -204,6 +204,26 @@ IPA.navigation = function(spec) {
 
     that.remove_state = function(key) {
         $.bbq.removeState(key);
+    };
+
+    that.show_tab = function(tab_name, pkey) {
+
+        var tab = that.get_tab(tab_name);
+
+        var state = that.get_path_state(tab.name);
+
+        if (tab.entity) {
+
+            if (tab.facet) {
+                state[tab.entity.name + '-facet'] = tab.facet;
+            }
+
+            if (pkey) {
+                state[tab.entity.name + '-pkey'] = pkey;
+            }
+        }
+
+        return that.push_state(state);
     };
 
     that.show_page = function(entity_name, facet_name, pkey) {
@@ -233,7 +253,7 @@ IPA.navigation = function(spec) {
                 var current_entity = entity;
                 while (current_entity){
                     state[current_entity.name + '-pkey'] = pkeys.pop();
-                    current_entity = current_entity.containing_entity;
+                    current_entity = current_entity.get_containing_entity();
                 }
             }else{
                 state[entity.name + '-pkey'] = pkeys;
@@ -241,6 +261,26 @@ IPA.navigation = function(spec) {
         }
 
         return that.push_state(state);
+    };
+
+    that.show_top_level_page = function() {
+        jQuery.bbq.pushState({}, 2);
+    };
+
+    that.get_tab_facet = function(tab_name) {
+
+        var facet = null;
+        var tab = that.get_tab(tab_name);
+
+        if (tab.entity) {
+            if (tab.facet) {
+                facet = tab.entity.get_facet(tab.facet);
+            } else {
+                facet = tab.entity.get_facet(tab.entity.redirect_facet);
+            }
+        }
+
+        return facet;
     };
 
 
@@ -279,7 +319,7 @@ IPA.navigation = function(spec) {
                 }
 
                 // selection is triggered by mouse click, update the URL state
-                return that.show_page(name);
+                return that.show_tab(name);
             }
         });
     };
@@ -372,8 +412,8 @@ IPA.navigation = function(spec) {
         container.tabs('select', index);
 
         var tab = tabs[index];
-        if (tab.hidden) {
-            depth--;
+        if (tab.depth !== undefined) {
+            depth += tab.depth;
         }
 
         if (tab.children && tab.children.length) {
@@ -389,8 +429,8 @@ IPA.navigation = function(spec) {
                                      that.content);
             if (!entity_container.length) {
                 tab.content = $('<div/>', {
-                    name: tab.name,
-                    title: tab.label,
+                    name: tab.entity.name,
+                    title: tab.entity.label,
                     'class': 'entity'
                 }).appendTo(that.content);
                 tab.entity.create(tab.content);

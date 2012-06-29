@@ -20,7 +20,7 @@
 import os
 import os.path
 import tempfile
-import logging
+from ipapython.ipa_log_manager import *
 import pwd
 import shutil
 
@@ -37,10 +37,11 @@ HTTPD_DIR = "/etc/httpd"
 SSL_CONF = HTTPD_DIR + "/conf.d/ssl.conf"
 NSS_CONF = HTTPD_DIR + "/conf.d/nss.conf"
 
-selinux_warning = """WARNING: could not set selinux boolean httpd_can_network_connect to true.
-The web interface may not function correctly until this boolean is
-successfully change with the command:
-   /usr/sbin/setsebool -P httpd_can_network_connect true
+selinux_warning = """
+WARNING: could not set selinux boolean(s) %(var)s to true.  The web
+interface may not function correctly until this boolean is successfully
+change with the command:
+   /usr/sbin/setsebool -P %(var)s true
 Try updating the policycoreutils and selinux-policy packages.
 """
 
@@ -84,7 +85,8 @@ class HTTPInstance(service.Service):
             self.step("setting up browser autoconfig", self.__setup_autoconfig)
         self.step("publish CA cert", self.__publish_ca_cert)
         self.step("creating a keytab for httpd", self.__create_http_keytab)
-        self.step("configuring SELinux for httpd", self.__selinux_config)
+        self.step("clean up any existing httpd ccache", self.remove_httpd_ccache)
+        self.step("configuring SELinux for httpd", self.configure_selinux_for_httpd)
         self.step("restarting httpd", self.__start)
         self.step("configuring httpd to start on boot", self.__enable)
 
@@ -101,31 +103,38 @@ class HTTPInstance(service.Service):
         # components as found in our LDAP configuration tree
         self.ldap_enable('HTTP', self.fqdn, self.dm_password, self.suffix)
 
-    def __selinux_config(self):
-        selinux=0
+    def configure_selinux_for_httpd(self):
+        selinux = False
         try:
             if (os.path.exists('/usr/sbin/selinuxenabled')):
                 ipautil.run(["/usr/sbin/selinuxenabled"])
-                selinux=1
+                selinux = True
         except ipautil.CalledProcessError:
             # selinuxenabled returns 1 if not enabled
             pass
 
         if selinux:
-            try:
-                # returns e.g. "httpd_can_network_connect --> off"
-                (stdout, stderr, returncode) = ipautil.run(["/usr/sbin/getsebool",
-                                                "httpd_can_network_connect"])
-                self.backup_state("httpd_can_network_connect", stdout.split()[2])
-            except:
-                pass
+            # Don't assume all vars are available
+            vars = []
+            for var in ["httpd_can_network_connect", "httpd_manage_ipa"]:
+                try:
+                    (stdout, stderr, returncode) = ipautil.run(["/usr/sbin/getsebool", var])
+                    self.backup_state(var, stdout.split()[2])
+                    vars.append(var)
+                except:
+                    pass
 
-            # Allow apache to connect to the turbogears web gui
-            # This can still fail even if selinux is enabled
-            try:
-                ipautil.run(["/usr/sbin/setsebool", "-P", "httpd_can_network_connect", "true"])
-            except:
-                self.print_msg(selinux_warning)
+            # Allow apache to connect to the dogtag UI and the session cache
+            # This can still fail even if selinux is enabled. Execute these
+            # together so it is speedier.
+            if vars:
+                bools = [var + "=true" for var in vars]
+                args = ["/usr/sbin/setsebool", "-P"]
+                args.extend(bools);
+                try:
+                    ipautil.run(args)
+                except:
+                    self.print_msg(selinux_warning % dict(var=','.join(vars)))
 
     def __create_http_keytab(self):
         installutils.kadmin_addprinc(self.principal)
@@ -135,6 +144,11 @@ class HTTPInstance(service.Service):
 
         pent = pwd.getpwnam("apache")
         os.chown("/etc/httpd/conf/ipa.keytab", pent.pw_uid, pent.pw_gid)
+
+    def remove_httpd_ccache(self):
+        # Clean up existing ccache
+        pent = pwd.getpwnam("apache")
+        installutils.remove_file('/tmp/krb5cc_%d' % pent.pw_uid)
 
     def __configure_http(self):
         target_fname = '/etc/httpd/conf.d/ipa.conf'
@@ -196,7 +210,7 @@ class HTTPInstance(service.Service):
             # We only handle one server cert
             nickname = server_certs[0][0]
             self.dercert = db.get_cert_from_db(nickname, pem=False)
-            db.track_server_cert(nickname, self.principal, db.passwd_fname)
+            db.track_server_cert(nickname, self.principal, db.passwd_fname, 'restart_httpd')
 
             self.__set_mod_nss_nickname(nickname)
         else:
@@ -205,7 +219,7 @@ class HTTPInstance(service.Service):
 
             db.create_password_conf()
             self.dercert = db.create_server_cert("Server-Cert", self.fqdn, ca_db)
-            db.track_server_cert("Server-Cert", self.principal, db.passwd_fname)
+            db.track_server_cert("Server-Cert", self.principal, db.passwd_fname, 'restart_httpd')
             db.create_signing_cert("Signing-Cert", "Object Signing Cert", ca_db)
 
         # Fix the database permissions
@@ -279,7 +293,7 @@ class HTTPInstance(service.Service):
             try:
                 self.fstore.restore_file(f)
             except ValueError, error:
-                logging.debug(error)
+                root_logger.debug(error)
                 pass
 
         # Remove the configuration files we create
@@ -287,12 +301,13 @@ class HTTPInstance(service.Service):
         installutils.remove_file("/etc/httpd/conf.d/ipa.conf")
         installutils.remove_file("/etc/httpd/conf.d/ipa-pki-proxy.conf")
 
-        sebool_state = self.restore_state("httpd_can_network_connect")
-        if not sebool_state is None:
-            try:
-                ipautil.run(["/usr/sbin/setsebool", "-P", "httpd_can_network_connect", sebool_state])
-            except:
-                self.print_msg(selinux_warning)
+        for var in ["httpd_can_network_connect", "httpd_manage_ipa"]:
+            sebool_state = self.restore_state(var)
+            if not sebool_state is None:
+                try:
+                    ipautil.run(["/usr/sbin/setsebool", "-P", var, sebool_state])
+                except:
+                    self.print_msg(selinux_warning % dict(var=var))
 
         if not running is None and running:
             self.start()

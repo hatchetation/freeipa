@@ -25,7 +25,8 @@ Test the `ipalib/plugins/user.py` module.
 
 from ipalib import api, errors
 from tests.test_xmlrpc import objectclasses
-from xmlrpc_test import Declarative, fuzzy_digits, fuzzy_uuid
+from tests.util import assert_equal, assert_not_equal
+from xmlrpc_test import Declarative, fuzzy_digits, fuzzy_uuid, fuzzy_password, fuzzy_string, fuzzy_dergeneralizedtime
 from ipalib.dn import *
 
 user1=u'tuser1'
@@ -36,6 +37,17 @@ group1=u'group1'
 invaliduser1=u'+tuser1'
 invaliduser2=u'tuser1234567890123456789012345678901234567890'
 
+def upg_check(response):
+    """Check that the user was assigned to the corresponding private group."""
+    assert_equal(response['result']['uidnumber'],
+                 response['result']['gidnumber'])
+    return True
+
+def not_upg_check(response):
+    """Check that the user was not assigned to the corresponding private group."""
+    assert_not_equal(response['result']['uidnumber'],
+                     response['result']['gidnumber'])
+    return True
 
 class test_user(Declarative):
 
@@ -49,28 +61,28 @@ class test_user(Declarative):
         dict(
             desc='Try to retrieve non-existent %r' % user1,
             command=('user_show', [user1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: user not found' % user1),
         ),
 
 
         dict(
             desc='Try to update non-existent %r' % user1,
             command=('user_mod', [user1], dict(givenname=u'Foo')),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: user not found' % user1),
         ),
 
 
         dict(
             desc='Try to delete non-existent %r' % user1,
             command=('user_del', [user1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: user not found' % user1),
         ),
 
 
         dict(
             desc='Try to rename non-existent %r' % user1,
             command=('user_mod', [user1], dict(setattr=u'uid=tuser')),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: user not found' % user1),
         ),
 
 
@@ -111,6 +123,7 @@ class test_user(Declarative):
                            api.env.basedn),
                 ),
             ),
+            extra_check = upg_check,
         ),
 
 
@@ -119,7 +132,8 @@ class test_user(Declarative):
             command=(
                 'user_add', [user1], dict(givenname=u'Test', sn=u'User1')
             ),
-            expected=errors.DuplicateEntry(),
+            expected=errors.DuplicateEntry(
+                message=u'user with name "%s" already exists' % user1),
         ),
 
 
@@ -187,6 +201,26 @@ class test_user(Declarative):
                         'displayname': [u'Test User1'],
                         'cn': [u'Test User1'],
                         'initials': [u'TU'],
+                    },
+                ],
+                summary=u'1 user matched',
+                count=1, truncated=False,
+            ),
+        ),
+
+
+        dict(
+            desc='Search for %r with pkey-only=True' % user1,
+            command=(
+                'user_find', [user1], {'pkey_only': True}
+            ),
+            expected=dict(
+                result=[
+                    {
+                        'dn':lambda x: DN(x) == \
+                                DN(('uid',user1),('cn','users'),
+                                   ('cn','accounts'),api.env.basedn),
+                        'uid': [user1],
                     },
                 ],
                 summary=u'1 user matched',
@@ -354,7 +388,8 @@ class test_user(Declarative):
             command=(
                 'user_mod', [user1], dict(setattr=u'krbmaxticketlife=88000')
             ),
-            expected=errors.ObjectclassViolation(info='attribute "krbmaxticketlife" not allowed'),
+            expected=errors.ObjectclassViolation(
+                info=u'attribute "krbmaxticketlife" not allowed'),
         ),
 
 
@@ -452,7 +487,7 @@ class test_user(Declarative):
         dict(
             desc='Try to delete non-existent %r' % user1,
             command=('user_del', [user1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'tuser1: user not found'),
         ),
 
 
@@ -503,6 +538,7 @@ class test_user(Declarative):
                            api.env.basedn),
                 ),
             ),
+            extra_check = upg_check,
         ),
 
 
@@ -543,13 +579,15 @@ class test_user(Declarative):
                            api.env.basedn),
                 ),
             ),
+            extra_check = upg_check,
         ),
 
 
         dict(
             desc='Make non-existent %r the manager of %r' % (renameduser1, user2),
             command=('user_mod', [user2], dict(manager=renameduser1)),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(
+                reason=u'manager %s not found' % renameduser1),
         ),
 
 
@@ -590,29 +628,79 @@ class test_user(Declarative):
         dict(
             desc='Try to retrieve non-existent %r' % user1,
             command=('user_show', [user1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: user not found' % user1),
         ),
 
 
         dict(
             desc='Try to update non-existent %r' % user1,
             command=('user_mod', [user1], dict(givenname=u'Foo')),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: user not found' % user1),
         ),
 
 
         dict(
             desc='Test an invalid login name %r' % invaliduser1,
             command=('user_add', [invaliduser1], dict(givenname=u'Test', sn=u'User1')),
-            expected=errors.ValidationError(name='uid', error='may only include letters, numbers, _, -, . and $'),
+            expected=errors.ValidationError(name='login',
+                error=u'may only include letters, numbers, _, -, . and $'),
         ),
 
 
         dict(
             desc='Test a login name that is too long %r' % invaliduser2,
-            command=('user_add', [invaliduser2], dict(givenname=u'Test', sn=u'User1')),
-            expected=errors.ValidationError(name='uid', error='can be at most 33 characters'),
+            command=('user_add', [invaliduser2],
+                dict(givenname=u'Test', sn=u'User1')),
+            expected=errors.ValidationError(name='login',
+                error='can be at most 32 characters'),
         ),
+
+
+        # The assumption on these next 4 tests is that if we don't get a
+        # validation error then the request was processed normally.
+        dict(
+            desc='Test that validation is disabled on deletes',
+            command=('user_del', [invaliduser1], {}),
+            expected=errors.NotFound(
+                reason=u'%s: user not found' % invaliduser1),
+        ),
+
+
+        dict(
+            desc='Test that validation is disabled on show',
+            command=('user_show', [invaliduser1], {}),
+            expected=errors.NotFound(
+                reason=u'%s: user not found' % invaliduser1),
+        ),
+
+
+        dict(
+            desc='Test that validation is disabled on find',
+            command=('user_find', [invaliduser1], {}),
+            expected=dict(
+                count=0,
+                truncated=False,
+                summary=u'0 users matched',
+                result=[],
+            ),
+        ),
+
+
+        dict(
+            desc='Try to rename to invalid username %r' % user1,
+            command=('user_mod', [user1], dict(rename=invaliduser1)),
+            expected=errors.ValidationError(name='rename',
+                error=u'may only include letters, numbers, _, -, . and $'),
+        ),
+
+
+        dict(
+            desc='Try to rename to a username that is too long %r' % user1,
+            command=('user_mod', [user1], dict(rename=invaliduser2)),
+            expected=errors.ValidationError(name='login',
+                error='can be at most 32 characters'),
+        ),
+
 
         dict(
             desc='Create %r' % group1,
@@ -702,6 +790,132 @@ class test_user(Declarative):
             ),
         ),
 
+        dict(
+            desc='Create %r with random password' % user1,
+            command=(
+                'user_add', [user1], dict(givenname=u'Test', sn=u'User1', random=True)
+            ),
+            expected=dict(
+                value=user1,
+                summary=u'Added user "tuser1"',
+                result=dict(
+                    gecos=[u'Test User1'],
+                    givenname=[u'Test'],
+                    homedirectory=[u'/home/tuser1'],
+                    krbprincipalname=[u'tuser1@' + api.env.realm],
+                    loginshell=[u'/bin/sh'],
+                    objectclass=objectclasses.user,
+                    sn=[u'User1'],
+                    uid=[user1],
+                    uidnumber=[fuzzy_digits],
+                    gidnumber=[fuzzy_digits],
+                    displayname=[u'Test User1'],
+                    cn=[u'Test User1'],
+                    initials=[u'TU'],
+                    ipauniqueid=[fuzzy_uuid],
+                    krbpwdpolicyreference=lambda x: [DN(i) for i in x] == \
+                        [DN(('cn','global_policy'),('cn',api.env.realm),
+                            ('cn','kerberos'),api.env.basedn)],
+                    mepmanagedentry=lambda x: [DN(i) for i in x] == \
+                        [DN(('cn',user1),('cn','groups'),('cn','accounts'),
+                            api.env.basedn)],
+                    memberof_group=[u'ipausers'],
+                    has_keytab=True,
+                    has_password=True,
+                    randompassword=fuzzy_password,
+                    krbextradata=[fuzzy_string],
+                    krbpasswordexpiration=[fuzzy_dergeneralizedtime],
+                    krblastpwdchange=[fuzzy_dergeneralizedtime],
+                    dn=lambda x: DN(x) == \
+                        DN(('uid','tuser1'),('cn','users'),('cn','accounts'),
+                           api.env.basedn),
+                ),
+            ),
+        ),
+
+        dict(
+            desc='Delete %r' % user1,
+            command=('user_del', [user1], {}),
+            expected=dict(
+                result=dict(failed=u''),
+                summary=u'Deleted user "tuser1"',
+                value=user1,
+            ),
+        ),
+
+        dict(
+            desc='Create %r' % user2,
+            command=(
+                'user_add', [user2], dict(givenname=u'Test', sn=u'User2')
+            ),
+            expected=dict(
+                value=user2,
+                summary=u'Added user "tuser2"',
+                result=dict(
+                    gecos=[u'Test User2'],
+                    givenname=[u'Test'],
+                    homedirectory=[u'/home/tuser2'],
+                    krbprincipalname=[u'tuser2@' + api.env.realm],
+                    loginshell=[u'/bin/sh'],
+                    objectclass=objectclasses.user,
+                    sn=[u'User2'],
+                    uid=[user2],
+                    uidnumber=[fuzzy_digits],
+                    gidnumber=[fuzzy_digits],
+                    displayname=[u'Test User2'],
+                    cn=[u'Test User2'],
+                    initials=[u'TU'],
+                    ipauniqueid=[fuzzy_uuid],
+                    krbpwdpolicyreference=lambda x: [DN(i) for i in x] == \
+                        [DN(('cn','global_policy'),('cn',api.env.realm),
+                            ('cn','kerberos'),api.env.basedn)],
+                    mepmanagedentry=lambda x: [DN(i) for i in x] == \
+                        [DN(('cn',user2),('cn','groups'),('cn','accounts'),
+                            api.env.basedn)],
+                    memberof_group=[u'ipausers'],
+                    has_keytab=False,
+                    has_password=False,
+                    dn=lambda x: DN(x) == \
+                        DN(('uid','tuser2'),('cn','users'),('cn','accounts'),
+                           api.env.basedn),
+                ),
+            ),
+        ),
+
+        dict(
+            desc='Modify %r with random password' % user2,
+            command=(
+                'user_mod', [user2], dict(random=True)
+            ),
+            expected=dict(
+                result=dict(
+                    givenname=[u'Test'],
+                    homedirectory=[u'/home/tuser2'],
+                    loginshell=[u'/bin/sh'],
+                    sn=[u'User2'],
+                    uid=[user2],
+                    uidnumber=[fuzzy_digits],
+                    gidnumber=[fuzzy_digits],
+                    memberof_group=[u'ipausers'],
+                    nsaccountlock=False,
+                    has_keytab=True,
+                    has_password=True,
+                    randompassword=fuzzy_password,
+                ),
+                summary=u'Modified user "tuser2"',
+                value=user2,
+            ),
+        ),
+
+        dict(
+            desc='Delete %r' % user2,
+            command=('user_del', [user2], {}),
+            expected=dict(
+                result=dict(failed=u''),
+                summary=u'Deleted user "tuser2"',
+                value=user2,
+            ),
+        ),
 
         dict(
             desc='Create user %r with upper-case principal' % user1,
@@ -763,5 +977,290 @@ class test_user(Declarative):
             expected=errors.MalformedUserPrincipal(principal='%s@BAD@NOTFOUND.ORG' % user1),
         ),
 
+        dict(
+            desc='Delete %r' % user1,
+            command=('user_del', [user1], {}),
+            expected=dict(
+                result=dict(failed=u''),
+                summary=u'Deleted user "tuser1"',
+                value=user1,
+            ),
+        ),
 
+        dict(
+            desc='Change default home directory',
+            command=(
+                'config_mod', [], dict(ipahomesrootdir=u'/other-home'),
+            ),
+            expected=lambda x: True,
+        ),
+
+        dict(
+            desc='Create user %r with different default home directory' % user1,
+            command=(
+                'user_add', [user1], dict(givenname=u'Test', sn=u'User1')
+            ),
+            expected=dict(
+                value=user1,
+                summary=u'Added user "tuser1"',
+                result=dict(
+                    gecos=[u'Test User1'],
+                    givenname=[u'Test'],
+                    homedirectory=[u'/other-home/tuser1'],
+                    krbprincipalname=[u'tuser1@' + api.env.realm],
+                    loginshell=[u'/bin/sh'],
+                    objectclass=objectclasses.user,
+                    sn=[u'User1'],
+                    uid=[user1],
+                    uidnumber=[fuzzy_digits],
+                    gidnumber=[fuzzy_digits],
+                    displayname=[u'Test User1'],
+                    cn=[u'Test User1'],
+                    initials=[u'TU'],
+                    ipauniqueid=[fuzzy_uuid],
+                    krbpwdpolicyreference=lambda x: [DN(i) for i in x] == \
+                        [DN(('cn','global_policy'),('cn',api.env.realm),
+                            ('cn','kerberos'),api.env.basedn)],
+                    mepmanagedentry=lambda x: [DN(i) for i in x] == \
+                        [DN(('cn',user1),('cn','groups'),('cn','accounts'),
+                            api.env.basedn)],
+                    memberof_group=[u'ipausers'],
+                    has_keytab=False,
+                    has_password=False,
+                    dn=lambda x: DN(x) == \
+                        DN(('uid','tuser1'),('cn','users'),('cn','accounts'),
+                           api.env.basedn),
+                ),
+            ),
+        ),
+
+
+        dict(
+            desc='Reset default home directory',
+            command=(
+                'config_mod', [], dict(ipahomesrootdir=u'/home'),
+            ),
+            expected=lambda x: True,
+        ),
+
+        dict(
+            desc='Delete %r' % user1,
+            command=('user_del', [user1], {}),
+            expected=dict(
+                result=dict(failed=u''),
+                summary=u'Deleted user "%s"' % user1,
+                value=user1,
+            ),
+        ),
+
+        dict(
+            desc='Change default login shell',
+            command=(
+                'config_mod', [], dict(ipadefaultloginshell=u'/usr/bin/ipython'),
+            ),
+            expected=lambda x: True,
+        ),
+
+        dict(
+            desc='Create user %r with different default login shell' % user1,
+            command=(
+                'user_add', [user1], dict(givenname=u'Test', sn=u'User1')
+            ),
+            expected=dict(
+                value=user1,
+                summary=u'Added user "tuser1"',
+                result=dict(
+                    gecos=[u'Test User1'],
+                    givenname=[u'Test'],
+                    homedirectory=[u'/home/tuser1'],
+                    krbprincipalname=[u'tuser1@' + api.env.realm],
+                    loginshell=[u'/usr/bin/ipython'],
+                    objectclass=objectclasses.user,
+                    sn=[u'User1'],
+                    uid=[user1],
+                    uidnumber=[fuzzy_digits],
+                    gidnumber=[fuzzy_digits],
+                    displayname=[u'Test User1'],
+                    cn=[u'Test User1'],
+                    initials=[u'TU'],
+                    ipauniqueid=[fuzzy_uuid],
+                    krbpwdpolicyreference=lambda x: [DN(i) for i in x] == \
+                        [DN(('cn','global_policy'),('cn',api.env.realm),
+                            ('cn','kerberos'),api.env.basedn)],
+                    mepmanagedentry=lambda x: [DN(i) for i in x] == \
+                        [DN(('cn',user1),('cn','groups'),('cn','accounts'),
+                            api.env.basedn)],
+                    memberof_group=[u'ipausers'],
+                    has_keytab=False,
+                    has_password=False,
+                    dn=lambda x: DN(x) == \
+                        DN(('uid','tuser1'),('cn','users'),('cn','accounts'),
+                           api.env.basedn),
+                ),
+            ),
+        ),
+
+        dict(
+            desc='Reset default login shell',
+            command=(
+                'config_mod', [], dict(ipadefaultloginshell=u'/bin/sh'),
+            ),
+            expected=lambda x: True,
+        ),
+
+        dict(
+            desc='Delete %r' % user1,
+            command=('user_del', [user1], {}),
+            expected=dict(
+                result=dict(failed=u''),
+                summary=u'Deleted user "%s"' % user1,
+                value=user1,
+            ),
+        ),
+
+        dict(
+            desc='Create %r without UPG' % user1,
+            command=(
+                'user_add', [user1], dict(givenname=u'Test', sn=u'User1', noprivate=True)
+            ),
+            expected=errors.NotFound(reason='Default group for new users is not POSIX'),
+        ),
+
+        dict(
+            desc='Create %r without UPG with GID explicitly set' % user2,
+            command=(
+                'user_add', [user2], dict(givenname=u'Test', sn=u'User2', noprivate=True, gidnumber=1000)
+            ),
+            expected=dict(
+                value=user2,
+                summary=u'Added user "tuser2"',
+                result=dict(
+                    gecos=[u'Test User2'],
+                    givenname=[u'Test'],
+                    description=[],
+                    homedirectory=[u'/home/tuser2'],
+                    krbprincipalname=[u'tuser2@' + api.env.realm],
+                    loginshell=[u'/bin/sh'],
+                    objectclass=objectclasses.user_base,
+                    sn=[u'User2'],
+                    uid=[user2],
+                    uidnumber=[fuzzy_digits],
+                    gidnumber=[u'1000'],
+                    displayname=[u'Test User2'],
+                    cn=[u'Test User2'],
+                    initials=[u'TU'],
+                    ipauniqueid=[fuzzy_uuid],
+                    krbpwdpolicyreference=lambda x: [DN(i) for i in x] == \
+                        [DN(('cn','global_policy'),('cn',api.env.realm),
+                            ('cn','kerberos'),api.env.basedn)],
+                    memberof_group=[u'ipausers'],
+                    has_keytab=False,
+                    has_password=False,
+                    dn=lambda x: DN(x) == \
+                        DN(('uid','tuser2'),('cn','users'),('cn','accounts'),
+                           api.env.basedn),
+                ),
+            ),
+        ),
+
+        dict(
+            desc='Delete %r' % user2,
+            command=('user_del', [user2], {}),
+            expected=dict(
+                result=dict(failed=u''),
+                summary=u'Deleted user "%s"' % user2,
+                value=user2,
+            ),
+        ),
+
+        dict(
+            desc='Change default user group',
+            command=(
+                'config_mod', [], dict(ipadefaultprimarygroup=group1),
+            ),
+            expected=lambda x: True,
+        ),
+
+        dict(
+            desc='Create %r without UPG' % user1,
+            command=(
+                'user_add', [user1], dict(givenname=u'Test', sn=u'User1', noprivate=True)
+            ),
+            expected=dict(
+                value=user1,
+                summary=u'Added user "tuser1"',
+                result=dict(
+                    gecos=[u'Test User1'],
+                    givenname=[u'Test'],
+                    description=[],
+                    homedirectory=[u'/home/tuser1'],
+                    krbprincipalname=[u'tuser1@' + api.env.realm],
+                    loginshell=[u'/bin/sh'],
+                    objectclass=objectclasses.user_base,
+                    sn=[u'User1'],
+                    uid=[user1],
+                    uidnumber=[fuzzy_digits],
+                    gidnumber=[fuzzy_digits],
+                    displayname=[u'Test User1'],
+                    cn=[u'Test User1'],
+                    initials=[u'TU'],
+                    ipauniqueid=[fuzzy_uuid],
+                    krbpwdpolicyreference=lambda x: [DN(i) for i in x] == \
+                        [DN(('cn','global_policy'),('cn',api.env.realm),
+                            ('cn','kerberos'),api.env.basedn)],
+                    memberof_group=[group1],
+                    has_keytab=False,
+                    has_password=False,
+                    dn=lambda x: DN(x) == \
+                        DN(('uid','tuser1'),('cn','users'),('cn','accounts'),
+                           api.env.basedn),
+                ),
+            ),
+            extra_check = not_upg_check,
+        ),
+
+        dict(
+            desc='Create %r without UPG with GID explicitly set' % user2,
+            command=(
+                'user_add', [user2], dict(givenname=u'Test', sn=u'User2', noprivate=True, gidnumber=1000)
+            ),
+            expected=dict(
+                value=user2,
+                summary=u'Added user "tuser2"',
+                result=dict(
+                    gecos=[u'Test User2'],
+                    givenname=[u'Test'],
+                    description=[],
+                    homedirectory=[u'/home/tuser2'],
+                    krbprincipalname=[u'tuser2@' + api.env.realm],
+                    loginshell=[u'/bin/sh'],
+                    objectclass=objectclasses.user_base,
+                    sn=[u'User2'],
+                    uid=[user2],
+                    uidnumber=[fuzzy_digits],
+                    gidnumber=[u'1000'],
+                    displayname=[u'Test User2'],
+                    cn=[u'Test User2'],
+                    initials=[u'TU'],
+                    ipauniqueid=[fuzzy_uuid],
+                    krbpwdpolicyreference=lambda x: [DN(i) for i in x] == \
+                        [DN(('cn','global_policy'),('cn',api.env.realm),
+                            ('cn','kerberos'),api.env.basedn)],
+                    memberof_group=[group1],
+                    has_keytab=False,
+                    has_password=False,
+                    dn=lambda x: DN(x) == \
+                        DN(('uid','tuser2'),('cn','users'),('cn','accounts'),
+                           api.env.basedn),
+                ),
+            ),
+        ),
+
+        dict(
+            desc='Reset default user group',
+            command=(
+                'config_mod', [], dict(ipadefaultprimarygroup=u'ipausers'),
+            ),
+            expected=lambda x: True,
+        ),
     ]

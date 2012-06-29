@@ -7,14 +7,14 @@ app_DATA =				\
 	60samba.ldif			\
 	60ipaconfig.ldif		\
 	60basev2.ldif			\
-	60ipasudo.ldif			\
+	60basev3.ldif			\
+	60ipadns.ldif			\
+	65ipasudo.ldif			\
 	anonymous-vlv.ldif		\
 	bootstrap-template.ldif		\
 	caJarSigningCert.cfg.template	\
 	default-aci.ldif		\
 	default-hbac.ldif		\
-	default-keytypes.ldif		\
-	default-pwpolicy.ldif		\
 	delegation.ldif			\
 	replica-acis.ldif		\
 	ds-nfiles.ldif			\
@@ -53,6 +53,7 @@ app_DATA =				\
 	sudobind.ldif			\
 	automember.ldif			\
 	replica-automember.ldif		\
+	replica-s4u2proxy.ldif		\
 	$(NULL)
 
 EXTRA_DIST =				\

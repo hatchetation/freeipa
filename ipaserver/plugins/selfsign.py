@@ -101,7 +101,7 @@ class ra(rabase.rabase):
         except errors.CertificateOperationError, e:
             raise e
         except NSPRError, e:
-            raise errors.CertificateOperationError(error=_('unable to decode csr: %s' % e))
+            raise errors.CertificateOperationError(error=_('unable to decode csr: %s') % e)
 
         # certutil wants the CSR to have have a header and footer. Add one
         # if it isn't there.
@@ -221,6 +221,7 @@ class ra(rabase.rabase):
 
         cmd_result = {}
         cmd_result['serial_number'] = unicode(serial) # convert long to decimal unicode string
+        cmd_result['serial_number_hex'] = u'0x%X' % serial
         cmd_result['certificate']   = unicode(cert)
         cmd_result['subject']       = unicode(subject)
 

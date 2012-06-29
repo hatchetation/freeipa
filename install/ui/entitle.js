@@ -20,7 +20,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-/* REQUIRES: ipa.js, details.js, search.js, add.js, entity.js */
+/* REQUIRES: ipa.js, details.js, search.js, add.js, facet.js, entity.js */
 
 
 IPA.entitle = {};
@@ -29,16 +29,18 @@ IPA.entitle.unregistered = 'unregistered';
 IPA.entitle.online = 'online';
 IPA.entitle.offline = 'offline';
 
-IPA.entity_factories.entitle = function() {
+IPA.entitle.entity = function(spec) {
 
-    var builder = IPA.entity_builder();
+    spec = spec || {};
 
-    builder.
-        entity({
-            factory: IPA.entitle.entity,
-            name: 'entitle'
-        }).
-        facet_groups([ 'account', 'certificates' ]).
+    var that = IPA.entity(spec);
+
+    that.status = IPA.entitle.unregistered;
+
+    that.init = function() {
+        that.entity_init();
+
+        that.builder.facet_groups([ 'account', 'certificates' ]).
         details_facet({
             factory: IPA.entitle.details_facet,
             label: IPA.messages.objects.entitle.account,
@@ -50,7 +52,7 @@ IPA.entity_factories.entitle = function() {
                     fields: [
                         {
                             name: 'uuid',
-                            label: IPA.get_method_option('entitle_register', 'ipaentitlementid').label,
+                            label: IPA.get_command_option('entitle_register', 'ipaentitlementid').label,
                             read_only: true
                         },
                         {
@@ -71,7 +73,7 @@ IPA.entity_factories.entitle = function() {
                         },
                         {
                             name: 'quantity',
-                            label: IPA.get_method_arg('entitle_consume', 'quantity').label,
+                            label: IPA.get_command_arg('entitle_consume', 'quantity').label,
                             read_only: true
                         },
                         {
@@ -83,8 +85,8 @@ IPA.entity_factories.entitle = function() {
                 }
             ]
         }).
-        search_facet({
-            factory: IPA.entitle.search_facet,
+        facet({
+            factory: IPA.entitle.certificates_facet,
             name: 'certificates',
             label: IPA.messages.objects.entitle.certificates,
             facet_group: 'certificates',
@@ -95,7 +97,7 @@ IPA.entity_factories.entitle = function() {
                 },
                 {
                     name: 'quantity',
-                    label: IPA.get_method_arg('entitle_consume', 'quantity').label
+                    label: IPA.get_command_arg('entitle_consume', 'quantity').label
                 },
                 {
                     name: 'start',
@@ -120,17 +122,17 @@ IPA.entity_factories.entitle = function() {
             fields: [
                 {
                     name: 'username',
-                    label: IPA.get_method_arg('entitle_register', 'username').label
+                    label: IPA.get_command_arg('entitle_register', 'username').label
                 },
                 {
                     name: 'password',
-                    label: IPA.get_method_option('entitle_register', 'password').label,
+                    label: IPA.get_command_option('entitle_register', 'password').label,
                     type: 'password'
                 }
 /* currently not supported
                 , {
                     name: 'ipaentitlementid',
-                    label: IPA.get_method_option('entitle_register', 'ipaentitlementid').label
+                    label: IPA.get_command_option('entitle_register', 'ipaentitlementid').label
                 }
 */
             ]
@@ -154,8 +156,8 @@ IPA.entity_factories.entitle = function() {
             fields: [
                 {
                     name: 'quantity',
-                    label: IPA.get_method_arg('entitle_consume', 'quantity').label,
-                    metadata: IPA.get_method_arg('entitle_consume', 'quantity')
+                    label: IPA.get_command_arg('entitle_consume', 'quantity').label,
+                    metadata: IPA.get_command_arg('entitle_consume', 'quantity')
                 }
             ]
         }).
@@ -171,17 +173,7 @@ IPA.entity_factories.entitle = function() {
                 }
             ]
         });
-
-    return builder.build();
-};
-
-IPA.entitle.entity = function(spec) {
-
-    spec = spec || {};
-
-    var that = IPA.entity(spec);
-
-    that.status = IPA.entitle.unregistered;
+    };
 
     that.get_accounts = function(on_success, on_error) {
 
@@ -373,7 +365,7 @@ IPA.entitle.details_facet = function(spec) {
                 // that.register_offline_button.css('display', 'none');
             }
 
-            that.load(data.result.result);
+            that.load(data);
 
             summary.empty();
         }
@@ -383,13 +375,15 @@ IPA.entitle.details_facet = function(spec) {
             that.register_online_button.css('display', 'inline');
             // that.register_offline_button.css('display', 'inline');
 
-            var result = {
+            var data = {};
+            data.result = {};
+            data.result.result = {
                 uuid: '',
                 product: '',
                 quantity: 0,
                 consumed: 0
             };
-            that.load(result);
+            that.load(data);
 
             summary.empty();
             summary.append(error_thrown.name+': '+error_thrown.message);
@@ -403,13 +397,17 @@ IPA.entitle.details_facet = function(spec) {
     return that;
 };
 
-IPA.entitle.search_facet = function(spec) {
+IPA.entitle.certificates_facet = function(spec) {
 
     spec = spec || {};
     spec.disable_facet_tabs = false;
     spec.selectable = false;
 
-    var that = IPA.search_facet(spec);
+    var that = IPA.table_facet(spec);
+
+    var init = function() {
+        that.init_table(that.entity);
+    };
 
     that.create_header = function(container) {
 
@@ -463,16 +461,7 @@ IPA.entitle.search_facet = function(spec) {
                 that.import_button.css('display', 'inline');
             }
 
-            that.load(data.result.result);
-
-            var summary = $('span[name=summary]', that.table.tfoot).empty();
-            if (data.result.truncated) {
-                var message = IPA.messages.search.truncated;
-                message = message.replace('${counter}', data.result.count);
-                summary.text(message);
-            } else {
-                summary.text(data.result.summary);
-            }
+            that.load(data);
         }
 
         function on_error(xhr, text_status, error_thrown) {
@@ -480,8 +469,7 @@ IPA.entitle.search_facet = function(spec) {
             that.consume_button.css('display', 'none');
             that.import_button.css('display', 'inline');
 
-            var summary = $('span[name=summary]', that.table.tfoot).empty();
-            summary.append(error_thrown.name+': '+error_thrown.message);
+            that.table.summary.text(error_thrown.name+': '+error_thrown.message);
         }
 
         that.entity.get_status(
@@ -492,6 +480,8 @@ IPA.entitle.search_facet = function(spec) {
             },
             on_error);
     };
+
+    init();
 
     return that;
 };
@@ -642,7 +632,7 @@ IPA.entitle.consume_dialog = function(spec) {
         label: IPA.messages.objects.entitle.consume,
         click: function() {
 
-            if (!that.is_valid()) {
+            if (!that.validate()) {
                 return;
             }
 
@@ -707,7 +697,7 @@ IPA.entitle.download_widget = function(spec) {
 
     spec = spec || {};
 
-    var that = IPA.widget(spec);
+    var that = IPA.input_widget(spec);
 
     that.create = function(container) {
         that.link = $('<a/>', {
@@ -751,3 +741,5 @@ IPA.entitle.download_widget = function(spec) {
 
     return that;
 };
+
+IPA.register('entitle', IPA.entitle.entity);

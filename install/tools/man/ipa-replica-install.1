@@ -32,6 +32,9 @@ The replica_file is created using the ipa\-replica\-prepare utility.
 Install and configure a CA on this replica. If a CA is not configured then
 certificate operations will be forwarded to a master with a CA installed.
 .TP
+\fB\-\-ip\-address\fR=\fIIP_ADDRESS\fR
+The IP address of this server. If this address does not match the address the host resolves to and --setup-dns is not selected the installation will fail. If the server hostname is not resolvable, a record for the hostname and IP_ADDRESS is added to /etc/hosts.
+.TP
 \fB\-p\fR \fIDM_PASSWORD\fR, \fB\-\-password\fR=\fIDM_PASSWORD\fR
 Directory Manager (existing master) password
 .TP
@@ -43,6 +46,12 @@ Do not configure NTP
 .TP
 \fB\-\-no\-ui\-redirect\fR
 Do not automatically redirect to the Web UI.
+.TP
+\fB\-\-ssh\-trust\-dns\fR
+Configure OpenSSH client to trust DNS SSHFP records.
+.TP
+\fB\-\-no\-sshd\fR
+Do not configure OpenSSH server.
 .TP
 \fB\-\-skip\-conncheck\fR
 Skip connection check to remote master
@@ -77,10 +86,13 @@ Do not add any DNS forwarders. Root DNS servers will be used instead.
 The reverse DNS zone to use
 .TP
 \fB\-\-no\-reverse\fR
-Do not create reverse DNS zone
+Do not create new reverse DNS zone. If a reverse DNS zone already exists for the subnet, it will be used.
 .TP
 \fB\-\-no\-host\-dns\fR
 Do not use DNS for hostname lookup during installation
+.TP
+\fB\-\-no\-dns\-sshfp\fR
+Do not automatically create DNS SSHFP records.
 
 .SH "EXIT STATUS"
 0 if the command was successful

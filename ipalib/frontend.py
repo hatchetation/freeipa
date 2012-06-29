@@ -388,17 +388,21 @@ class Command(HasParam):
     ipalib.frontend.my_command()
     """
 
+    finalize_early = False
+
     takes_options = tuple()
     takes_args = tuple()
-    args = None
-    options = None
-    params = None
+    # Create stubs for attributes that are set in _on_finalize()
+    args = Plugin.finalize_attr('args')
+    options = Plugin.finalize_attr('options')
+    params = Plugin.finalize_attr('params')
+    params_by_default = Plugin.finalize_attr('params_by_default')
     obj = None
 
     use_output_validation = True
-    output = None
+    output = Plugin.finalize_attr('output')
     has_output = ('result',)
-    output_params = None
+    output_params = Plugin.finalize_attr('output_params')
     has_output_params = tuple()
 
     msg_summary = None
@@ -411,15 +415,12 @@ class Command(HasParam):
         If not in a server context, the call will be forwarded over
         XML-RPC and the executed an the nearest IPA server.
         """
+        self.ensure_finalized()
         params = self.args_options_2_params(*args, **options)
         self.debug(
             'raw: %s(%s)', self.name, ', '.join(self._repr_iter(**params))
         )
-        while True:
-            default = self.get_default(**params)
-            if len(default) == 0:
-                break
-            params.update(default)
+        params.update(self.get_default(**params))
         params = self.normalize(**params)
         params = self.convert(**params)
         self.debug(
@@ -428,6 +429,8 @@ class Command(HasParam):
         if not self.api.env.in_server and 'version' not in params:
             params['version'] = API_VERSION
         self.validate(**params)
+        if self.api.env.in_server:
+            params = self.encode(**params)
         (args, options) = self.params_2_args_options(**params)
         ret = self.run(*args, **options)
         if (
@@ -529,41 +532,6 @@ class Command(HasParam):
         kw = self.args_options_2_params(*args, **options)
         return dict(self.__attributes_2_entry(kw))
 
-    def __convert_2_dict(self, attrs, append=True):
-        """
-        Convert a string in the form of name/value pairs into
-        a dictionary. The incoming attribute may be a string or
-        a list.
-
-        Any attribute found that is also a param is validated.
-
-        append controls whether this returns a list of values or a single
-        value.
-        """
-        newdict = {}
-        if not type(attrs) in (list, tuple):
-            attrs = [attrs]
-        for a in attrs:
-            m = re.match("\s*(.*?)\s*=\s*(.*?)\s*$", a)
-            attr = str(m.group(1)).lower()
-            value = m.group(2)
-            if len(value) == 0:
-                # None means "delete this attribute"
-                value = None
-            if attr in self.params:
-                value = self.params[attr](value)
-            if append and attr in newdict:
-                if type(value) in (tuple,):
-                    newdict[attr] += list(value)
-                else:
-                    newdict[attr].append(value)
-            else:
-                if type(value) in (tuple,):
-                    newdict[attr] = list(value)
-                else:
-                    newdict[attr] = [value]
-        return newdict
-
     def __attributes_2_entry(self, kw):
         for name in self.params:
             if self.params[name].attribute and name in kw:
@@ -572,27 +540,6 @@ class Command(HasParam):
                     yield (name, [v for v in value])
                 else:
                     yield (name, kw[name])
-
-        adddict = {}
-        if kw.get('setattr'):
-            adddict = self.__convert_2_dict(kw['setattr'], append=False)
-
-        if kw.get('addattr'):
-            for (k, v) in self.__convert_2_dict(kw['addattr']).iteritems():
-                if k in adddict:
-                    adddict[k] += v
-                else:
-                    adddict[k] = v
-
-        for name in adddict:
-            value = adddict[name]
-            if isinstance(value, list):
-                if len(value) == 1:
-                    yield (name, value[0])
-                else:
-                    yield (name, [v for v in value])
-            else:
-                yield (name, value)
 
     def params_2_args_options(self, **params):
         """
@@ -606,6 +553,26 @@ class Command(HasParam):
         for name in self.options:
             if name in params:
                 yield(name, params[name])
+
+    def split_csv(self, **kw):
+        """
+        Return a dictionary of values where values are decoded from CSV.
+
+        For example:
+
+        >>> class my_command(Command):
+        ...     takes_options = (
+        ...         Param('flags', multivalue=True, csv=True),
+        ...     )
+        ...
+        >>> c = my_command()
+        >>> c.finalize()
+        >>> c.split_csv(flags=u'public,replicated')
+        {'flags': (u'public', u'replicated')}
+        """
+        return dict(
+            (k, self.params[k].split_csv(v)) for (k, v) in kw.iteritems()
+        )
 
     def normalize(self, **kw):
         """
@@ -648,6 +615,14 @@ class Command(HasParam):
             (k, self.params[k].convert(v)) for (k, v) in kw.iteritems()
         )
 
+    def encode(self, **kw):
+        """
+        Return a dictionary of encoded values.
+        """
+        return dict(
+            (k, self.params[k].encode(v)) for (k, v) in kw.iteritems()
+        )
+
     def __convert_iter(self, kw):
         for param in self.params():
             if kw.get(param.name, None) is None:
@@ -670,17 +645,53 @@ class Command(HasParam):
         >>> c.get_default(color=u'Yellow')
         {}
         """
-        return dict(self.__get_default_iter(kw))
+        params = [p.name for p in self.params() if p.name not in kw and (p.required or p.autofill)]
+        return dict(self.__get_default_iter(params, kw))
 
-    def __get_default_iter(self, kw):
+    def get_default_of(self, name, **kw):
         """
-        Generator method used by `Command.get_default`.
+        Return default value for parameter `name`.
         """
-        for param in self.params():
-            if param.name in kw:
-                continue
-            if param.required or param.autofill:
-                default = param.get_default(**kw)
+        default = dict(self.__get_default_iter([name], kw))
+        return default.get(name)
+
+    def __get_default_iter(self, params, kw):
+        """
+        Generator method used by `Command.get_default` and `Command.get_default_of`.
+        """
+        # Find out what additional parameters are needed to dynamically create
+        # the default values with default_from.
+        dep = set()
+        for param in reversed(self.params_by_default):
+            if param.name in params or param.name in dep:
+                if param.default_from is None:
+                    continue
+                for name in param.default_from.keys:
+                    dep.add(name)
+
+        for param in self.params_by_default():
+            default = None
+            hasdefault = False
+            if param.name in dep:
+                if param.name in kw:
+                    # Parameter is specified, convert and validate the value.
+                    kw[param.name] = param(kw[param.name], **kw)
+                else:
+                    # Parameter is not specified, use default value. Convert
+                    # and validate the value, it might not be returned so
+                    # there's no guarantee it will be converted and validated
+                    # later.
+                    default = param(None, **kw)
+                    if default is not None:
+                        kw[param.name] = default
+                    hasdefault = True
+            if param.name in params:
+                if not hasdefault:
+                    # Default value is not available from the previous step,
+                    # get it now. At this point it is certain that the value
+                    # will be returned, so let the caller care about conversion
+                    # and validation.
+                    default = param.get_default(**kw)
                 if default is not None:
                     yield (param.name, default)
 
@@ -693,7 +704,7 @@ class Command(HasParam):
         """
         for param in self.params():
             value = kw.get(param.name, None)
-            param.validate(value, self.env.context)
+            param.validate(value, self.env.context, supplied=param.name in kw)
 
     def verify_client_version(self, client_version):
         """
@@ -759,7 +770,7 @@ class Command(HasParam):
         """
         return self.Backend.xmlclient.forward(self.name, *args, **kw)
 
-    def finalize(self):
+    def _on_finalize(self):
         """
         Finalize plugin initialization.
 
@@ -775,6 +786,7 @@ class Command(HasParam):
         else:
             self.max_args = None
         self._create_param_namespace('options')
+        params_nosort = tuple(self.args()) + tuple(self.options()) #pylint: disable=E1102
         def get_key(p):
             if p.required:
                 if p.sortorder < 0:
@@ -784,12 +796,29 @@ class Command(HasParam):
                 return 1
             return 2
         self.params = NameSpace(
-            sorted(tuple(self.args()) + tuple(self.options()), key=get_key),    #pylint: disable=E1102
+            sorted(params_nosort, key=get_key),
             sort=False
         )
+        # Sort params so that the ones with default_from come after the ones
+        # that the default_from might depend on and save the result in
+        # params_by_default namespace.
+        params = []
+        for i in params_nosort:
+            pos = len(params)
+            for j in params_nosort:
+                if j.default_from is None:
+                    continue
+                if i.name not in j.default_from.keys:
+                    continue
+                try:
+                    pos = min(pos, params.index(j))
+                except ValueError:
+                    pass
+            params.insert(pos, i)
+        self.params_by_default = NameSpace(params, sort=False)
         self.output = NameSpace(self._iter_output(), sort=False)
         self._create_param_namespace('output_params')
-        super(Command, self).finalize()
+        super(Command, self)._on_finalize()
 
     def _iter_output(self):
         if type(self.has_output) is not tuple:
@@ -983,6 +1012,17 @@ class Command(HasParam):
 
         return rv
 
+    # list of attributes we want exported to JSON
+    json_friendly_attributes = (
+        'name', 'takes_args', 'takes_options',
+    )
+
+    def __json__(self):
+        json_dict = dict(
+            (a, getattr(self, a)) for a in self.json_friendly_attributes
+        )
+        return json_dict
+
 class LocalOrRemote(Command):
     """
     A command that is explicitly executed locally or remotely.
@@ -1030,19 +1070,21 @@ class Local(Command):
 
 
 class Object(HasParam):
-    backend = None
-    methods = None
-    properties = None
-    params = None
-    primary_key = None
-    params_minus_pk = None
+    finalize_early = False
+
+    # Create stubs for attributes that are set in _on_finalize()
+    backend = Plugin.finalize_attr('backend')
+    methods = Plugin.finalize_attr('methods')
+    properties = Plugin.finalize_attr('properties')
+    params = Plugin.finalize_attr('params')
+    primary_key = Plugin.finalize_attr('primary_key')
+    params_minus_pk = Plugin.finalize_attr('params_minus_pk')
 
     # Can override in subclasses:
     backend_name = None
     takes_params = tuple()
 
-    def set_api(self, api):
-        super(Object, self).set_api(api)
+    def _on_finalize(self):
         self.methods = NameSpace(
             self.__get_attrs('Method'), sort=False, name_attr='attr_name'
         )
@@ -1064,10 +1106,13 @@ class Object(HasParam):
                 filter(lambda p: not p.primary_key, self.params()), sort=False  #pylint: disable=E1102
             )
         else:
+            self.primary_key = None
             self.params_minus_pk = self.params
 
         if 'Backend' in self.api and self.backend_name in self.api.Backend:
             self.backend = self.api.Backend[self.backend_name]
+
+        super(Object, self)._on_finalize()
 
     def params_minus(self, *names):
         """
@@ -1156,16 +1201,20 @@ class Attribute(Plugin):
     only the base class for the `Method` and `Property` classes.  Also see
     the `Object` class.
     """
-    __obj = None
+    finalize_early = False
+
+    NAME_REGEX = re.compile(
+        '^(?P<obj>[a-z][a-z0-9]+)_(?P<attr>[a-z][a-z0-9]+(?:_[a-z][a-z0-9]+)*)$'
+    )
+
+    # Create stubs for attributes that are set in _on_finalize()
+    __obj = Plugin.finalize_attr('_Attribute__obj')
 
     def __init__(self):
-        m = re.match(
-            '^([a-z][a-z0-9]+)_([a-z][a-z0-9]+(?:_[a-z][a-z0-9]+)*)$',
-            self.__class__.__name__
-        )
+        m = self.NAME_REGEX.match(type(self).__name__)
         assert m
-        self.__obj_name = m.group(1)
-        self.__attr_name = m.group(2)
+        self.__obj_name = m.group('obj')
+        self.__attr_name = m.group('attr')
         super(Attribute, self).__init__()
 
     def __get_obj_name(self):
@@ -1184,9 +1233,9 @@ class Attribute(Plugin):
         return self.__obj
     obj = property(__get_obj)
 
-    def set_api(self, api):
-        self.__obj = api.Object[self.obj_name]
-        super(Attribute, self).set_api(api)
+    def _on_finalize(self):
+        self.__obj = self.api.Object[self.obj_name]
+        super(Attribute, self)._on_finalize()
 
 
 class Method(Attribute, Command):
@@ -1311,3 +1360,39 @@ class Property(Attribute):
                 attr = getattr(self, name)
                 if is_rule(attr):
                     yield attr
+
+class Updater(Method):
+    """
+    An LDAP update with an associated object (always update).
+
+    All plugins that subclass from `Updater` will be automatically available
+    as a server update function.
+
+    Plugins that subclass from Updater are registered in the ``api.Updater``
+    namespace. For example:
+
+    >>> from ipalib import create_api
+    >>> api = create_api()
+    >>> class my(Object):
+    ...     pass
+    ...
+    >>> api.register(my)
+    >>> class my_update(Updater):
+    ...     pass
+    ...
+    >>> api.register(my_update)
+    >>> api.finalize()
+    >>> list(api.Updater)
+    ['my_update']
+    >>> api.Updater.my_update # doctest:+ELLIPSIS
+    ipalib.frontend.my_update()
+    """
+    def __init__(self):
+        super(Updater, self).__init__()
+
+    def __call__(self, **options):
+        self.debug(
+            'raw: %s', self.name
+        )
+
+        return self.execute(**options)

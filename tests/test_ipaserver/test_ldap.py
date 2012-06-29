@@ -31,7 +31,7 @@ from ipaserver.plugins.ldap2 import ldap2
 from ipalib.plugins.service import service, service_show
 from ipalib.plugins.host import host
 import nss.nss as nss
-from ipalib import api, x509, create_api
+from ipalib import api, x509, create_api, errors
 from ipapython import ipautil
 from ipalib.dn import *
 
@@ -49,7 +49,7 @@ class test_ldap(object):
                          ('cn','services'),('cn','accounts'),api.env.basedn))
 
     def tearDown(self):
-        if self.conn:
+        if self.conn and self.conn.isconnected():
             self.conn.disconnect()
 
     def test_anonymous(self):
@@ -112,7 +112,15 @@ class test_ldap(object):
         myapi.register(service)
         myapi.register(service_show)
         myapi.finalize()
-        myapi.Backend.ldap2.connect(bind_dn="cn=Directory Manager", bind_pw='password')
+
+        pwfile = api.env.dot_ipa + os.sep + ".dmpw"
+        if ipautil.file_exists(pwfile):
+            fp = open(pwfile, "r")
+            dm_password = fp.read().rstrip()
+            fp.close()
+        else:
+            raise nose.SkipTest("No directory manager password in %s" % pwfile)
+        myapi.Backend.ldap2.connect(bind_dn="cn=Directory Manager", bind_pw=dm_password)
 
         result = myapi.Command['service_show']('ldap/%s@%s' %  (api.env.host, api.env.realm,))
         entry_attrs = result['result']
@@ -120,3 +128,21 @@ class test_ldap(object):
         cert = cert[0]
         serial = unicode(x509.get_serial_number(cert, x509.DER))
         assert serial is not None
+
+    def test_autobind(self):
+        """
+        Test an autobind LDAP bind using ldap2
+        """
+        ldapuri = 'ldapi://%%2fvar%%2frun%%2fslapd-%s.socket' % api.env.realm.replace('.','-')
+        self.conn = ldap2(shared_instance=False, ldap_uri=ldapuri)
+        try:
+            self.conn.connect(autobind=True)
+        except errors.DatabaseError, e:
+            if e.desc == 'Inappropriate authentication':
+                raise nose.SkipTest("Only executed as root")
+        (dn, entry_attrs) = self.conn.get_entry(self.dn, ['usercertificate'])
+        cert = entry_attrs.get('usercertificate')
+        cert = cert[0]
+        serial = unicode(x509.get_serial_number(cert, x509.DER))
+        assert serial is not None
+

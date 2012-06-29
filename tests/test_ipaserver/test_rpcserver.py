@@ -25,7 +25,7 @@ from tests.util import create_test_api, assert_equal, raises, PluginTester
 from tests.data import unicode_str
 from ipalib import errors, Command
 from ipaserver import rpcserver
-from ipalib.compat import json
+from ipapython.compat import json
 
 
 class StartResponse(object):
@@ -46,29 +46,68 @@ class StartResponse(object):
 
 
 def test_not_found():
-    f = rpcserver.not_found
+    f = rpcserver.HTTP_Status()
     t = rpcserver._not_found_template
     s = StartResponse()
 
     # Test with an innocent URL:
-    d = dict(SCRIPT_NAME='/ipa', PATH_INFO='/foo/stuff')
+    url = '/ipa/foo/stuff'
     assert_equal(
-        f(d, s),
+        f.not_found(None, s, url, None),
         [t % dict(url='/ipa/foo/stuff')]
     )
     assert s.status == '404 Not Found'
-    assert s.headers == [('Content-Type', 'text/html')]
+    assert s.headers == [('Content-Type', 'text/html; charset=utf-8')]
 
     # Test when URL contains any of '<>&'
     s.reset()
-    d = dict(SCRIPT_NAME='&nbsp;', PATH_INFO='<script>do_bad_stuff();</script>')
+    url ='&nbsp;' + '<script>do_bad_stuff();</script>'
     assert_equal(
-        f(d, s),
+        f.not_found(None, s, url, None),
         [t % dict(url='&amp;nbsp;&lt;script&gt;do_bad_stuff();&lt;/script&gt;')]
     )
     assert s.status == '404 Not Found'
-    assert s.headers == [('Content-Type', 'text/html')]
+    assert s.headers == [('Content-Type', 'text/html; charset=utf-8')]
 
+
+def test_bad_request():
+    f = rpcserver.HTTP_Status()
+    t = rpcserver._bad_request_template
+    s = StartResponse()
+
+    assert_equal(
+        f.bad_request(None, s, 'illegal request'),
+        [t % dict(message='illegal request')]
+    )
+    assert s.status == '400 Bad Request'
+    assert s.headers == [('Content-Type', 'text/html; charset=utf-8')]
+
+
+def test_internal_error():
+    f = rpcserver.HTTP_Status()
+    t = rpcserver._internal_error_template
+    s = StartResponse()
+
+    assert_equal(
+        f.internal_error(None, s, 'request failed'),
+        [t % dict(message='request failed')]
+    )
+    assert s.status == '500 Internal Server Error'
+    assert s.headers == [('Content-Type', 'text/html; charset=utf-8')]
+
+
+def test_unauthorized_error():
+    f = rpcserver.HTTP_Status()
+    t = rpcserver._unauthorized_template
+    s = StartResponse()
+
+    assert_equal(
+        f.unauthorized(None, s, 'unauthorized', 'password-expired'),
+        [t % dict(message='unauthorized')]
+    )
+    assert s.status == '401 Unauthorized'
+    assert s.headers == [('Content-Type', 'text/html; charset=utf-8'),
+                         ('X-IPA-Rejection-Reason', 'password-expired')]
 
 
 def test_params_2_args_options():
@@ -84,7 +123,7 @@ def test_params_2_args_options():
 
 
 class test_session(object):
-    klass = rpcserver.session
+    klass = rpcserver.wsgi_dispatch
 
     def test_route(self):
         def app1(environ, start_response):
@@ -100,14 +139,14 @@ class test_session(object):
             )
 
         inst = self.klass()
-        inst.mount(app1, 'foo')
-        inst.mount(app2, 'bar')
+        inst.mount(app1, '/foo/stuff')
+        inst.mount(app2, '/bar')
 
         d = dict(SCRIPT_NAME='/ipa', PATH_INFO='/foo/stuff')
-        assert inst.route(d, None) == ('from 1', ['/ipa/foo', '/stuff'])
+        assert inst.route(d, None) == ('from 1', ['/ipa', '/foo/stuff'])
 
         d = dict(SCRIPT_NAME='/ipa', PATH_INFO='/bar')
-        assert inst.route(d, None) == ('from 2', ['/ipa/bar', ''])
+        assert inst.route(d, None) == ('from 2', ['/ipa', '/bar'])
 
     def test_mount(self):
         def app1(environ, start_response):
@@ -125,7 +164,7 @@ class test_session(object):
         # Test that StandardError is raise if trying override a mount:
         e = raises(StandardError, inst.mount, app2, 'foo')
         assert str(e) == '%s.mount(): cannot replace %r with %r at %r' % (
-            'session', app1, app2, 'foo'
+            'wsgi_dispatch', app1, app2, 'foo'
         )
 
         # Test mounting a second app:
@@ -141,7 +180,7 @@ class test_xmlserver(PluginTester):
 
     _plugin = rpcserver.xmlserver
 
-    def test_marshaled_dispatch(self):
+    def test_marshaled_dispatch(self): # FIXME
         (o, api, home) = self.instance('Backend', in_server=True)
 
 

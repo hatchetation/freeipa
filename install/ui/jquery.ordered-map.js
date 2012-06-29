@@ -44,7 +44,7 @@ jQuery.ordered_map = jQuery.fn.ordered_map = function() {
 
     that.remove = function(key) {
 
-        var i = that.keys.indexOf(key);
+        var i = that.get_key_index(key);
         if (i<0) return null;
 
         that.keys.splice(i, 1);
@@ -61,6 +61,41 @@ jQuery.ordered_map = jQuery.fn.ordered_map = function() {
         that.values = [];
         that.map = {};
         that.length = that.keys.length;
+    };
+
+    that.get_key_index = function(key) {
+        return that.keys.indexOf(key);
+    };
+
+    that.get_key_by_index = function(index) {
+        return that.keys[index];
+    };
+
+    that.get_value_by_index = function(index) {
+        return that.values[index];
+    };
+
+    that.sort = function() {
+        var keys = that.keys.slice(0);
+        keys.sort();
+        return that.trim(keys);
+    };
+
+    that.slice = function(start, end) {
+        var keys = that.keys.slice(start, end);
+        return that.trim(keys);
+    };
+
+    that.trim = function(keys) {
+        var new_map = $.ordered_map();
+
+        for (var i=0; i<keys.length; i++) {
+            var key = keys[i];
+            var value = that.get(key);
+            new_map.put(key, value);
+        }
+
+        return new_map;
     };
 
     return that;

@@ -22,7 +22,7 @@
 import traceback
 
 from ipaserver.plugins.ldap2 import ldap2
-from ipaserver.install import bindinstance, ntpinstance
+from ipaserver.install import service, bindinstance, ntpinstance, httpinstance
 from ipaserver.install.installutils import *
 from ipaserver.install import installutils
 from ipapython import version
@@ -32,6 +32,7 @@ from ipapython.config import IPAOptionParser
 from ipalib.constants import DNS_ZONE_REFRESH
 import krbV
 import ldap
+from ipapython.ipa_log_manager import *
 
 def parse_options():
     parser = IPAOptionParser(version=version.VERSION)
@@ -47,9 +48,10 @@ def parse_options():
                       default=False, help="Do not add any DNS forwarders, use root servers instead")
     parser.add_option("--reverse-zone", dest="reverse_zone", help="The reverse DNS zone to use")
     parser.add_option("--no-reverse", dest="no_reverse", action="store_true",
-                      default=False, help="Do not create reverse DNS zone")
-    parser.add_option("--zonemgr", dest="zonemgr", 
-                      help="DNS zone manager e-mail address. Defaults to root")
+                      default=False, help="Do not create new reverse DNS zone")
+    parser.add_option("--zonemgr", action="callback", callback=bindinstance.zonemgr_callback,
+                      type="string",
+                      help="DNS zone manager e-mail address. Defaults to hostmaster@DOMAIN")
     parser.add_option("--zone-notif", dest="zone_notif",
                       action="store_true", default=False,
                       help="Let name server receive notification when a new zone is added." \
@@ -87,11 +89,11 @@ def main():
     if os.getegid() != 0:
         sys.exit("Must be root to setup server")
 
-    standard_logging_setup("/var/log/ipaserver-install.log", options.debug, filemode='a')
+    standard_logging_setup("/var/log/ipaserver-install.log", debug=options.debug, filemode='a')
     print "\nThe log file for this installation can be found in /var/log/ipaserver-install.log"
 
-    logging.debug('%s was invoked with options: %s' % (sys.argv[0], safe_options))
-    logging.debug("missing options might be asked for interactively later\n")
+    root_logger.debug('%s was invoked with options: %s' % (sys.argv[0], safe_options))
+    root_logger.debug("missing options might be asked for interactively later\n")
 
     installutils.check_server_configuration()
 
@@ -145,7 +147,26 @@ def main():
     else:
         hostaddr = resolve_host(api.env.host)
         try:
-            ip = hostaddr and ipautil.CheckedIPAddress(hostaddr, match_local=True)
+            if len(hostaddr) > 1:
+                print >> sys.stderr, "The server hostname resolves to more than one address:"
+                for addr in hostaddr:
+                    print >> sys.stderr, "  %s" % addr
+
+                if options.ip_address:
+                    if str(options.ip_address) not in hostaddr:
+                        print >> sys.stderr, "Address passed in --ip-address did not match any resolved"
+                        print >> sys.stderr, "address!"
+                        sys.exit(1)
+                    print "Selected IP address:", str(options.ip_address)
+                    ip = options.ip_address
+                else:
+                    if options.unattended:
+                        print >> sys.stderr, "Please use --ip-address option to specify the address"
+                        sys.exit(1)
+                    else:
+                        ip = read_ip_address(api.env.host, fstore)
+            else:
+                ip = hostaddr and ipautil.CheckedIPAddress(hostaddr[0], match_local=True)
         except Exception, e:
             print "Error: Invalid IP Address %s: %s" % (ip, e)
             ip = None
@@ -156,7 +177,7 @@ def main():
         else:
             ip = read_ip_address(api.env.host, fstore)
     ip_address = str(ip)
-    logging.debug("will use ip_address: %s\n", ip_address)
+    root_logger.debug("will use ip_address: %s\n", ip_address)
 
     if options.reverse_zone and not bindinstance.verify_reverse_zone(options.reverse_zone, ip):
         sys.exit(1)
@@ -167,7 +188,7 @@ def main():
         dns_forwarders = options.forwarders
     else:
         dns_forwarders = read_dns_forwarders()
-    logging.debug("will use dns_forwarders: %s\n", str(dns_forwarders))
+    root_logger.debug("will use dns_forwarders: %s\n", str(dns_forwarders))
 
     if bind.dm_password:
         api.Backend.ldap2.connect(bind_dn="cn=Directory Manager", bind_pw=bind.dm_password)
@@ -202,9 +223,17 @@ def main():
                zone_notif=options.zone_notif)
     bind.create_instance()
 
+    # Restart http instance to make sure acutil has the right resolver
+    # https://bugzilla.redhat.com/show_bug.cgi?id=800368
+    http = httpinstance.HTTPInstance(fstore)
+    service.print_msg("Restarting the web server")
+    http.restart()
 
     print "=============================================================================="
     print "Setup complete"
+    print ""
+    bind.check_global_configuration()
+    print ""
     print ""
     print "\tYou must make sure these network ports are open:"
     print "\t\tTCP Ports:"
@@ -235,5 +264,5 @@ except Exception, e:
     message = str(e)
     for str in traceback.format_tb(sys.exc_info()[2]):
         message = message + "\n" + str
-    logging.debug(message)
+    root_logger.debug(message)
     sys.exit(1)

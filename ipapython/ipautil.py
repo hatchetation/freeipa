@@ -26,7 +26,6 @@ IPA_BASEDN_INFO = 'ipa v2.0'
 
 import string
 import tempfile
-import logging
 import subprocess
 import random
 import os, sys, traceback, readline
@@ -36,14 +35,15 @@ import shutil
 import urllib2
 import socket
 import ldap
-
-from ipapython import ipavalidate
+import struct
 from types import *
-
 import re
 import xmlrpclib
 import datetime
 import netaddr
+
+from ipapython.ipa_log_manager import *
+from ipapython import ipavalidate
 from ipapython import config
 try:
     from subprocess import CalledProcessError
@@ -58,6 +58,7 @@ except ImportError:
             self.cmd = cmd
         def __str__(self):
             return "Command '%s' returned non-zero exit status %d" % (self.cmd, self.returncode)
+from ipapython.compat import sha1, md5
 
 def get_domain_name():
     try:
@@ -75,7 +76,9 @@ class CheckedIPAddress(netaddr.IPAddress):
     # and don't allow IP addresses such as '1.1.1' in the same time
     netaddr_ip_flags = netaddr.INET_PTON
 
-    def __init__(self, addr, match_local=False, parse_netmask=True):
+    def __init__(self, addr, match_local=False, parse_netmask=True,
+                 allow_network=False, allow_loopback=False,
+                 allow_broadcast=False, allow_multicast=False):
         if isinstance(addr, CheckedIPAddress):
             super(CheckedIPAddress, self).__init__(addr, flags=self.netaddr_ip_flags)
             self.prefixlen = addr.prefixlen
@@ -94,22 +97,38 @@ class CheckedIPAddress(netaddr.IPAddress):
             pass
         else:
             try:
-                addr = netaddr.IPAddress(addr, flags=self.netaddr_ip_flags)
+                try:
+                    addr = netaddr.IPAddress(addr, flags=self.netaddr_ip_flags)
+                except netaddr.AddrFormatError:
+                    # netaddr.IPAddress doesn't handle zone indices in textual
+                    # IPv6 addresses. Try removing zone index and parse the
+                    # address again.
+                    if not isinstance(addr, basestring):
+                        raise
+                    addr, sep, foo = addr.partition('%')
+                    if sep != '%':
+                        raise
+                    addr = netaddr.IPAddress(addr, flags=self.netaddr_ip_flags)
+                    if addr.version != 6:
+                        raise
             except ValueError:
-                net = netaddr.IPNetwork(addr)
+                net = netaddr.IPNetwork(addr, flags=self.netaddr_ip_flags)
                 if not parse_netmask:
                     raise ValueError("netmask and prefix length not allowed here")
                 addr = net.ip
 
         if addr.version not in (4, 6):
             raise ValueError("unsupported IP version")
-        if addr.is_loopback():
+
+        if not allow_loopback and addr.is_loopback():
             raise ValueError("cannot use loopback IP address")
-        if addr.is_reserved() or addr in netaddr.ip.IPV4_6TO4:
+        if (not addr.is_loopback() and addr.is_reserved()) \
+                or addr in netaddr.ip.IPV4_6TO4:
             raise ValueError("cannot use IANA reserved IP address")
+
         if addr.is_link_local():
             raise ValueError("cannot use link-local IP address")
-        if addr.is_multicast():
+        if not allow_multicast and addr.is_multicast():
             raise ValueError("cannot use multicast IP address")
 
         if match_local:
@@ -141,9 +160,9 @@ class CheckedIPAddress(netaddr.IPAddress):
             elif addr.version == 6:
                 net = netaddr.IPNetwork(str(addr) + '/64')
 
-        if addr == net.network:
+        if not allow_network and  addr == net.network:
             raise ValueError("cannot use IP network address")
-        if addr.version == 4 and addr == net.broadcast:
+        if not allow_broadcast and addr.version == 4 and addr == net.broadcast:
             raise ValueError("cannot use broadcast IP address")
 
         super(CheckedIPAddress, self).__init__(addr, flags=self.netaddr_ip_flags)
@@ -234,6 +253,14 @@ def run(args, stdin=None, raiseonerr=True,
     p_out = None
     p_err = None
 
+    if isinstance(nolog, basestring):
+        # We expect a tuple (or list, or other iterable) of nolog strings.
+        # Passing just a single string is bad: strings are also, so this
+        # would result in every individual character of that string being
+        # replaced by XXXXXXXX.
+        # This is a sanity check to prevent that.
+        raise ValueError('nolog must be a tuple of strings.')
+
     if env is None:
         # copy default env
         env = copy.deepcopy(os.environ)
@@ -244,10 +271,14 @@ def run(args, stdin=None, raiseonerr=True,
         p_out = subprocess.PIPE
         p_err = subprocess.PIPE
 
-    p = subprocess.Popen(args, stdin=p_in, stdout=p_out, stderr=p_err,
-                         close_fds=True, env=env)
-    stdout,stderr = p.communicate(stdin)
-    stdout,stderr = str(stdout), str(stderr)    # Make pylint happy
+    try:
+        p = subprocess.Popen(args, stdin=p_in, stdout=p_out, stderr=p_err,
+                             close_fds=True, env=env)
+        stdout,stderr = p.communicate(stdin)
+        stdout,stderr = str(stdout), str(stderr)    # Make pylint happy
+    except KeyboardInterrupt:
+        p.wait()
+        raise
 
     # The command and its output may include passwords that we don't want
     # to log. Run through the nolog items.
@@ -264,10 +295,10 @@ def run(args, stdin=None, raiseonerr=True,
                 stderr = stderr.replace(nolog_value, 'XXXXXXXX')
             args = args.replace(nolog_value, 'XXXXXXXX')
 
-    logging.debug('args=%s' % args)
+    root_logger.debug('args=%s' % args)
     if capture_output:
-        logging.debug('stdout=%s' % stdout)
-        logging.debug('stderr=%s' % stderr)
+        root_logger.debug('stdout=%s' % stdout)
+        root_logger.debug('stderr=%s' % stderr)
 
     if p.returncode != 0 and raiseonerr:
         raise CalledProcessError(p.returncode, args)
@@ -550,20 +581,34 @@ def parse_generalized_time(timestr):
     except ValueError:
         return None
 
-def ipa_generate_password():
+def ipa_generate_password(characters=None,pwd_len=None):
+    ''' Generates password. Password cannot start or end with a whitespace
+    character. It also cannot be formed by whitespace characters only.
+    Length of password as well as string of characters to be used by
+    generator could be optionaly specified by characters and pwd_len
+    parameters, otherwise default values will be used: characters string
+    will be formed by all printable non-whitespace characters and space,
+    pwd_len will be equal to value of GEN_PWD_LEN.
+    '''
+    if not characters:
+        characters=string.digits + string.ascii_letters + string.punctuation + ' '
+    else:
+        if characters.isspace():
+            raise ValueError("password cannot be formed by whitespaces only")
+    if not pwd_len:
+        pwd_len = GEN_PWD_LEN
+
+    upper_bound = len(characters) - 1
     rndpwd = ''
     r = random.SystemRandom()
-    for x in range(GEN_PWD_LEN):
-        # do not generate space (chr(32)) as the first or last character
-        if x == 0 or x == (GEN_PWD_LEN-1):
-            rndchar = chr(r.randint(33,126))
-        else:
-            rndchar = chr(r.randint(32,126))
 
+    for x in range(pwd_len):
+        rndchar = characters[r.randint(0,upper_bound)]
+        if (x == 0) or (x == pwd_len-1):
+            while rndchar.isspace():
+                rndchar = characters[r.randint(0,upper_bound)]
         rndpwd += rndchar
-
     return rndpwd
-
 
 def format_list(items, quote=None, page_width=80):
     '''Format a list of items formatting them so they wrap to fit the
@@ -1085,14 +1130,9 @@ def get_gsserror(e):
 
 
 
-def host_port_open(host, port, socket_stream=True, socket_timeout=None):
+def host_port_open(host, port, socket_type=socket.SOCK_STREAM, socket_timeout=None):
     families = (socket.AF_INET, socket.AF_INET6)
     success = False
-
-    if socket_stream:
-        socket_type = socket.SOCK_STREAM
-    else:
-        socket_type = socket.SOCK_DGRAM
 
     for family in families:
         try:
@@ -1105,6 +1145,11 @@ def host_port_open(host, port, socket_stream=True, socket_timeout=None):
                 s.settimeout(socket_timeout)
 
             s.connect((host, port))
+
+            if socket_type == socket.SOCK_DGRAM:
+                s.send('')
+                s.recv(512)
+
             success = True
         except socket.error, e:
             pass
@@ -1116,13 +1161,8 @@ def host_port_open(host, port, socket_stream=True, socket_timeout=None):
 
     return False
 
-def bind_port_responder(port, socket_stream=True, socket_timeout=None, responder_data=None):
+def bind_port_responder(port, socket_type=socket.SOCK_STREAM, socket_timeout=None, responder_data=None):
     families = (socket.AF_INET, socket.AF_INET6)
-
-    if socket_stream:
-        socket_type = socket.SOCK_STREAM
-    else:
-        socket_type = socket.SOCK_DGRAM
 
     host = ''   # all available interfaces
 
@@ -1136,13 +1176,13 @@ def bind_port_responder(port, socket_stream=True, socket_timeout=None, responder
     if socket_timeout is not None:
         s.settimeout(socket_timeout)
 
-    if socket_stream:
+    if socket_type == socket.SOCK_STREAM:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
     try:
         s.bind((host, port))
 
-        if socket_stream:
+        if socket_type == socket.SOCK_STREAM:
             s.listen(1)
             connection, client_address = s.accept()
             try:
@@ -1150,8 +1190,8 @@ def bind_port_responder(port, socket_stream=True, socket_timeout=None, responder
                     connection.sendall(responder_data) #pylint: disable=E1101
             finally:
                 connection.close()
-        else:
-            data, addr = s.recvfrom( 512 ) # buffer size is 1024 bytes
+        elif socket_type == socket.SOCK_DGRAM:
+            data, addr = s.recvfrom(1)
 
             if responder_data:
                 s.sendto(responder_data, addr)
@@ -1167,26 +1207,32 @@ def get_ipa_basedn(conn):
     :param conn: Bound LDAP connection that will be used for searching
     """
     entries = conn.search_ext_s(
-        '', scope=ldap.SCOPE_BASE, attrlist=['namingcontexts']
+        '', scope=ldap.SCOPE_BASE, attrlist=['defaultnamingcontext', 'namingcontexts']
     )
 
     contexts = entries[0][1]['namingcontexts']
+    if entries[0][1].get('defaultnamingcontext'):
+        # If there is a defaultNamingContext examine that one first
+        default = entries[0][1]['defaultnamingcontext'][0]
+        if default in contexts:
+            contexts.remove(default)
+        contexts.insert(0, entries[0][1]['defaultnamingcontext'][0])
     for context in contexts:
-        logging.debug("Check if naming context '%s' is for IPA" % context)
+        root_logger.debug("Check if naming context '%s' is for IPA" % context)
         try:
             entry = conn.search_s(context, ldap.SCOPE_BASE, "(info=IPA*)")
         except ldap.NO_SUCH_OBJECT:
-            logging.debug("LDAP server did not return info attribute to check for IPA version")
+            root_logger.debug("LDAP server did not return info attribute to check for IPA version")
             continue
         if len(entry) == 0:
-            logging.debug("Info attribute with IPA server version not found")
+            root_logger.debug("Info attribute with IPA server version not found")
             continue
         info = entry[0][1]['info'][0].lower()
         if info != IPA_BASEDN_INFO:
-            logging.debug("Detected IPA server version (%s) did not match the client (%s)" \
+            root_logger.debug("Detected IPA server version (%s) did not match the client (%s)" \
                 % (info, IPA_BASEDN_INFO))
             continue
-        logging.debug("Naming context '%s' is a valid IPA context" % context)
+        root_logger.debug("Naming context '%s' is a valid IPA context" % context)
         return context
 
     return None
@@ -1245,11 +1291,109 @@ $)''', re.VERBOSE)
         new_vars = replacevars.copy()
         new_vars.update(appendvars)
         newvars_view = set(new_vars.keys()) - set(old_values.keys())
-        append_view = (set(appendvars.keys()) - set(replacevars.keys())) - set(old_values.keys())
+        append_view = (set(appendvars.keys()) - newvars_view)
         for item in newvars_view:
             new_config.write("%s=%s\n" % (item,new_vars[item]))
         for item in append_view:
             new_config.write("%s=%s\n" % (item,appendvars[item]))
+        new_config.flush()
+        # Make sure the resulting file is readable by others before installing it
+        os.fchmod(new_config.fileno(), orig_stat.st_mode)
+        os.fchown(new_config.fileno(), orig_stat.st_uid, orig_stat.st_gid)
+
+    # At this point new_config is closed but not removed due to 'delete=False' above
+    # Now, install the temporary file as configuration and ensure old version is available as .orig
+    # While .orig file is not used during uninstall, it is left there for administrator.
+    install_file(temp_filename, filepath)
+
+    return old_values
+
+def inifile_replace_variables(filepath, section, replacevars=dict(), appendvars=dict()):
+    """
+    Take a section-structured key=value based configuration file, and write new version
+    with certain values replaced or appended within the section
+
+    All (key,value) pairs from replacevars and appendvars that were not found
+    in the configuration file, will be added there.
+
+    It is responsibility of a caller to ensure that replacevars and
+    appendvars do not overlap.
+
+    It is responsibility of a caller to back up file.
+
+    returns dictionary of affected keys and their previous values
+
+    One have to run restore_context(filepath) afterwards or
+    security context of the file will not be correct after modification
+    """
+    pattern = re.compile('''
+(^
+                        \[
+        (?P<section>    .+) \]
+                        (\s+((\#|;).*)?)?
+$)|(^
+                        \s*
+        (?P<option>     [^\#;]+?)
+                        (\s*=\s*)
+        (?P<value>      .+?)?
+                        (\s*((\#|;).*)?)?
+$)''', re.VERBOSE)
+    def add_options(config, replacevars, appendvars, oldvars):
+        # add all options from replacevars and appendvars that were not found in the file
+        new_vars = replacevars.copy()
+        new_vars.update(appendvars)
+        newvars_view = set(new_vars.keys()) - set(oldvars.keys())
+        append_view = (set(appendvars.keys()) - newvars_view)
+        for item in newvars_view:
+            config.write("%s=%s\n" % (item,new_vars[item]))
+        for item in append_view:
+            config.write("%s=%s\n" % (item,appendvars[item]))
+
+    orig_stat = os.stat(filepath)
+    old_values = dict()
+    temp_filename = None
+    with tempfile.NamedTemporaryFile(delete=False) as new_config:
+        temp_filename = new_config.name
+        with open(filepath, 'r') as f:
+            in_section = False
+            finished = False
+            line_idx = 1
+            for line in f:
+                line_idx = line_idx + 1
+                new_line = line
+                m = pattern.match(line)
+                if m:
+                    sect, option, value = m.group('section', 'option', 'value')
+                    if in_section and sect is not None:
+                        # End of the searched section, add remaining options
+                        add_options(new_config, replacevars, appendvars, old_values)
+                        finished = True
+                    if sect is not None:
+                        # New section is found, check whether it is the one we are looking for
+                        in_section = (str(sect).lower() == str(section).lower())
+                    if option is not None and in_section:
+                        # Great, this is an option from the section we are loking for
+                        if replacevars and option in replacevars:
+                            # replace value completely
+                            new_line = u"%s=%s\n" % (option, replacevars[option])
+                            old_values[option] = value
+                        if appendvars and option in appendvars:
+                            # append a new value unless it is already existing in the original one
+                            if not value:
+                                new_line = u"%s=%s\n" % (option, appendvars[option])
+                            elif value.find(appendvars[option]) == -1:
+                                new_line = u"%s=%s %s\n" % (option, value, appendvars[option])
+                            old_values[option] = value
+                    new_config.write(new_line)
+            # We have finished parsing the original file.
+            # There are two remaining cases:
+            # 1. Section we were looking for was not found, we need to add it.
+            if not (in_section or finished):
+                new_config.write("[%s]\n" % (section))
+            # 2. The section is the last one but some options were not found, add them.
+            if in_section or not finished:
+                add_options(new_config, replacevars, appendvars, old_values)
+
         new_config.flush()
         # Make sure the resulting file is readable by others before installing it
         os.fchmod(new_config.fileno(), orig_stat.st_mode)
@@ -1283,3 +1427,22 @@ def backup_config_and_replace_variables(fstore, filepath, replacevars=dict(), ap
     old_values = config_replace_variables(filepath, replacevars, appendvars)
 
     return old_values
+
+def decode_ssh_pubkey(data, fptype=md5):
+    try:
+        (algolen,) = struct.unpack('>I', data[:4])
+        if algolen > 0 and algolen <= len(data) - 4:
+            return (data[4:algolen+4], data[algolen+4:], fptype(data).hexdigest().upper())
+    except struct.error:
+        pass
+    raise ValueError('not a SSH public key')
+
+def make_sshfp(key):
+    algo, data, fp = decode_ssh_pubkey(key, fptype=sha1)
+    if algo == 'ssh-rsa':
+        algo = 1
+    elif algo == 'ssh-dss':
+        algo = 2
+    else:
+        return
+    return '%d 1 %s' % (algo, fp)

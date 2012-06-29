@@ -263,6 +263,7 @@ class pwpolicy(LDAPObject):
             label=_('Priority'),
             doc=_('Priority of the policy (higher number means lower priority'),
             minvalue=0,
+            flags=('virtual_attribute',),
         ),
     ) + lockout_params
 
@@ -344,8 +345,6 @@ class pwpolicy_add(LDAPCreate):
             keys[-1], krbpwdpolicyreference=dn,
             cospriority=options.get('cospriority')
         )
-        if 'cospriority' in entry_attrs:
-            del entry_attrs['cospriority']
         return dn
 
     def post_callback(self, ldap, dn, entry_attrs, *keys, **options):
@@ -406,7 +405,6 @@ class pwpolicy_mod(LDAPUpdate):
                     raise e
             else:
                 setattr(context, 'cosupdate', True)
-            del entry_attrs['cospriority']
         return dn
 
     def post_callback(self, ldap, dn, entry_attrs, *keys, **options):
@@ -457,11 +455,45 @@ api.register(pwpolicy_show)
 class pwpolicy_find(LDAPSearch):
     __doc__ = _('Search for group password policies.')
 
+    # this command does custom sorting in post_callback
+    sort_result_entries = False
+
+    def sort_priority(self,x,y):
+        # global policy will be always last in the output
+        if x[1]['cn'][0] == global_policy_name:
+            return 1
+        elif y[1]['cn'][0] == global_policy_name:
+            return -1
+        else:
+            # policies with higher priority will be at the beginning of the list
+            try:
+                x =  cmp(int(x[1]['cospriority'][0]), int(y[1]['cospriority'][0]))
+            except KeyError:
+                # if cospriority is not present in the entry, rather return 0
+                # than crash
+                x = 0
+            return x
+
     def post_callback(self, ldap, entries, truncated, *args, **options):
         for e in entries:
             # attribute rights are not allowed for pwpolicy_find
             self.obj.add_cospriority(e[1], e[1]['cn'][0], rights=False)
-            self.obj.convert_time_for_output(e[1], **options)
+            if options.get('pkey_only', False):
+                # when pkey_only flag is on, entries should contain only a cn
+                # and a cospriority attribute that will be used for sorting
+                # When the entries are sorted, cosentry is removed
+                self.obj.convert_time_for_output(e[1], **options)
+
+        # do custom entry sorting by its cospriority
+        entries.sort(self.sort_priority)
+
+        if options.get('pkey_only', False):
+            # remove cospriority that was used for sorting
+            for e in entries:
+                try:
+                    del e[1]['cospriority']
+                except KeyError:
+                    pass
 
 api.register(pwpolicy_find)
 

@@ -23,15 +23,17 @@ Various utility functions.
 
 import os
 import imp
-import logging
 import time
 import socket
 import re
 from types import NoneType
+from weakref import WeakKeyDictionary
 
 from ipalib import errors
 from ipalib.text import _
+from ipalib.dn import DN, RDN
 from ipapython import dnsclient
+from ipapython.ipautil import decode_ssh_pubkey
 
 
 def json_serialize(obj):
@@ -116,13 +118,6 @@ def import_plugins_subpackage(name):
         __import__(full_name)
 
 
-class LogFormatter(logging.Formatter):
-    """
-    Log formatter that uses UTC for all timestamps.
-    """
-    converter = time.gmtime
-
-
 def make_repr(name, *args, **kw):
     """
     Construct a standard representation of a class instance.
@@ -203,3 +198,308 @@ def check_writable_file(filename):
             fp.close()
     except (IOError, OSError), e:
         raise errors.FileError(reason=str(e))
+
+def normalize_zonemgr(zonemgr):
+    if not zonemgr:
+        # do not normalize empty or None value
+        return zonemgr
+    if '@' in zonemgr:
+        # local-part needs to be normalized
+        name, at, domain = zonemgr.partition('@')
+        name = name.replace('.', '\\.')
+        zonemgr = u''.join((name, u'.', domain))
+
+    if not zonemgr.endswith('.'):
+        zonemgr = zonemgr + u'.'
+
+    return zonemgr
+
+def validate_dns_label(dns_label, allow_underscore=False):
+    label_chars = r'a-z0-9'
+    underscore_err_msg = ''
+    if allow_underscore:
+        label_chars += "_"
+        underscore_err_msg = u' _,'
+    label_regex = r'^[%(chars)s]([%(chars)s-]?[%(chars)s])*$' % dict(chars=label_chars)
+    regex = re.compile(label_regex, re.IGNORECASE)
+
+    if not dns_label:
+        raise ValueError(_('empty DNS label'))
+
+    if len(dns_label) > 63:
+        raise ValueError(_('DNS label cannot be longer that 63 characters'))
+
+    if not regex.match(dns_label):
+        raise ValueError(_('only letters, numbers,%(underscore)s and - are allowed. ' \
+                           'DNS label may not start or end with -') \
+                           % dict(underscore=underscore_err_msg))
+
+def validate_domain_name(domain_name, allow_underscore=False):
+    if domain_name.endswith('.'):
+        domain_name = domain_name[:-1]
+
+    domain_name = domain_name.split(".")
+
+    # apply DNS name validator to every name part
+    map(lambda label:validate_dns_label(label,allow_underscore), domain_name)
+
+    if not domain_name[-1].isalpha():
+        # see RFC 1123
+        raise ValueError(_('top level domain label must be alphabetic'))
+
+def validate_zonemgr(zonemgr):
+    """ See RFC 1033, 1035 """
+    regex_local_part = re.compile(r'^[a-z0-9]([a-z0-9-_]?[a-z0-9])*$',
+                                    re.IGNORECASE)
+    local_part_errmsg = _('mail account may only include letters, numbers, -, _ and a dot. There may not be consecutive -, _ and . characters. Its parts may not start or end with - or _')
+    local_part_sep = '.'
+    local_part = None
+    domain = None
+
+    if len(zonemgr) > 255:
+        raise ValueError(_('cannot be longer that 255 characters'))
+
+    if zonemgr.endswith('.'):
+        zonemgr = zonemgr[:-1]
+
+    if zonemgr.count('@') == 1:
+        local_part, dot, domain = zonemgr.partition('@')
+    elif zonemgr.count('@') > 1:
+        raise ValueError(_('too many \'@\' characters'))
+    else:
+        last_fake_sep = zonemgr.rfind('\\.')
+        if last_fake_sep != -1: # there is a 'fake' local-part/domain separator
+            local_part_sep = '\\.'
+            sep = zonemgr.find('.', last_fake_sep+2)
+            if sep != -1:
+                local_part = zonemgr[:sep]
+                domain = zonemgr[sep+1:]
+        else:
+            local_part, dot, domain = zonemgr.partition('.')
+
+    if not domain:
+        raise ValueError(_('missing address domain'))
+
+    validate_domain_name(domain)
+
+    if not local_part:
+        raise ValueError(_('missing mail account'))
+
+    if not all(regex_local_part.match(part) for part in \
+               local_part.split(local_part_sep)):
+        raise ValueError(local_part_errmsg)
+
+def validate_hostname(hostname, check_fqdn=True, allow_underscore=False):
+    """ See RFC 952, 1123
+
+    :param hostname Checked value
+    :param check_fqdn Check if hostname is fully qualified
+    """
+    if len(hostname) > 255:
+        raise ValueError(_('cannot be longer that 255 characters'))
+
+    if hostname.endswith('.'):
+        hostname = hostname[:-1]
+
+    if '.' not in hostname:
+        if check_fqdn:
+            raise ValueError(_('not fully qualified'))
+        validate_dns_label(hostname,allow_underscore)
+    else:
+        validate_domain_name(hostname,allow_underscore)
+
+def validate_sshpubkey(ugettext, pubkey):
+    try:
+        algo, data, fp = decode_ssh_pubkey(pubkey)
+    except ValueError:
+        return _('invalid SSH public key')
+
+def output_sshpubkey(ldap, dn, entry_attrs):
+    if 'ipasshpubkey' in entry_attrs:
+        pubkeys = entry_attrs.get('ipasshpubkey')
+    else:
+        entry = ldap.get_entry(dn, ['ipasshpubkey'])
+        pubkeys = entry[1].get('ipasshpubkey')
+    if pubkeys is None:
+        return
+
+    fingerprints = []
+    for pubkey in pubkeys:
+        try:
+            algo, data, fp = decode_ssh_pubkey(pubkey)
+            fp = u':'.join([fp[j:j+2] for j in range(0, len(fp), 2)])
+            fingerprints.append(u'%s (%s)' % (fp, algo))
+        except ValueError:
+            pass
+    if fingerprints:
+        entry_attrs['sshpubkeyfp'] = fingerprints
+
+def normalize_sshpubkeyfp(value):
+    value = value.split()[0]
+    value = unicode(c for c in value if c in '0123456789ABCDEFabcdef')
+    return value
+
+class cachedproperty(object):
+    """
+    A property-like attribute that caches the return value of a method call.
+
+    When the attribute is first read, the method is called and its return
+    value is saved and returned. On subsequent reads, the saved value is
+    returned.
+
+    Typical usage:
+    class C(object):
+        @cachedproperty
+        def attr(self):
+            return 'value'
+    """
+    __slots__ = ('getter', 'store')
+
+    def __init__(self, getter):
+        self.getter = getter
+        self.store = WeakKeyDictionary()
+
+    def __get__(self, obj, cls):
+        if obj is None:
+            return None
+        if obj not in self.store:
+            self.store[obj] = self.getter(obj)
+        return self.store[obj]
+
+    def __set__(self, obj, value):
+        raise AttributeError("can't set attribute")
+
+    def __delete__(self, obj):
+        raise AttributeError("can't delete attribute")
+
+# regexp matching signed floating point number (group 1) followed by
+# optional whitespace followed by time unit, e.g. day, hour (group 7)
+time_duration_re = re.compile(r'([-+]?((\d+)|(\d+\.\d+)|(\.\d+)|(\d+\.)))\s*([a-z]+)', re.IGNORECASE)
+
+# number of seconds in a time unit
+time_duration_units = {
+    'year'    : 365*24*60*60,
+    'years'   : 365*24*60*60,
+    'y'       : 365*24*60*60,
+    'month'   : 30*24*60*60,
+    'months'  : 30*24*60*60,
+    'week'    : 7*24*60*60,
+    'weeks'   : 7*24*60*60,
+    'w'       : 7*24*60*60,
+    'day'     : 24*60*60,
+    'days'    : 24*60*60,
+    'd'       : 24*60*60,
+    'hour'    : 60*60,
+    'hours'   : 60*60,
+    'h'       : 60*60,
+    'minute'  : 60,
+    'minutes' : 60,
+    'min'     : 60,
+    'second'  : 1,
+    'seconds' : 1,
+    'sec'     : 1,
+    's'       : 1,
+}
+
+def parse_time_duration(value):
+    '''
+
+    Given a time duration string, parse it and return the total number
+    of seconds represented as a floating point value. Negative values
+    are permitted.
+
+    The string should be composed of one or more numbers followed by a
+    time unit. Whitespace and punctuation is optional. The numbers may
+    be optionally signed.  The time units are case insenstive except
+    for the single character 'M' or 'm' which means month and minute
+    respectively.
+
+    Recognized time units are:
+
+        * year, years, y
+        * month, months, M
+        * week, weeks, w
+        * day, days, d
+        * hour, hours, h
+        * minute, minutes, min, m
+        * second, seconds, sec, s
+
+    Examples:
+        "1h"                    # 1 hour
+        "2 HOURS, 30 Minutes"   # 2.5 hours
+        "1week -1 day"          # 6 days
+        ".5day"                 # 12 hours
+        "2M"                    # 2 months
+        "1h:15m"                # 1.25 hours
+        "1h, -15min"            # 45 minutes
+        "30 seconds"            # .5 minute
+
+    Note: Despite the appearance you can perform arithmetic the
+    parsing is much simpler, the parser searches for signed values and
+    adds the signed value to a running total. Only + and - are permitted
+    and must appear prior to a digit.
+
+    :parameters:
+        value : string
+            A time duration string in the specified format
+    :returns:
+        total number of seconds as float (may be negative)
+    '''
+
+    matches = 0
+    duration = 0.0
+    for match in time_duration_re.finditer(value):
+        matches += 1
+        magnitude = match.group(1)
+        unit = match.group(7)
+
+        # Get the unit, only M and m are case sensitive
+        if unit == 'M':         # month
+            seconds_per_unit = 30*24*60*60
+        elif unit == 'm':       # minute
+            seconds_per_unit = 60
+        else:
+            unit = unit.lower()
+            seconds_per_unit = time_duration_units.get(unit)
+            if seconds_per_unit is None:
+                raise ValueError('unknown time duration unit "%s"' % unit)
+        magnitude = float(magnitude)
+        seconds = magnitude * seconds_per_unit
+        duration += seconds
+
+    if matches == 0:
+        raise ValueError('no time duration found in "%s"' % value)
+
+    return duration
+
+def gen_dns_update_policy(realm, rrtypes=('A', 'AAAA', 'SSHFP')):
+    """
+    Generate update policy for a DNS zone (idnsUpdatePolicy attribute). Bind
+    uses this policy to grant/reject access for client machines trying to
+    dynamically update their records.
+
+    :param realm: A realm of the of the client
+    :param rrtypes: A list of resource records types that client shall be
+                    allowed to update
+    """
+    policy_element = "grant %(realm)s krb5-self * %(rrtype)s"
+    policies = [ policy_element % dict(realm=realm, rrtype=rrtype) \
+               for rrtype in rrtypes ]
+    policy = "; ".join(policies)
+    policy += ";"
+
+    return policy
+
+def validate_rdn_param(ugettext, value):
+    try:
+        rdn = RDN(value)
+    except Exception, e:
+        return str(e)
+    return None
+
+def validate_dn_param(ugettext, value):
+    try:
+        rdn = DN(value)
+    except Exception, e:
+        return str(e)
+    return None

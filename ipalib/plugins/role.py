@@ -45,7 +45,7 @@ EXAMPLES:
  Add some privileges to this role:
    ipa role-add-privilege --privileges=addusers junioradmin
    ipa role-add-privilege --privileges=change_password junioradmin
-   ipa role-add-privilege --privileges=add_user_to_default_group juioradmin
+   ipa role-add-privilege --privileges=add_user_to_default_group junioradmin
 
  Add a group of users to this role:
    ipa group-add --desc="User admins" useradmins
@@ -54,7 +54,7 @@ EXAMPLES:
  Display information about a role:
    ipa role-show junioradmin
 
- The result of this is that any users in the group 'useradmins' can
+ The result of this is that any users in the group 'junioradmin' can
  add users, reset passwords or add a user to the default IPA user group.
 """)
 
@@ -76,7 +76,7 @@ class role(LDAPObject):
     reverse_members = {
         'member': ['privilege'],
     }
-    rdnattr='cn'
+    rdn_is_primary_key = True
 
     label = _('Roles')
     label_singular = _('Role')

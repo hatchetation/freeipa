@@ -22,7 +22,7 @@ man1_MANS = 				\
 
 man8_MANS =				\
 	ipactl.8			\
-	ipa_kpasswd.8			\
+	ipa-upgradeconfig.8		\
         $(NULL)
 
 install-data-hook:

@@ -173,7 +173,7 @@ IPA.cert.download_dialog = function(spec) {
     var that = IPA.dialog(spec);
 
     that.width = spec.width || 500;
-    that.height = spec.height || 400;
+    that.height = spec.height || 380;
     that.add_pem_delimiters = typeof spec.add_pem_delimiters == 'undefined' ? true : spec.add_pem_delimiters;
 
     that.certificate = spec.certificate || '';
@@ -188,8 +188,8 @@ IPA.cert.download_dialog = function(spec) {
 
     that.create = function() {
         var textarea = $('<textarea/>', {
-            readonly: 'yes',
-            style: 'width: 100%; height: 275px;'
+            'class': 'certificate',
+            readonly: 'yes'
         }).appendTo(that.container);
 
         var certificate = that.certificate;
@@ -319,6 +319,7 @@ IPA.cert.view_dialog = function(spec) {
 
     that.subject = IPA.cert.parse_dn(spec.subject);
     that.serial_number = spec.serial_number || '';
+    that.serial_number_hex = spec.serial_number_hex || '';
     that.issuer = IPA.cert.parse_dn(spec.issuer);
     that.issued_on = spec.issued_on || '';
     that.expires_on = spec.expires_on || '';
@@ -365,6 +366,12 @@ IPA.cert.view_dialog = function(spec) {
         $('<td>'+IPA.messages.objects.cert.serial_number+':</td>').appendTo(tr);
         $('<td/>', {
             text: that.serial_number
+        }).appendTo(tr);
+
+        tr = $('<tr/>').appendTo(table);
+        $('<td>'+IPA.messages.objects.cert.serial_number_hex+':</td>').appendTo(tr);
+        $('<td/>', {
+            text: that.serial_number_hex
         }).appendTo(tr);
 
         tr = $('<tr/>').appendTo(table);
@@ -437,8 +444,9 @@ IPA.cert.request_dialog = function(spec) {
 
     var that = IPA.dialog(spec);
 
-    that.width = spec.width || 500;
-    that.height = spec.height || 400;
+    that.width = spec.width || 600;
+    that.height = spec.height || 480;
+    that.message = spec.message;
 
     that.request = spec.request;
 
@@ -466,14 +474,11 @@ IPA.cert.request_dialog = function(spec) {
     });
 
     that.create = function() {
-        that.container.append(IPA.messages.objects.cert.enter_csr+':');
-        that.container.append('<br/>');
-        that.container.append('<br/>');
+        that.container.append(that.message);
 
         that.textarea = $('<textarea/>', {
-            style: 'width: 100%; height: 225px;'
+            'class': 'certificate'
         }).appendTo(that.container);
-
     };
 
     return that;
@@ -483,7 +488,7 @@ IPA.cert.status_widget = function(spec) {
 
     spec = spec || {};
 
-    var that = IPA.widget(spec);
+    var that = IPA.input_widget(spec);
 
     that.entity_label = spec.entity_label || that.entity.metadata.label_singular;
 
@@ -508,7 +513,7 @@ IPA.cert.status_widget = function(spec) {
         }).appendTo(container);
 
         $('<img/>', {
-            src: 'check.png',
+            src: 'images/check-icon.png',
             style: 'float: left;',
             'class': 'status-icon'
         }).appendTo(div);
@@ -560,7 +565,7 @@ IPA.cert.status_widget = function(spec) {
             }).appendTo(container);
 
             $('<img/>', {
-                src: 'caution.png',
+                src: 'images/caution-icon.png',
                 style: 'float: left;',
                 'class': 'status-icon'
             }).appendTo(div);
@@ -600,7 +605,7 @@ IPA.cert.status_widget = function(spec) {
         }).appendTo(container);
 
         $('<img/>', {
-            src: 'caution.png',
+            src: 'images/caution-icon.png',
             style: 'float: left;',
             'class': 'status-icon'
         }).appendTo(div);
@@ -712,9 +717,8 @@ IPA.cert.status_widget = function(spec) {
         });
     };
 
-    that.load = function(result) {
+    that.update = function() {
 
-        that.result = result;
         that.pkey = that.get_entity_pkey(that.result);
 
         var entity_certificate = that.get_entity_certificate(that.result);
@@ -725,17 +729,26 @@ IPA.cert.status_widget = function(spec) {
         }
     };
 
+    that.clear = function() {
+        that.status_valid.css('display', 'none');
+        that.status_missing.css('display', 'none');
+        that.status_revoked.css('display', 'none');
+        that.revoke_button.css('display', 'none');
+        that.restore_button.css('display', 'none');
+        that.revocation_reason.text('');
+    };
+
     function set_status(status, revocation_reason) {
-        that.status_valid.css('display', status == IPA.cert.CERTIFICATE_STATUS_VALID ? 'inline' : 'none');
-        that.status_missing.css('display', status == IPA.cert.CERTIFICATE_STATUS_MISSING ? 'inline' : 'none');
+        that.status_valid.css('display', status == IPA.cert.CERTIFICATE_STATUS_VALID ? '' : 'none');
+        that.status_missing.css('display', status == IPA.cert.CERTIFICATE_STATUS_MISSING ? '' : 'none');
 
         if (!that.is_selfsign()) {
-            that.status_revoked.css('display', status == IPA.cert.CERTIFICATE_STATUS_REVOKED ? 'inline' : 'none');
-            that.revoke_button.css('display', status == IPA.cert.CERTIFICATE_STATUS_VALID ? 'inline' : 'none');
+            that.status_revoked.css('display', status == IPA.cert.CERTIFICATE_STATUS_REVOKED ? '' : 'none');
+            that.revoke_button.css('display', status == IPA.cert.CERTIFICATE_STATUS_VALID ? '' : 'none');
 
             var reason = IPA.cert.CRL_REASON[revocation_reason];
             that.revocation_reason.html(revocation_reason === undefined || reason === null ? '' : IPA.messages.objects.cert[reason]);
-            that.restore_button.css('display', reason == 'certificate_hold' ? 'inline' : 'none');
+            that.restore_button.css('display', reason == 'certificate_hold' ? '' : 'none');
         }
     }
 
@@ -779,6 +792,7 @@ IPA.cert.status_widget = function(spec) {
             'title': title,
             'subject': result['subject'],
             'serial_number': result['serial_number'],
+            'serial_number_hex': result['serial_number_hex'],
             'issuer': result['issuer'],
             'issued_on': result['valid_not_before'],
             'expires_on': result['valid_not_after'],
@@ -821,8 +835,9 @@ IPA.cert.status_widget = function(spec) {
         title = title.replace('${primary_key}', entity_name);
 
         var dialog = IPA.cert.request_dialog({
-            'title': title,
-            'request': function(values) {
+            title: title,
+            message: that.request_message,
+            request: function(values) {
                 var request = values['request'];
 
                 IPA.command({
@@ -910,6 +925,21 @@ IPA.cert.status_widget = function(spec) {
 
         dialog.open();
     }
+
+    return that;
+};
+
+IPA.cert.status_field = function(spec) {
+
+    spec = spec || {};
+
+    var that = IPA.field(spec);
+
+    that.load = function(result) {
+
+        that.widget.result = result;
+        that.reset();
+    };
 
     return that;
 };

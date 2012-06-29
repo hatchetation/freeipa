@@ -22,7 +22,7 @@ import sys
 import httplib
 import getpass
 import socket
-import logging
+from ipapython.ipa_log_manager import *
 
 from nss.error import NSPRError
 import nss.io as io
@@ -35,8 +35,8 @@ def auth_certificate_callback(sock, check_sig, is_server, certdb):
 
     cert = sock.get_peer_certificate()
 
-    logging.debug("auth_certificate_callback: check_sig=%s is_server=%s\n%s",
-                  check_sig, is_server, str(cert))
+    root_logger.debug("auth_certificate_callback: check_sig=%s is_server=%s\n%s",
+                              check_sig, is_server, str(cert))
 
     pin_args = sock.get_pkcs11_pin_arg()
     if pin_args is None:
@@ -56,13 +56,13 @@ def auth_certificate_callback(sock, check_sig, is_server, certdb):
         # and the strerror attribute will contain a string describing the reason.
         approved_usage = cert.verify_now(certdb, check_sig, intended_usage, *pin_args)
     except Exception, e:
-        logging.error('cert validation failed for "%s" (%s)', cert.subject, e.strerror)
+        root_logger.error('cert validation failed for "%s" (%s)', cert.subject, e.strerror)
         cert_is_valid = False
         return cert_is_valid
 
-    logging.debug("approved_usage = %s intended_usage = %s",
-                  ', '.join(nss.cert_usage_flags(approved_usage)),
-                  ', '.join(nss.cert_usage_flags(intended_usage)))
+    root_logger.debug("approved_usage = %s intended_usage = %s",
+                              ', '.join(nss.cert_usage_flags(approved_usage)),
+                              ', '.join(nss.cert_usage_flags(intended_usage)))
 
     # Is the intended usage a proper subset of the approved usage
     if approved_usage & intended_usage:
@@ -72,7 +72,7 @@ def auth_certificate_callback(sock, check_sig, is_server, certdb):
 
     # If this is a server, we're finished
     if is_server or not cert_is_valid:
-        logging.debug('cert valid %s for "%s"', cert_is_valid,  cert.subject)
+        root_logger.debug('cert valid %s for "%s"', cert_is_valid,  cert.subject)
         return cert_is_valid
 
     # Certificate is OK.  Since this is the client side of an SSL
@@ -85,12 +85,12 @@ def auth_certificate_callback(sock, check_sig, is_server, certdb):
         # If the cert fails validation it will raise an exception
         cert_is_valid = cert.verify_hostname(hostname)
     except Exception, e:
-        logging.error('failed verifying socket hostname "%s" matches cert subject "%s" (%s)',
-                      hostname, cert.subject, e.strerror)
+        root_logger.error('failed verifying socket hostname "%s" matches cert subject "%s" (%s)',
+                                  hostname, cert.subject, e.strerror)
         cert_is_valid = False
         return cert_is_valid
 
-    logging.debug('cert valid %s for "%s"', cert_is_valid,  cert.subject)
+    root_logger.debug('cert valid %s for "%s"', cert_is_valid,  cert.subject)
     return cert_is_valid
 
 def client_auth_data_callback(ca_names, chosen_nickname, password, certdb):
@@ -142,8 +142,8 @@ class NSSAddressFamilyFallback(object):
         self.sock = io.Socket(family=self.family)
 
     def _connect_socket_family(self, host, port, family):
-        logging.debug("connect_socket_family: host=%s port=%s family=%s",
-                      host, port, io.addr_family_name(family))
+        root_logger.debug("connect_socket_family: host=%s port=%s family=%s",
+                                  host, port, io.addr_family_name(family))
         try:
             addr_info = [ ai for ai in io.AddrInfo(host) if ai.family == family ]
             # No suitable families
@@ -154,12 +154,12 @@ class NSSAddressFamilyFallback(object):
             # Try connecting to the NetworkAddresses
             for net_addr in addr_info:
                 net_addr.port = port
-                logging.debug("connecting: %s", net_addr)
+                root_logger.debug("connecting: %s", net_addr)
                 try:
                     self.sock.connect(net_addr)
                 except Exception, e:
-                    logging.debug("Could not connect socket to %s, error: %s, retrying..",
-                                  net_addr, str(e))
+                    root_logger.debug("Could not connect socket to %s, error: %s, retrying..",
+                                              net_addr, str(e))
                     continue
                 else:
                     return
@@ -181,7 +181,7 @@ class NSSAddressFamilyFallback(object):
                     self._create_socket()
                     self._connect_socket_family(host, port, self.family)
                 else:
-                    logging.debug('No next family to try..')
+                    root_logger.debug('No next family to try..')
                     raise e
             else:
                 raise e
@@ -190,18 +190,31 @@ class NSSConnection(httplib.HTTPConnection, NSSAddressFamilyFallback):
     default_port = httplib.HTTPSConnection.default_port
 
     def __init__(self, host, port=None, strict=None,
-                 dbdir=None, family=socket.AF_UNSPEC):
+                 dbdir=None, family=socket.AF_UNSPEC, no_init=False):
+        """
+        :param host: the server to connect to
+        :param port: the port to use (default is set in HTTPConnection)
+        :param dbdir: the NSS database directory
+        :param family: network family to use (default AF_UNSPEC)
+        :param no_init: do not initialize the NSS database. This requires
+                        that the database has already been initialized or
+                        the request will fail.
+        """
         httplib.HTTPConnection.__init__(self, host, port, strict)
         NSSAddressFamilyFallback.__init__(self, family)
 
         if not dbdir:
             raise RuntimeError("dbdir is required")
 
-        logging.debug('%s init %s', self.__class__.__name__, host)
-        if nss.nss_is_initialized():
+        root_logger.debug('%s init %s', self.__class__.__name__, host)
+        if not no_init and nss.nss_is_initialized():
             # close any open NSS database and use the new one
             ssl.clear_session_cache()
-            nss.nss_shutdown()
+            try:
+                nss.nss_shutdown()
+            except NSPRError, e:
+                if e.errno != error.SEC_ERROR_NOT_INITIALIZED:
+                    raise e
         nss.nss_init(dbdir)
         ssl.set_domestic_policy()
         nss.set_password_callback(self.password_callback)
@@ -243,7 +256,7 @@ class NSSConnection(httplib.HTTPConnection, NSSAddressFamilyFallback):
         """
         Verify callback. If we get here then the certificate is ok.
         """
-        logging.debug("handshake complete, peer = %s", sock.get_peer_name())
+        root_logger.debug("handshake complete, peer = %s", sock.get_peer_name())
         pass
 
     def connect(self):
@@ -285,13 +298,13 @@ class NSSHTTPS(httplib.HTTP):
 
     _connection_class = NSSConnection
 
-    def __init__(self, host='', port=None, strict=None, dbdir=None):
+    def __init__(self, host='', port=None, strict=None, dbdir=None, no_init=False):
         # provide a default host, pass the X509 cert info
 
         # urf. compensate for bad input.
         if port == 0:
             port = None
-        self._setup(self._connection_class(host, port, strict, dbdir=dbdir))
+        self._setup(self._connection_class(host, port, strict, dbdir=dbdir, no_init=no_init))
 
     def getreply(self):
         """
@@ -307,20 +320,8 @@ class NSSHTTPS(httplib.HTTP):
 #------------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG,
-                        format='%(asctime)s %(levelname)-8s %(message)s',
-                        datefmt='%m-%d %H:%M',
-                        filename='nsslib.log',
-                        filemode='a')
-    # Create a seperate logger for the console
-    console_logger = logging.StreamHandler()
-    console_logger.setLevel(logging.DEBUG)
-    # set a format which is simpler for console use
-    formatter = logging.Formatter('%(levelname)s %(message)s')
-    console_logger.setFormatter(formatter)
-    # add the handler to the root logger
-    logging.getLogger('').addHandler(console_logger)
-    logging.info("Start")
+    standard_logging_setup('nsslib.log', debug=True, filemode='a')
+    root_logger.info("Start")
 
     if False:
         conn = NSSConnection("www.verisign.com", 443, dbdir="/etc/pki/nssdb")

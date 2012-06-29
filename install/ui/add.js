@@ -23,19 +23,85 @@
 
 /* REQUIRES: ipa.js */
 
-IPA.add_dialog = function (spec) {
+IPA.entity_adder_dialog = function(spec) {
 
     spec = spec || {};
 
     var that = IPA.dialog(spec);
 
     that.method = spec.method || 'add';
-    that.pre_execute_hook = spec.pre_execute_hook;
     that.on_error = spec.on_error ;
     that.retry = typeof spec.retry !== 'undefined' ? spec.retry : true;
     that.command = null;
+    that.added = IPA.observer();
 
-    function show_edit_page(entity,result){
+    that.show_edit_page = spec.show_edit_page || show_edit_page;
+
+    var init = function() {
+        that.create_button({
+            name: 'add',
+            label: IPA.messages.buttons.add,
+            click: function() {
+                that.hide_message();
+                that.add(
+                    function(data, text_status, xhr) {
+                        that.added.notify();
+                        var facet = IPA.current_entity.get_facet();
+                        facet.refresh();
+                        that.close();
+                    },
+                    that.on_error);
+            }
+        });
+
+        that.create_button({
+            name: 'add_and_add_another',
+            label: IPA.messages.buttons.add_and_add_another,
+            click: function() {
+                that.hide_message();
+                that.add(
+                    function(data, text_status, xhr) {
+                        that.added.notify();
+                        var label = that.entity.metadata.label_singular;
+                        var message = IPA.messages.dialogs.add_confirmation;
+                        message = message.replace('${entity}', label);
+                        that.show_message(message);
+
+                        var facet = IPA.current_entity.get_facet();
+                        facet.refresh();
+                        that.reset();
+                    },
+                    that.on_error);
+            }
+        });
+
+        that.create_button({
+            name: 'add_and_edit',
+            label: IPA.messages.buttons.add_and_edit,
+            click: function() {
+                that.hide_message();
+                that.add(
+                    function(data, text_status, xhr) {
+                        that.added.notify();
+                        that.close();
+                        var result = data.result.result;
+                        that.show_edit_page(that.entity, result);
+                    },
+                    that.on_error);
+            }
+        });
+
+        that.create_button({
+            name: 'cancel',
+            label: IPA.messages.buttons.cancel,
+            click: function() {
+                that.hide_message();
+                that.close();
+            }
+        });
+    };
+
+    function show_edit_page(entity,result) {
         var pkey_name = entity.metadata.primary_key;
         var pkey = result[pkey_name];
         if (pkey instanceof Array) {
@@ -44,124 +110,74 @@ IPA.add_dialog = function (spec) {
         IPA.nav.show_entity_page(that.entity, 'default', pkey);
     }
 
-    that.show_edit_page = spec.show_edit_page || show_edit_page;
-
-    that.add = function(on_success, on_error) {
+    that.create_add_command = function(record) {
 
         var pkey_name = that.entity.metadata.primary_key;
 
         var command = IPA.command({
             entity: that.entity.name,
             method: that.method,
-            retry: that.retry,
-            on_success: on_success,
-            on_error: on_error
+            retry: that.retry
         });
-        that.command = command;
 
         command.add_args(that.entity.get_primary_key_prefix());
+
+        var fields = that.fields.get_fields();
+        for (var j=0; j<fields.length; j++) {
+            var field = fields[j];
+
+            var values = record[field.param];
+            if (!values || values.length === 0) continue;
+
+            if (field.param === pkey_name) {
+                command.add_arg(values[0]);
+            } else if (values.length === 1) {
+                command.set_option(field.param, values[0]);
+            } else {
+                command.set_option(field.param, values);
+            }
+        }
+
+        return command;
+    };
+
+    that.add = function(on_success, on_error) {
+
+        if (!that.validate()) return;
 
         var record = {};
         that.save(record);
 
-        var fields = that.get_fields();
-        for (var i=0; i<fields.length; i++) {
-            fields[i].validate();
-        }
+        that.command = that.create_add_command(record);
+        that.command.on_success = on_success;
+        that.command.on_error = on_error;
 
-        var valid = true;
-
-        var sections = that.sections.values;
-        for (i=0; i<sections.length; i++) {
-            var section = sections[i];
-
-            if (!section.is_valid() || !valid) {
-                valid = false;
-                continue;
-            }
-
-            var section_fields = section.fields.values;
-            for (var j=0; j<section_fields.length; j++) {
-                var field = section_fields[j];
-
-                var values = record[field.name];
-                if (!values) continue;
-
-                // TODO: Handle multi-valued attributes like in detail facet's update()
-                var value = values.join(',');
-                if (!value) continue;
-
-                if (field.name == pkey_name) {
-                    command.add_arg(value);
-                } else {
-                    command.set_option(field.name, value);
-                }
-            }
-        }
-
-        if (!valid) return;
-
-        //alert(JSON.stringify(command.to_json()));
-
-        if (that.pre_execute_hook) {
-            that.pre_execute_hook(command);
-        }
-
-        command.execute();
+        that.command.execute();
     };
 
-    /*dialog initialization*/
-    that.create_button({
-        name: 'add',
-        label: IPA.messages.buttons.add,
-        click: function() {
-            that.add(
-                function(data, text_status, xhr) {
-                    var facet = IPA.current_entity.get_facet();
-                    var table = facet.table;
-                    table.refresh();
-                    that.close();
-                },
-                that.on_error);
-        }
-    });
+    that.create = function() {
+        that.dialog_create();
 
-    that.create_button({
-        name: 'add_and_add_another',
-        label: IPA.messages.buttons.add_and_add_another,
-        click: function() {
-            that.add(
-                function(data, text_status, xhr) {
-                    var facet = IPA.current_entity.get_facet();
-                    var table = facet.table;
-                    table.refresh();
-                    that.reset();
-                },
-                that.on_error);
-        }
-    });
+        var div = $('<div/>', {
+        }).appendTo(that.container);
 
-    that.create_button({
-        name: 'add_and_edit',
-        label: IPA.messages.buttons.add_and_edit,
-        click: function() {
-            that.add(
-                function(data, text_status, xhr) {
-                    that.close();
-                    var result = data.result.result;
-                    that.show_edit_page(that.entity, result);
-                },
-                that.on_error);
-        }
-    });
+        $('<span/>', {
+            'class': 'required-indicator',
+            text: IPA.required_indicator
+        }).appendTo(div);
 
-    that.create_button({
-        name: 'cancel',
-        label: IPA.messages.buttons.cancel,
-        click: function() {
-            that.close();
-        }
-    });
+        div.append(' ');
+
+        $('<span/>', {
+            text: IPA.messages.widget.validation.required
+        }).appendTo(div);
+    };
+
+    // methods that should be invoked by subclasses
+    that.entity_adder_dialog_create = that.create;
+    that.entity_adder_dialog_create_add_command = that.create_add_command;
+
+    init();
 
     return that;
 };

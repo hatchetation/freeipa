@@ -22,43 +22,60 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-/* REQUIRES: ipa.js, details.js, search.js, add.js, entity.js */
+/* REQUIRES: ipa.js, details.js, search.js, add.js, facet.js, entity.js */
 
-IPA.entity_factories.host = function () {
+IPA.host = {};
 
-    return IPA.entity_builder().
-        entity('host').
-        search_facet({
+IPA.host.entity = function(spec) {
+
+    var that = IPA.entity(spec);
+
+    that.init = function() {
+        that.entity_init();
+
+        that.builder.search_facet({
             columns: [
                 'fqdn',
                 'description',
                 {
-                    name: 'krblastpwdchange',
+                    name: 'has_keytab',
                     label: IPA.messages.objects.host.enrolled,
-                    format: IPA.utc_date_column_format
+                    formatter: IPA.boolean_formatter()
                 }
             ]
         }).
         details_facet({
+            factory: IPA.host.details_facet,
             sections: [
                 {
                     name: 'details',
                     fields: [
                         {
-                            factory: IPA.host_dnsrecord_entity_link_widget,
+                            type: 'host_dnsrecord_entity_link',
                             name: 'fqdn',
                             other_entity: 'dnsrecord'
                         },
                         'krbprincipalname',
-                        'description',
+                        {
+                            type: 'textarea',
+                            name: 'description'
+                        },
                         'l',
                         'nshostlocation',
                         'nshardwareplatform',
-                        'nsosversion'
+                        'nsosversion',
+                        {
+                            type: 'sshkeys',
+                            name: 'ipasshpubkey',
+                            label: IPA.messages.objects.sshkeystore.keys
+                        },
+                        {
+                            type: 'multivalued',
+                            name: 'macaddress'
+                        }
                     ]
                 },
                 {
-                    factory: IPA.host_enrollment_section,
                     name: 'enrollment',
                     fields: [
                         {
@@ -67,7 +84,7 @@ IPA.entity_factories.host = function () {
                             label: IPA.messages.objects.host.keytab
                         },
                         {
-                            factory: IPA.host_password_widget,
+                            type: 'host_password',
                             name: 'has_password',
                             label: IPA.messages.objects.host.password
                         }
@@ -77,12 +94,15 @@ IPA.entity_factories.host = function () {
                     name: 'certificate',
                     fields: [
                         {
-                            factory: IPA.host_certificate_status_widget,
+                            type: 'host_certificate_status',
                             name: 'certificate_status',
                             label: IPA.messages.objects.host.status
                         }
                     ]
                 }
+            ],
+            policies: [
+                IPA.host_enrollment_policy()
             ]
         }).
         association_facet({
@@ -117,31 +137,16 @@ IPA.entity_factories.host = function () {
         standard_association_facets().
         adder_dialog({
             factory: IPA.host_adder_dialog,
-            height: 250,
+            height: 300,
             sections: [
                 {
-                    factory: IPA.host_fqdn_section,
+                    factory: IPA.composite_widget,
                     name: 'fqdn',
                     fields: [
                         {
-                            factory: IPA.widget,
+                            type: 'host_fqdn',
                             name: 'fqdn',
-                            optional: true,
-                            hidden: true
-                        },
-                        {
-                            factory: IPA.text_widget,
-                            name: 'hostname',
-                            label: IPA.messages.objects.service.host,
-                            param_info: { required: true }
-                        },
-                        {
-                            factory: IPA.dnszone_select_widget,
-                            name: 'dnszone',
-                            label: IPA.metadata.objects.dnszone.label_singular,
-                            editable: true,
-                            empty_option: false,
-                            param_info: { required: true }
+                            required: true
                         }
                     ]
                 },
@@ -149,14 +154,14 @@ IPA.entity_factories.host = function () {
                     name: 'other',
                     fields: [
                         {
-                            factory: IPA.text_widget,
                             name: 'ip_address',
-                            param_info: IPA.get_method_option('host_add', 'ip_address')
+                            validators: [ IPA.ip_address_validator() ],
+                            metadata: IPA.get_command_option('host_add', 'ip_address')
                         },
                         {
-                            factory: IPA.force_host_add_checkbox_widget,
+                            type: 'force_host_add_checkbox',
                             name: 'force',
-                            param_info: IPA.get_method_option('host_add', 'force')
+                            metadata: IPA.get_command_option('host_add', 'force')
                         }
                     ]
                 }
@@ -164,21 +169,52 @@ IPA.entity_factories.host = function () {
         }).
         deleter_dialog({
             factory: IPA.host_deleter_dialog
-        }).
-        build();
+        });
+    };
+
+    return that;
 };
 
-IPA.host_fqdn_section = function(spec) {
+IPA.host.details_facet = function(spec) {
+
+    var that = IPA.details_facet(spec);
+
+    that.get_refresh_command_name = function() {
+        return that.entity.name+'_show_'+that.pkey;
+    };
+
+    return that;
+};
+
+IPA.host_fqdn_widget = function(spec) {
 
     spec = spec || {};
 
-    var that = IPA.details_section(spec);
+    spec.widgets = [
+        {
+            type: 'text',
+            name: 'hostname',
+            label: IPA.messages.objects.service.host,
+            required: true
+        },
+        {
+            type: 'dnszone_select',
+            name: 'dnszone',
+            label: IPA.metadata.objects.dnszone.label_singular,
+            editable: true,
+            empty_option: false,
+            required: true,
+            searchable: true
+        }
+    ];
+
+    var that = IPA.composite_widget(spec);
 
     that.create = function(container) {
         that.container = container;
 
-        var hostname = that.get_field('hostname');
-        var dnszone = that.get_field('dnszone');
+        var hostname = that.widgets.get_widget('hostname');
+        var dnszone = that.widgets.get_widget('dnszone');
 
         var table = $('<table/>', {
             'class': 'fqdn'
@@ -192,11 +228,21 @@ IPA.host_fqdn_section = function(spec) {
             text: hostname.label
         }).appendTo(tr);
 
+        $('<span/>', {
+            'class': 'required-indicator',
+            text: IPA.required_indicator
+        }).appendTo(th);
+
         th = $('<th/>', {
             'class': 'dnszone',
             title: dnszone.label,
             text: dnszone.label
         }).appendTo(tr);
+
+        $('<span/>', {
+            'class': 'required-indicator',
+            text: IPA.required_indicator
+        }).appendTo(th);
 
         tr = $('<tr/>').appendTo(table);
 
@@ -237,61 +283,84 @@ IPA.host_fqdn_section = function(spec) {
         });
     };
 
-    that.save = function(record) {
-        var field = that.get_field('hostname');
-        var hostname = field.save()[0];
+    return that;
+};
 
-        field = that.get_field('dnszone');
-        var dnszone = field.save()[0];
+IPA.host_fqdn_field = function(spec) {
+
+    spec = spec || {};
+
+    var that = IPA.field(spec);
+
+    that.validate_required = function() {
+
+        var hostname = that.hostname_widget.save();
+        var dnszone = that.dns_zone_widget.save();
+
+        var valid = true;
+
+        if(!hostname.length || hostname[0] === '') {
+            that.hostname_widget.show_error(IPA.messages.widget.validation.required);
+            that.valid = valid = false;
+        }
+
+        if(!dnszone.length || dnszone[0] === '') {
+            that.dns_zone_widget.show_error(IPA.messages.widget.validation.required);
+            that.valid = valid = false;
+        }
+
+        return valid;
+    };
+
+    that.hide_error = function() {
+        that.hostname_widget.hide_error();
+        that.dns_zone_widget.hide_error();
+    };
+
+    that.save = function(record) {
+
+        if(!record) record = {};
+
+        var hostname = that.hostname_widget.save()[0];
+        var dnszone = that.dns_zone_widget.save()[0];
 
         record.fqdn = hostname && dnszone ? [ hostname+'.'+dnszone ] : [];
+
+        return record.fqdn;
+    };
+
+    that.reset = function() {
+
+        that.hostname_widget.update([]);
+        that.dns_zone_widget.update([]);
+    };
+
+    that.widgets_created = function() {
+
+        that.widget = that.container.widgets.get_widget(that.widget_name);
+        that.hostname_widget = that.widget.widgets.get_widget('hostname');
+        that.dns_zone_widget = that.widget.widgets.get_widget('dnszone');
     };
 
     return that;
 };
 
+IPA.field_factories['host_fqdn'] = IPA.host_fqdn_field;
+IPA.widget_factories['host_fqdn'] = IPA.host_fqdn_widget;
+
 IPA.host_adder_dialog = function(spec) {
 
     spec = spec || {};
-    spec.retry = typeof spec.retry !== 'undefined' ? spec.retry : false;
+    spec.retry = spec.retry !== undefined ? spec.retry : false;
 
-    var that = IPA.add_dialog(spec);
+    var that = IPA.entity_adder_dialog(spec);
 
     that.create = function() {
-        that.dialog_create();
+        that.entity_adder_dialog_create();
         that.container.addClass('host-adder-dialog');
     };
 
-    that.on_error = function(xhr, text_status, error_thrown) {
-        var ajax = this;
-        var command = that.command;
-        var data = error_thrown.data;
-        var dialog = null;
-
-        if(data && data.error && data.error.code === 4304) {
-            dialog = IPA.message_dialog({
-                message: data.error.message,
-                title: spec.title,
-                on_ok: function() {
-                    data.result = {
-                        result: {
-                            fqdn: command.args[0]
-                        }
-                    };
-                    command.on_success.call(ajax, data, text_status, xhr);
-                }
-            });
-        } else {
-            dialog = IPA.error_dialog({
-                xhr: xhr,
-                text_status: text_status,
-                error_thrown: error_thrown,
-                command: command
-            });
-        }
-
-        dialog.open(that.container);
-    };
+    that.on_error = IPA.create_4304_error_handler(that);
 
     return that;
 };
@@ -306,7 +375,7 @@ IPA.host_deleter_dialog = function(spec) {
 
         that.deleter_dialog_create();
 
-        var metadata = IPA.get_method_option('host_del', 'updatedns');
+        var metadata = IPA.get_command_option('host_del', 'updatedns');
 
         that.updatedns = $('<input/>', {
             type: 'checkbox',
@@ -344,7 +413,7 @@ IPA.dnszone_select_widget = function(spec) {
 
     that.create_search_command = function(filter) {
         return IPA.command({
-            entity: that.other_entity,
+            entity: that.other_entity.name,
             method: 'find',
             args: [filter],
             options: {
@@ -356,8 +425,11 @@ IPA.dnszone_select_widget = function(spec) {
     return that;
 };
 
-IPA.host_dnsrecord_entity_link_widget = function(spec){
-    var that = IPA.entity_link_widget(spec);
+IPA.field_factories['dnszone_select'] = IPA.field;
+IPA.widget_factories['dnszone_select'] = IPA.dnszone_select_widget;
+
+IPA.host_dnsrecord_entity_link_field = function(spec){
+    var that = IPA.link_field(spec);
 
     that.other_pkeys = function(){
         var pkey = that.entity.get_primary_key()[0];
@@ -367,64 +439,32 @@ IPA.host_dnsrecord_entity_link_widget = function(spec){
         pkeys[0] = pkey.substring(first_dot+1);
         return pkeys;
     };
+
     return that;
 };
 
-/* Take an LDAP format date in UTC and format it */
-IPA.utc_date_column_format = function(value){
-    if (!value) {
-        return "";
-    }
-    if (value.length  != "20101119025910Z".length){
-        return value;
-    }
-    /* We only handle GMT */
-    if (value.charAt(value.length -1) !== 'Z'){
-        return value;
-    }
-
-    var date = new Date();
-
-    date.setUTCFullYear(
-        value.substring(0, 4),    // YYYY
-        value.substring(4, 6)-1,  // MM (0-11)
-        value.substring(6, 8));   // DD (1-31)
-    date.setUTCHours(
-        value.substring(8, 10),   // HH (0-23)
-        value.substring(10, 12),  // MM (0-59)
-        value.substring(12, 14)); // SS (0-59)
-    var formated = date.toString();
-    return  formated;
-};
-
+IPA.field_factories['host_dnsrecord_entity_link'] = IPA.host_dnsrecord_entity_link_field;
+IPA.widget_factories['host_dnsrecord_entity_link'] = IPA.link_widget;
 
 IPA.force_host_add_checkbox_widget = function(spec) {
-    var param_info = IPA.get_method_option('host_add', spec.name);
-    spec.label = param_info.label;
-    spec.tooltip = param_info.doc;
+    var metadata = IPA.get_command_option('host_add', spec.name);
+    spec.label = metadata.label;
+    spec.tooltip = metadata.doc;
     return IPA.checkbox_widget(spec);
 };
 
-IPA.host_enrollment_section = function(spec) {
+IPA.widget_factories['force_host_add_checkbox'] = IPA.force_host_add_checkbox_widget;
+IPA.field_factories['force_host_add_checkbox'] = IPA.checkbox_field;
 
-    spec = spec || {};
+IPA.host_enrollment_policy = function(spec) {
 
-    var that = IPA.details_table_section(spec);
+    var that =  IPA.facet_policy();
 
-    that.create = function(container) {
-        that.table_section_create(container);
+    that.init = function() {
 
-        var keytab_field = that.get_field('has_keytab');
-        var password_field = that.get_field('has_password');
+        var keytab_field = that.container.fields.get_field('has_keytab');
+        var password_field = that.container.fields.get_field('has_password');
 
-        /**
-         * The set_password() in the password field is being customized to
-         * update the keytab field.
-         *
-         * The customization needs to be done here because the section
-         * doesn't create the fields. The IPA.entity_builder adds the fields
-         * after creating the section. This needs to be improved.
-         */
         var super_set_password = password_field.set_password;
         password_field.set_password = function(password, on_success, on_error) {
             super_set_password.call(
@@ -445,7 +485,7 @@ IPA.host_keytab_widget = function(spec) {
 
     spec = spec || {};
 
-    var that = IPA.widget(spec);
+    var that = IPA.input_widget(spec);
 
     that.create = function(container) {
 
@@ -457,7 +497,7 @@ IPA.host_keytab_widget = function(spec) {
         }).appendTo(container);
 
         $('<img/>', {
-            src: 'caution.png',
+            src: 'images/caution-icon.png',
             'class': 'status-icon'
         }).appendTo(that.missing_span);
 
@@ -471,7 +511,7 @@ IPA.host_keytab_widget = function(spec) {
         }).appendTo(container);
 
         $('<img/>', {
-            src: 'check.png',
+            src: 'images/check-icon.png',
             'class': 'status-icon'
         }).appendTo(that.present_span);
 
@@ -549,10 +589,13 @@ IPA.host_keytab_widget = function(spec) {
         command.execute();
     };
 
-    that.load = function(result) {
-        that.result = result;
-        var value = result[that.name];
-        set_status(value ? 'present' : 'missing');
+    that.update = function(values) {
+        set_status(values[0] ? 'present' : 'missing');
+    };
+
+    that.clear = function() {
+        that.present_span.css('display', 'none');
+        that.missing_span.css('display', 'none');
     };
 
     function set_status(status) {
@@ -567,7 +610,9 @@ IPA.host_password_widget = function(spec) {
 
     spec = spec || {};
 
-    var that = IPA.widget(spec);
+    var that = IPA.input_widget(spec);
+
+    that.password_change_request = IPA.observer();
 
     that.create = function(container) {
 
@@ -578,7 +623,7 @@ IPA.host_password_widget = function(spec) {
         }).appendTo(container);
 
         $('<img/>', {
-            src: 'caution.png',
+            src: 'images/caution-icon.png',
             'class': 'status-icon'
         }).appendTo(that.missing_span);
 
@@ -592,7 +637,7 @@ IPA.host_password_widget = function(spec) {
         }).appendTo(container);
 
         $('<img/>', {
-            src: 'check.png',
+            src: 'images/check-icon.png',
             'class': 'status-icon'
         }).appendTo(that.present_span);
 
@@ -625,22 +670,28 @@ IPA.host_password_widget = function(spec) {
             label = IPA.messages.objects.host.password_reset_button;
         }
 
-        var dialog = IPA.dialog({
+
+        var dialog = that.dialog = IPA.dialog({
             title: title,
-            width: 400
+            width: 400,
+            sections: [
+                {
+                    fields: [
+                        {
+                            name: 'password1',
+                            label: IPA.messages.password.new_password,
+                            type: 'password'
+                        },
+                        {
+                            name: 'password2',
+                            label: IPA.messages.password.verify_password,
+                            type: 'password'
+                        }
+                    ]
+                }
+            ]
         });
 
-        var password1 = dialog.add_field(IPA.text_widget({
-            name: 'password1',
-            label: IPA.messages.password.new_password,
-            type: 'password'
-        }));
-
-        var password2 = dialog.add_field(IPA.text_widget({
-            name: 'password2',
-            label: IPA.messages.password.verify_password,
-            type: 'password'
-        }));
 
         dialog.create_button({
             name: 'set_password',
@@ -658,16 +709,8 @@ IPA.host_password_widget = function(spec) {
                     return;
                 }
 
-                that.set_password(
-                    new_password,
-                    function(data, text_status, xhr) {
-                        that.load(data.result.result);
-                        dialog.close();
-                    },
-                    function(xhr, text_status, error_thrown) {
-                        dialog.close();
-                    }
-                );
+                that.password_change_request.notify([new_password], that);
+
                 dialog.close();
             }
         });
@@ -683,29 +726,15 @@ IPA.host_password_widget = function(spec) {
         dialog.open(that.container);
     };
 
-    that.set_password = function(password, on_success, on_error) {
-        var pkey = that.entity.get_primary_key();
-
-        var command = IPA.command({
-            entity: that.entity.name,
-            method: 'mod',
-            args: pkey,
-            options: {
-                all: true,
-                rights: true,
-                userpassword: password
-            },
-            on_success: on_success,
-            on_error: on_error
-        });
-
-        command.execute();
+    that.update = function(values) {
+        set_status(values[0] ? 'present' : 'missing');
     };
 
-    that.load = function(result) {
-        that.result = result;
-        var value = result[that.name];
-        set_status(value ? 'present' : 'missing');
+    that.clear = function() {
+        that.missing_span.css('display', 'none');
+        that.present_span.css('display', 'none');
+        var password_label = $('.button-label', that.set_password_button);
+        password_label.text('');
     };
 
     function set_status(status) {
@@ -728,14 +757,79 @@ IPA.host_password_widget = function(spec) {
     return that;
 };
 
-IPA.host_certificate_status_widget = function (spec) {
+IPA.host_password_field = function (spec) {
+
+    spec = spec || {};
+
+    var that = IPA.field(spec);
+
+    that.widgets_created = function() {
+
+        that.field_widgets_created();
+        that.widget.password_change_request.attach(that.set_password);
+        that.widget.search = that.search;
+    };
+
+    that.set_password = function(password) {
+        var pkey = that.entity.get_primary_key();
+
+        var command = IPA.command({
+            entity: that.entity.name,
+            method: 'mod',
+            args: pkey,
+            options: {
+                all: true,
+                rights: true,
+                userpassword: password
+            },
+            on_success: function(result) {
+                that.load(result.result.result);
+                that.widget.dialog.close();
+            },
+            on_error: function() {
+                that.widget.dialog.close();
+            }
+        });
+
+        command.execute();
+    };
+
+
+    return that;
+};
+
+IPA.widget_factories['host_password'] = IPA.host_password_widget;
+IPA.field_factories['host_password'] = IPA.host_password_field;
+
+IPA.host.certificate_status_field = function(spec) {
+
+    spec = spec || {};
+
+    var that = IPA.cert.status_field(spec);
+
+    that.load = function(result) {
+
+        that.widget.result = result;
+
+        var message = IPA.messages.objects.cert.request_message;
+        message = message.replace(/\$\{hostname\}/g, result.fqdn[0]);
+        message = message.replace(/\$\{realm\}/g, IPA.env.realm);
+        that.widget.request_message = message;
+
+        that.reset();
+    };
+
+    return that;
+};
+
+IPA.host.certificate_status_widget = function(spec) {
 
     spec = spec || {};
 
     var that = IPA.cert.status_widget(spec);
 
     that.get_entity_pkey = function(result) {
-        var values = result['fqdn'];
+        var values = result.fqdn;
         return values ? values[0] : null;
     };
 
@@ -744,14 +838,19 @@ IPA.host_certificate_status_widget = function (spec) {
     };
 
     that.get_entity_principal = function(result) {
-        var values = result['krbprincipalname'];
+        var values = result.krbprincipalname;
         return values ? values[0] : null;
     };
 
     that.get_entity_certificate = function(result) {
-        var values = result['usercertificate'];
+        var values = result.usercertificate;
         return values ? values[0].__base64__ : null;
     };
 
     return that;
 };
+
+IPA.widget_factories['host_certificate_status'] = IPA.host.certificate_status_widget;
+IPA.field_factories['host_certificate_status'] = IPA.host.certificate_status_field;
+
+IPA.register('host', IPA.host.entity);

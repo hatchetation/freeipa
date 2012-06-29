@@ -875,10 +875,10 @@ freeIPA.org:
 import os
 import plugable
 from backend import Backend
-from frontend import Command, LocalOrRemote
+from frontend import Command, LocalOrRemote, Updater
 from frontend import Object, Method, Property
 from crud import Create, Retrieve, Update, Delete, Search
-from parameters import DefaultFrom, Bool, Flag, Int, Float, Bytes, Str, IA5Str, Password,List
+from parameters import DefaultFrom, Bool, Flag, Int, Decimal, Bytes, Str, IA5Str, Password
 from parameters import BytesEnum, StrEnum, AccessTime, File
 from errors import SkipPluginModule
 from text import _, ngettext, GettextFactory, NGettextFactory
@@ -907,7 +907,7 @@ def create_api(mode='dummy'):
 
         - `backend.Backend`
     """
-    api = plugable.API(Command, Object, Method, Property, Backend)
+    api = plugable.API(Command, Object, Method, Property, Backend, Updater)
     if mode is not None:
         api.env.mode = mode
     assert mode != 'production'
@@ -916,5 +916,8 @@ def create_api(mode='dummy'):
 api = create_api(mode=None)
 
 if os.environ.get('IPA_UNIT_TEST_MODE', None) == 'cli_test':
+    from cli import cli_plugins
+    for klass in cli_plugins:
+        api.register(klass)
     api.bootstrap(context='cli', in_server=False, in_tree=True)
     api.finalize()

@@ -18,12 +18,14 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import copy
+
 from ipalib import api, _, ngettext
-from ipalib import Flag, Str, List
+from ipalib import Flag, Str
 from ipalib.request import context
 from ipalib import api, crud, errors
 from ipalib import output
 from ipalib import Object, Command
+from ipalib.plugins.baseldap import gen_pkey_only_option
 
 __doc__ = _("""
 Self-service Permissions
@@ -53,17 +55,12 @@ EXAMPLES:
 
 ACI_PREFIX=u"selfservice"
 
-def is_selfservice(aciname):
-    """
-    Determine if the ACI is a Self-service ACI and raise an exception if it
-    isn't.
+output_params = (
+    Str('aci',
+        label=_('ACI'),
+    ),
+)
 
-    Return the result if it is a self-service ACI.
-    """
-    result = api.Command['aci_show'](aciname, aciprefix=ACI_PREFIX)['result']
-    if 'selfaci' not in result or result['selfaci'] == False:
-        raise errors.NotFound(reason=_('Self-service permission \'%(permission)s\' not found') % dict(permission=aciname))
-    return result
 
 class selfservice(Object):
     """
@@ -82,17 +79,21 @@ class selfservice(Object):
             label=_('Self-service name'),
             doc=_('Self-service name'),
             primary_key=True,
+            pattern='^[-_ a-zA-Z0-9]+$',
+            pattern_errmsg="May only contain letters, numbers, -, _, and space",
         ),
-        List('permissions?',
+        Str('permissions*',
             cli_name='permissions',
             label=_('Permissions'),
             doc=_('Comma-separated list of permissions to grant ' \
                 '(read, write). Default is write.'),
+            csv=True,
         ),
-        List('attrs',
+        Str('attrs+',
             cli_name='attrs',
             label=_('Attributes'),
             doc=_('Comma-separated list of attributes'),
+            csv=True,
             normalizer=lambda value: value.lower(),
         ),
     )
@@ -109,6 +110,13 @@ class selfservice(Object):
         json_dict['methods'] = [m for m in self.methods]
         return json_dict
 
+    def postprocess_result(self, result):
+        try:
+            # do not include prefix in result
+            del result['aciprefix']
+        except KeyError:
+            pass
+
 api.register(selfservice)
 
 
@@ -116,6 +124,7 @@ class selfservice_add(crud.Create):
     __doc__ = _('Add a new self-service permission.')
 
     msg_summary = _('Added selfservice "%(value)s"')
+    has_output_params = output_params
 
     def execute(self, aciname, **kw):
         if not 'permissions' in kw:
@@ -123,7 +132,7 @@ class selfservice_add(crud.Create):
         kw['selfaci'] = True
         kw['aciprefix'] = ACI_PREFIX
         result = api.Command['aci_add'](aciname, **kw)['result']
-        del result['aciprefix']     # do not include prefix in result
+        self.obj.postprocess_result(result)
 
         return dict(
             result=result,
@@ -140,9 +149,9 @@ class selfservice_del(crud.Delete):
     msg_summary = _('Deleted selfservice "%(value)s"')
 
     def execute(self, aciname, **kw):
-        is_selfservice(aciname)
         kw['aciprefix'] = ACI_PREFIX
         result = api.Command['aci_del'](aciname, **kw)
+        self.obj.postprocess_result(result)
 
         return dict(
             result=True,
@@ -156,15 +165,16 @@ class selfservice_mod(crud.Update):
     __doc__ = _('Modify a self-service permission.')
 
     msg_summary = _('Modified selfservice "%(value)s"')
+    has_output_params = output_params
 
     def execute(self, aciname, **kw):
-        is_selfservice(aciname)
         if 'attrs' in kw and kw['attrs'] is None:
             raise errors.RequirementError(name='attrs')
 
         kw['aciprefix'] = ACI_PREFIX
         result = api.Command['aci_mod'](aciname, **kw)['result']
-        del result['aciprefix']     # do not include prefix in result
+        self.obj.postprocess_result(result)
+
         return dict(
             result=result,
             value=aciname,
@@ -180,13 +190,16 @@ class selfservice_find(crud.Search):
         '%(count)d selfservice matched', '%(count)d selfservices matched', 0
     )
 
+    takes_options = (gen_pkey_only_option("name"),)
+    has_output_params = output_params
+
     def execute(self, term, **kw):
         kw['selfaci'] = True
         kw['aciprefix'] = ACI_PREFIX
         result = api.Command['aci_find'](term, **kw)['result']
 
         for aci in result:
-            del aci['aciprefix']     # do not include prefix in result
+            self.obj.postprocess_result(aci)
 
         return dict(
             result=result,
@@ -200,15 +213,11 @@ api.register(selfservice_find)
 class selfservice_show(crud.Retrieve):
     __doc__ = _('Display information about a self-service permission.')
 
-    has_output_params = (
-        Str('aci',
-            label=_('ACI'),
-        ),
-    )
+    has_output_params = output_params
 
     def execute(self, aciname, **kw):
-        result = is_selfservice(aciname)
-        del result['aciprefix']     # do not include prefix in result
+        result = api.Command['aci_show'](aciname, aciprefix=ACI_PREFIX, **kw)['result']
+        self.obj.postprocess_result(result)
         return dict(
             result=result,
             value=aciname,

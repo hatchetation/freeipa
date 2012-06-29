@@ -47,11 +47,12 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <errno.h>
 
 #include <dirsrv/slapi-plugin.h>
 #include <lber.h>
 #include <time.h>
+
+#include <endian.h>
 
 #include "ipapwd.h"
 #include "util.h"
@@ -71,48 +72,6 @@
 #define KTF_DISALLOW_SVR              0x00001000
 #define KTF_PWCHANGE_SERVICE          0x00002000
 
-/* Salt types */
-#define KRB5_KDB_SALTTYPE_NORMAL        0
-#define KRB5_KDB_SALTTYPE_V4            1
-#define KRB5_KDB_SALTTYPE_NOREALM       2
-#define KRB5_KDB_SALTTYPE_ONLYREALM     3
-#define KRB5_KDB_SALTTYPE_SPECIAL       4
-#define KRB5_KDB_SALTTYPE_AFS3          5
-#define KRB5P_SALT_SIZE 16
-
-void krb5int_c_free_keyblock_contents(krb5_context context,
-                                      register krb5_keyblock *key);
-
-/* Novell key-format scheme:
-
-   KrbKeySet ::= SEQUENCE {
-   attribute-major-vno       [0] UInt16,
-   attribute-minor-vno       [1] UInt16,
-   kvno                      [2] UInt32,
-   mkvno                     [3] UInt32 OPTIONAL,
-   keys                      [4] SEQUENCE OF KrbKey,
-   ...
-   }
-
-   KrbKey ::= SEQUENCE {
-   salt      [0] KrbSalt OPTIONAL,
-   key       [1] EncryptionKey,
-   s2kparams [2] OCTET STRING OPTIONAL,
-    ...
-   }
-
-   KrbSalt ::= SEQUENCE {
-   type      [0] Int32,
-   salt      [1] OCTET STRING OPTIONAL
-   }
-
-   EncryptionKey ::= SEQUENCE {
-   keytype   [0] Int32,
-   keyvalue  [1] OCTET STRING
-   }
-
- */
-
 /* ascii hex output of bytes in "in"
  * out len is 32 (preallocated)
  * in len is 16 */
@@ -127,99 +86,6 @@ static void hexbuf(char *out, const uint8_t *in)
     }
 }
 
-struct berval *encode_keys(struct ipapwd_keyset *kset)
-{
-    BerElement *be = NULL;
-    struct berval *bval = NULL;
-    int ret, i;
-
-    be = ber_alloc_t(LBER_USE_DER);
-
-    if (!be) {
-        LOG_OOM();
-        return NULL;
-    }
-
-    ret = ber_printf(be, "{t[i]t[i]t[i]t[i]t[{",
-                    (ber_tag_t)(LBER_CONSTRUCTED | LBER_CLASS_CONTEXT | 0),
-                    kset->major_vno,
-                    (ber_tag_t)(LBER_CONSTRUCTED | LBER_CLASS_CONTEXT | 1),
-                    kset->minor_vno,
-                    (ber_tag_t)(LBER_CONSTRUCTED | LBER_CLASS_CONTEXT | 2),
-                    kset->kvno,
-                    (ber_tag_t)(LBER_CONSTRUCTED | LBER_CLASS_CONTEXT | 3),
-                    kset->mkvno,
-                    (ber_tag_t)(LBER_CONSTRUCTED | LBER_CLASS_CONTEXT | 4));
-    if (ret == -1) {
-        LOG_FATAL("encoding asn1 vno info failed\n");
-        goto done;
-    }
-
-    for (i = 0; i < kset->num_keys; i++) {
-
-        ret = ber_printf(be, "{");
-        if (ret == -1) {
-            LOG_FATAL("encoding asn1 EncryptionKey failed\n");
-            goto done;
-        }
-
-        if (kset->keys[i].salt) {
-            ret = ber_printf(be, "t[{t[i]",
-                     (ber_tag_t)(LBER_CONSTRUCTED | LBER_CLASS_CONTEXT | 0),
-                     (ber_tag_t)(LBER_CONSTRUCTED | LBER_CLASS_CONTEXT | 0),
-                     kset->keys[i].salt->type);
-            if ((ret != -1) && kset->keys[i].salt->value.bv_len) {
-                ret = ber_printf(be, "t[o]",
-                         (ber_tag_t)(LBER_CONSTRUCTED | LBER_CLASS_CONTEXT | 1),
-                         kset->keys[i].salt->value.bv_val,
-                         kset->keys[i].salt->value.bv_len);
-            }
-            if (ret != -1) {
-                ret = ber_printf(be, "}]");
-            }
-            if (ret == -1) {
-                goto done;
-            }
-        }
-
-        ret = ber_printf(be, "t[{t[i]t[o]}]",
-                 (ber_tag_t)(LBER_CONSTRUCTED | LBER_CLASS_CONTEXT | 1),
-                 (ber_tag_t)(LBER_CONSTRUCTED | LBER_CLASS_CONTEXT | 0),
-                 kset->keys[i].ekey->type,
-                 (ber_tag_t)(LBER_CONSTRUCTED | LBER_CLASS_CONTEXT | 1),
-                 kset->keys[i].ekey->value.bv_val,
-                 kset->keys[i].ekey->value.bv_len);
-        if (ret == -1) {
-            LOG_FATAL("encoding asn1 EncryptionKey failed\n");
-            goto done;
-        }
-
-        /* FIXME: s2kparams not supported yet */
-
-        ret = ber_printf(be, "}");
-        if (ret == -1) {
-            LOG_FATAL("encoding asn1 EncryptionKey failed\n");
-            goto done;
-        }
-    }
-
-    ret = ber_printf(be, "}]}");
-    if (ret == -1) {
-        LOG_FATAL("encoding asn1 end of sequences failed\n");
-        goto done;
-    }
-
-    ret = ber_flatten(be, &bval);
-    if (ret == -1) {
-        LOG_FATAL("flattening asn1 failed\n");
-        goto done;
-    }
-done:
-    ber_free(be, 1);
-
-    return bval;
-}
-
 void ipapwd_keyset_free(struct ipapwd_keyset **pkset)
 {
     struct ipapwd_keyset *kset = *pkset;
@@ -228,56 +94,12 @@ void ipapwd_keyset_free(struct ipapwd_keyset **pkset)
     if (!kset) return;
 
     for (i = 0; i < kset->num_keys; i++) {
-        if (kset->keys[i].salt) {
-            free(kset->keys[i].salt->value.bv_val);
-            free(kset->keys[i].salt);
-        }
-        if (kset->keys[i].ekey) {
-            free(kset->keys[i].ekey->value.bv_val);
-            free(kset->keys[i].ekey);
-        }
-        free(kset->keys[i].s2kparams.bv_val);
+        free(kset->keys[i].key_data_contents[0]);
+        free(kset->keys[i].key_data_contents[1]);
     }
     free(kset->keys);
     free(kset);
     *pkset = NULL;
-}
-
-
-void encode_int16(unsigned int val, unsigned char *p)
-{
-    p[1] = (val >>  8) & 0xff;
-    p[0] = (val      ) & 0xff;
-}
-
-static krb5_error_code ipa_get_random_salt(krb5_context krbctx,
-                                           krb5_data *salt)
-{
-    krb5_error_code kerr;
-    int i, v;
-
-    /* make random salt */
-    salt->length = KRB5P_SALT_SIZE;
-    salt->data = malloc(KRB5P_SALT_SIZE);
-    if (!salt->data) {
-        return ENOMEM;
-    }
-    kerr = krb5_c_random_make_octets(krbctx, salt);
-    if (kerr) {
-        return kerr;
-    }
-
-    /* Windows treats the salt as a string.
-     * To avoid any compatibility issue, limits octects only to
-     * the ASCII printable range, or 0x20 <= val <= 0x7E */
-    for (i = 0; i < salt->length; i++) {
-        v = (unsigned char)salt->data[i];
-        v %= 0x5E; /* 7E - 20 */
-        v += 0x20; /* add base */
-        salt->data[i] = v;
-    }
-
-    return 0;
 }
 
 static Slapi_Value **encrypt_encode_key(struct ipapwd_krbcfg *krbcfg,
@@ -286,9 +108,7 @@ static Slapi_Value **encrypt_encode_key(struct ipapwd_krbcfg *krbcfg,
 {
     krb5_context krbctx;
     char *krbPrincipalName = NULL;
-    uint32_t krbMaxTicketLife;
-    int kvno, i;
-    int krbTicketFlags;
+    int kvno;
     struct berval *bval = NULL;
     Slapi_Value **svals = NULL;
     krb5_principal princ = NULL;
@@ -321,16 +141,6 @@ static Slapi_Value **encrypt_encode_key(struct ipapwd_krbcfg *krbcfg,
         goto enc_error;
     }
 
-    krbMaxTicketLife = slapi_entry_attr_get_uint(data->target,
-                                                 "krbMaxTicketLife");
-    if (krbMaxTicketLife == 0) {
-        /* FIXME: retrieve the default from config (max_life from kdc.conf) */
-        krbMaxTicketLife = 86400; /* just set the default 24h for now */
-    }
-
-    krbTicketFlags = slapi_entry_attr_get_int(data->target,
-                                              "krbTicketFlags");
-
     pwd.data = (char *)data->password;
     pwd.length = strlen(data->password);
 
@@ -345,196 +155,24 @@ static Slapi_Value **encrypt_encode_key(struct ipapwd_krbcfg *krbcfg,
     kset->major_vno = 1;
     kset->minor_vno = 1;
     /* increment kvno (will be 1 if this is a new entry) */
-    kset->kvno = kvno + 1;
-    /* we also assum mkvno is 0 */
-    kset->mkvno = 0;
+    kvno += 1;
+    kset->mkvno = krbcfg->mkvno;
 
-    kset->num_keys = krbcfg->num_pref_encsalts;
-    kset->keys = calloc(kset->num_keys, sizeof(struct ipapwd_krbkey));
-    if (!kset->keys) {
-        LOG_OOM();
+    krberr = ipa_krb5_generate_key_data(krbctx, princ,
+                                        pwd, kvno, krbcfg->kmkey,
+                                        krbcfg->num_pref_encsalts,
+                                        krbcfg->pref_encsalts,
+                                        &kset->num_keys, &kset->keys);
+    if (krberr != 0) {
+        LOG_FATAL("generating kerberos keys failed [%s]\n",
+                  krb5_get_error_message(krbctx, krberr));
         goto enc_error;
     }
 
-    for (i = 0; i < kset->num_keys; i++) {
-        krb5_keyblock key;
-        krb5_data salt;
-        krb5_octet *ptr;
-        krb5_data plain;
-        krb5_enc_data cipher;
-        size_t len;
-        const char *p;
-
-        salt.data = NULL;
-
-        switch (krbcfg->pref_encsalts[i].salt_type) {
-
-        case KRB5_KDB_SALTTYPE_ONLYREALM:
-
-            p = strchr(krbPrincipalName, '@');
-            if (!p) {
-                LOG_FATAL("Invalid principal name, no realm found!\n");
-                goto enc_error;
-            }
-            p++;
-            salt.data = strdup(p);
-            if (!salt.data) {
-                LOG_OOM();
-                goto enc_error;
-            }
-            salt.length = strlen(salt.data); /* final \0 omitted on purpose */
-            break;
-
-        case KRB5_KDB_SALTTYPE_NOREALM:
-
-            krberr = ipa_krb5_principal2salt_norealm(krbctx, princ, &salt);
-            if (krberr) {
-                LOG_FATAL("krb5_principal2salt failed [%s]\n",
-                          krb5_get_error_message(krbctx, krberr));
-                goto enc_error;
-            }
-            break;
-
-        case KRB5_KDB_SALTTYPE_NORMAL:
-
-            krberr = krb5_principal2salt(krbctx, princ, &salt);
-            if (krberr) {
-                LOG_FATAL("krb5_principal2salt failed [%s]\n",
-                          krb5_get_error_message(krbctx, krberr));
-                goto enc_error;
-            }
-            break;
-
-        case KRB5_KDB_SALTTYPE_SPECIAL:
-
-            krberr = ipa_get_random_salt(krbctx, &salt);
-            if (krberr) {
-                LOG_FATAL("krb5_c_random_make_octets failed [%s]\n",
-                          krb5_get_error_message(krbctx, krberr));
-                goto enc_error;
-            }
-            break;
-
-        case KRB5_KDB_SALTTYPE_V4:
-            salt.length = 0;
-            break;
-
-        case KRB5_KDB_SALTTYPE_AFS3:
-
-            p = strchr(krbPrincipalName, '@');
-            if (!p) {
-                LOG_FATAL("Invalid principal name, no realm found!\n");
-                goto enc_error;
-            }
-            p++;
-            salt.data = strdup(p);
-            if (!salt.data) {
-                LOG_OOM();
-                goto enc_error;
-            }
-            salt.length = SALT_TYPE_AFS_LENGTH; /* special value */
-            break;
-
-        default:
-            LOG_FATAL("Invalid salt type [%d]\n",
-                      krbcfg->pref_encsalts[i].salt_type);
-            goto enc_error;
-        }
-
-        /* need to build the key now to manage the AFS salt.length
-         * special case */
-        krberr = krb5_c_string_to_key(krbctx,
-                                      krbcfg->pref_encsalts[i].enc_type,
-                                      &pwd, &salt, &key);
-        if (krberr) {
-            LOG_FATAL("krb5_c_string_to_key failed [%s]\n",
-                      krb5_get_error_message(krbctx, krberr));
-            krb5_free_data_contents(krbctx, &salt);
-            goto enc_error;
-        }
-        if (salt.length == SALT_TYPE_AFS_LENGTH) {
-            salt.length = strlen(salt.data);
-        }
-
-        krberr = krb5_c_encrypt_length(krbctx,
-                                       krbcfg->kmkey->enctype,
-                                       key.length, &len);
-        if (krberr) {
-            LOG_FATAL("krb5_c_string_to_key failed [%s]\n",
-                      krb5_get_error_message(krbctx, krberr));
-            krb5int_c_free_keyblock_contents(krbctx, &key);
-            krb5_free_data_contents(krbctx, &salt);
-            goto enc_error;
-        }
-
-        if ((ptr = (krb5_octet *) malloc(2 + len)) == NULL) {
-            LOG_OOM();
-            krb5int_c_free_keyblock_contents(krbctx, &key);
-            krb5_free_data_contents(krbctx, &salt);
-            goto enc_error;
-        }
-
-        encode_int16(key.length, ptr);
-
-        plain.length = key.length;
-        plain.data = (char *)key.contents;
-
-        cipher.ciphertext.length = len;
-        cipher.ciphertext.data = (char *)ptr+2;
-
-        krberr = krb5_c_encrypt(krbctx, krbcfg->kmkey, 0, 0, &plain, &cipher);
-        if (krberr) {
-            LOG_FATAL("krb5_c_encrypt failed [%s]\n",
-                      krb5_get_error_message(krbctx, krberr));
-            krb5int_c_free_keyblock_contents(krbctx, &key);
-            krb5_free_data_contents(krbctx, &salt);
-            free(ptr);
-            goto enc_error;
-        }
-
-        /* KrbSalt  */
-        kset->keys[i].salt = malloc(sizeof(struct ipapwd_krbkeydata));
-        if (!kset->keys[i].salt) {
-            LOG_OOM();
-            krb5int_c_free_keyblock_contents(krbctx, &key);
-            free(ptr);
-            goto enc_error;
-        }
-
-        kset->keys[i].salt->type = krbcfg->pref_encsalts[i].salt_type;
-
-        if (salt.length) {
-            kset->keys[i].salt->value.bv_len = salt.length;
-            kset->keys[i].salt->value.bv_val = salt.data;
-        }
-
-        /* EncryptionKey */
-        kset->keys[i].ekey = malloc(sizeof(struct ipapwd_krbkeydata));
-        if (!kset->keys[i].ekey) {
-            LOG_OOM();
-            krb5int_c_free_keyblock_contents(krbctx, &key);
-            free(ptr);
-            goto enc_error;
-        }
-        kset->keys[i].ekey->type = key.enctype;
-        kset->keys[i].ekey->value.bv_len = len+2;
-        kset->keys[i].ekey->value.bv_val = malloc(len+2);
-        if (!kset->keys[i].ekey->value.bv_val) {
-            LOG_OOM();
-            krb5int_c_free_keyblock_contents(krbctx, &key);
-            free(ptr);
-            goto enc_error;
-        }
-        memcpy(kset->keys[i].ekey->value.bv_val, ptr, len+2);
-
-        /* make sure we free the memory used now that we are done with it */
-        krb5int_c_free_keyblock_contents(krbctx, &key);
-        free(ptr);
-    }
-
-    bval = encode_keys(kset);
-    if (!bval) {
-        LOG_FATAL("encoding asn1 KrbSalt failed\n");
+    krberr = ber_encode_krb5_key_data(kset->keys, kset->num_keys,
+                                      kset->mkvno, &bval);
+    if (krberr != 0) {
+        LOG_FATAL("encoding krb5_key_data failed\n");
         goto enc_error;
     }
 

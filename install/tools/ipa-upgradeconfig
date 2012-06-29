@@ -29,11 +29,17 @@ try:
     from ipaserver.install import installutils
     from ipaserver.install import dsinstance
     from ipaserver.install import httpinstance
+    from ipaserver.install import memcacheinstance
+    from ipaserver.install import service
+    from ipaserver.install import cainstance
+    from ipaserver.install import certs
+    import ldap
     import krbV
     import re
     import os
     import shutil
     import fileinput
+    import ipalib.errors
 except ImportError:
     print >> sys.stderr, """\
 There was a problem importing one of the required Python modules. The
@@ -42,6 +48,25 @@ error was:
     %s
 """ % sys.exc_value
     sys.exit(1)
+
+class KpasswdInstance(service.SimpleServiceInstance):
+    def __init__(self):
+        service.SimpleServiceInstance.__init__(self, "ipa_kpasswd")
+
+def uninstall_ipa_kpasswd():
+    """
+    We can't use the full service uninstaller because that will attempt
+    to stop and disable the service which by now doesn't exist. We just
+    want to clean up sysrestore.state to remove all references to
+    ipa_kpasswd.
+    """
+    ipa_kpasswd = KpasswdInstance()
+
+    running = ipa_kpasswd.restore_state("running")
+    enabled = not ipa_kpasswd.restore_state("enabled")
+
+    if enabled is not None and not enabled:
+        ipa_kpasswd.remove()
 
 def backup_file(filename, ext):
     """Make a backup of filename using ext as the extension. Do not overwrite
@@ -119,7 +144,7 @@ def upgrade(sub_dict, filename, template, add=False):
     if new < 0:
         print "%s not found." % template
 
-    if old < new or add:
+    if old < new or (add and old == 0):
         backup_file(filename, new)
         update_conf(sub_dict, filename, template)
         print "Upgraded %s to version %d" % (filename, new)
@@ -138,7 +163,7 @@ def check_certs():
             print "Missing Certification Authority file."
             print "You should place a copy of the CA certificate in /usr/share/ipa/html/ca.crt"
 
-def upgrade_pki():
+def upgrade_pki(fstore):
     """
     Update/add the dogtag proxy configuration. The IPA side of this is
     handled in ipa-pki-proxy.conf.
@@ -148,7 +173,6 @@ def upgrade_pki():
     if not os.path.exists('/etc/pki-ca/CS.cfg'):
         return
 
-    fstore = sysrestore.FileStore('/var/lib/ipa/sysrestore')
     http = httpinstance.HTTPInstance(fstore)
     http.enable_mod_nss_renegotiate()
     if not installutils.get_directive('/etc/pki-ca/CS.cfg',
@@ -157,12 +181,85 @@ def upgrade_pki():
         ipautil.run(['/usr/bin/pki-setup-proxy', '-pki_instance_root=/var/lib'
                      ,'-pki_instance_name=pki-ca','-subsystem_type=ca'])
 
+def update_dbmodules(realm, filename="/etc/krb5.conf"):
+    newfile = []
+    found_dbrealm = False
+    found_realm = False
+    prefix = ''
+
+    st = os.stat(filename)
+    fd = open(filename)
+
+    lines = fd.readlines()
+    fd.close()
+
+    if '    db_library = ipadb.so\n' in lines:
+        # Already updated
+        return
+
+    for line in lines:
+        if line.startswith('[dbmodules]'):
+            found_dbrealm = True
+        if found_dbrealm and line.find(realm) > -1:
+            found_realm = True
+            prefix = '#'
+        if found_dbrealm and line.find('}') > -1 and found_realm:
+            found_realm = False
+            newfile.append('#%s' % line)
+            prefix = ''
+            continue
+      
+        newfile.append('%s%s' % (prefix, line))
+
+    # Append updated dbmodules information
+    newfile.append('  %s = {\n' % realm)
+    newfile.append('    db_library = ipadb.so\n')
+    newfile.append('  }\n')
+
+    # Write out new file
+    fd = open(filename, 'w')
+    fd.write("".join(newfile))
+    fd.close()
+
+def cleanup_kdc(fstore):
+    """
+    Clean up old KDC files if they exist. We need to remove the actual
+    file and any references in the uninstall configuration.
+    """
+    for file in ['kpasswd.keytab', 'ldappwd']:
+        filename = '/var/kerberos/krb5kdc/%s' % file
+        installutils.remove_file(filename)
+        if fstore.has_file(filename):
+            fstore.untrack_file(filename)
+
+def upgrade_ipa_profile(realm):
+    """
+    Update the IPA Profile provided by dogtag
+    """
+    ca = cainstance.CAInstance(realm, certs.NSS_DIR)
+    if ca.is_configured():
+        if ca.enable_subject_key_identifier():
+            ca.restart()
+
+def upgrade_httpd_selinux(fstore):
+    """
+    Update SElinux configuration for httpd instance in the same way as the
+    new server installation does.
+    """
+    http = httpinstance.HTTPInstance(fstore)
+    http.configure_selinux_for_httpd()
+
 def main():
     """
     Get some basics about the system. If getting those basics fail then
     this is likely because the machine isn't currently an IPA server so
     exit gracefully.
     """
+
+    if not os.geteuid()==0:
+        sys.exit("\nYou must be root to run this script.\n")
+
+    fstore = sysrestore.FileStore('/var/lib/ipa/sysrestore')
 
     try:
         krbctx = krbV.default_context()
@@ -184,7 +281,30 @@ def main():
     upgrade(sub_dict, "/etc/httpd/conf.d/ipa.conf", ipautil.SHARE_DIR + "ipa.conf")
     upgrade(sub_dict, "/etc/httpd/conf.d/ipa-rewrite.conf", ipautil.SHARE_DIR + "ipa-rewrite.conf")
     upgrade(sub_dict, "/etc/httpd/conf.d/ipa-pki-proxy.conf", ipautil.SHARE_DIR + "ipa-pki-proxy.conf", add=True)
-    upgrade_pki()
+    upgrade_pki(fstore)
+    update_dbmodules(krbctx.default_realm)
+    uninstall_ipa_kpasswd()
+
+    http = httpinstance.HTTPInstance(fstore)
+    http.remove_httpd_ccache()
+    http.configure_selinux_for_httpd()
+
+    memcache = memcacheinstance.MemcacheInstance()
+    memcache.ldapi = True
+    memcache.realm = krbctx.default_realm
+    try:
+        if not memcache.is_configured():
+            # 389-ds needs to be running to create the memcache instance
+            # because we record the new service in cn=masters.
+            ds = dsinstance.DsInstance()
+            ds.start()
+            memcache.create_instance('MEMCACHE', fqdn, None, ipautil.realm_to_suffix(krbctx.default_realm))
+    except (ldap.ALREADY_EXISTS, ipalib.errors.DuplicateEntry):
+        pass
+
+    cleanup_kdc(fstore)
+    upgrade_ipa_profile(krbctx.default_realm)
+
 try:
     if __name__ == "__main__":
         sys.exit(main())

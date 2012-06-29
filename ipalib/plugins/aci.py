@@ -117,16 +117,19 @@ must include all existing attributes as well. When doing an aci-mod the
 targetattr REPLACES the current attributes, it does not add to them.
 
 """
+from copy import deepcopy
 
 from ipalib import api, crud, errors
 from ipalib import Object, Command
-from ipalib import Flag, Int, List, Str, StrEnum
+from ipalib import Flag, Int, Str, StrEnum
 from ipalib.aci import ACI
+from ipalib.dn import DN
 from ipalib import output
 from ipalib import _, ngettext
+from ipalib.plugins.baseldap import gen_pkey_only_option
 if api.env.in_server and api.env.context in ['lite', 'server']:
     from ldap import explode_dn
-import logging
+from ipapython.ipa_log_manager import *
 
 ACI_NAME_PREFIX_SEP = ":"
 
@@ -205,22 +208,24 @@ def _make_aci(ldap, current, aciname, kw):
     Given a name and a set of keywords construct an ACI.
     """
     # Do some quick and dirty validation.
-    t1 = 'type' in kw
-    t2 = 'filter' in kw
-    t3 = 'subtree' in kw
-    t4 = 'targetgroup' in kw
-    t5 = 'attrs' in kw
-    t6 = 'memberof' in kw
-    if t1 + t2 + t3 + t4 > 1:
+    checked_args=['type','filter','subtree','targetgroup','attrs','memberof']
+    valid={}
+    for arg in checked_args:
+        if arg in kw:
+            valid[arg]=kw[arg] is not None
+        else:
+            valid[arg]=False
+
+    if valid['type'] + valid['filter'] + valid['subtree'] + valid['targetgroup'] > 1:
         raise errors.ValidationError(name='target', error=_('type, filter, subtree and targetgroup are mutually exclusive'))
 
     if 'aciprefix' not in kw:
         raise errors.ValidationError(name='aciprefix', error=_('ACI prefix is required'))
 
-    if t1 + t2 + t3 + t4 + t5 + t6 == 0:
+    if sum(valid.itervalues()) == 0:
         raise errors.ValidationError(name='target', error=_('at least one of: type, filter, subtree, targetgroup, attrs or memberof are required'))
 
-    if t2 + t6 > 1:
+    if valid['filter'] + valid['memberof'] > 1:
         raise errors.ValidationError(name='target', error=_('filter and memberof are mutually exclusive'))
 
     group = 'group' in kw
@@ -259,12 +264,16 @@ def _make_aci(ldap, current, aciname, kw):
         else:
             dn = entry_attrs['dn']
             a.set_bindrule('groupdn = "ldap:///%s"' % dn)
-        if 'attrs' in kw:
+        if valid['attrs']:
             a.set_target_attr(kw['attrs'])
-        if 'memberof' in kw:
+        if valid['memberof']:
+            try:
+                api.Command['group_show'](kw['memberof'])
+            except errors.NotFound:
+                api.Object['group'].handle_not_found(kw['memberof'])
             groupdn = _group_from_memberof(kw['memberof'])
             a.set_target_filter('memberOf=%s' % groupdn)
-        if 'filter' in kw:
+        if valid['filter']:
             # Test the filter by performing a simple search on it. The
             # filter is considered valid if either it returns some entries
             # or it returns no entries, otherwise we let whatever exception
@@ -276,15 +285,15 @@ def _make_aci(ldap, current, aciname, kw):
             except errors.NotFound:
                 pass
             a.set_target_filter(kw['filter'])
-        if 'type' in kw:
+        if valid['type']:
             target = _type_map[kw['type']]
             a.set_target(target)
-        if 'targetgroup' in kw:
+        if valid['targetgroup']:
             # Purposely no try here so we'll raise a NotFound
             entry_attrs = api.Command['group_show'](kw['targetgroup'])['result']
             target = 'ldap:///%s' % entry_attrs['dn']
             a.set_target(target)
-        if 'subtree' in kw:
+        if valid['subtree']:
             # See if the subtree is a full URI
             target = kw['subtree']
             if not target.startswith('ldap:///'):
@@ -295,7 +304,7 @@ def _make_aci(ldap, current, aciname, kw):
 
     return a
 
-def _aci_to_kw(ldap, a, test=False):
+def _aci_to_kw(ldap, a, test=False, pkey_only=False):
     """Convert an ACI into its equivalent keywords.
 
        This is used for the modify operation so we can merge the
@@ -304,6 +313,8 @@ def _aci_to_kw(ldap, a, test=False):
     """
     kw = {}
     kw['aciprefix'], kw['aciname'] = _parse_aci_name(a.name)
+    if pkey_only:
+        return kw
     kw['permissions'] = tuple(a.permissions)
     if 'targetattr' in a.target:
         kw['attrs'] = list(a.target['targetattr']['expression'])
@@ -312,8 +323,10 @@ def _aci_to_kw(ldap, a, test=False):
         kw['attrs'] = tuple(kw['attrs'])
     if 'targetfilter' in a.target:
         target = a.target['targetfilter']['expression']
-        if target.startswith('(memberOf') or target.startswith('memberOf'):
-            kw['memberof'] = unicode(target)
+        if target.startswith('(memberOf=') or target.startswith('memberOf='):
+            (junk, memberof) = target.split('memberOf=', 1)
+            memberof = DN(memberof)
+            kw['memberof'] = memberof['cn']
         else:
             kw['filter'] = unicode(target)
     if 'target' in a.target:
@@ -332,8 +345,8 @@ def _aci_to_kw(ldap, a, test=False):
                 # targetgroup attr, otherwise we consider it a subtree
                 if api.env.container_group in target:
                     targetdn = unicode(target.replace('ldap:///',''))
-                    (dn, entry_attrs) = ldap.get_entry(targetdn, ['cn'])
-                    kw['targetgroup'] = entry_attrs['cn'][0]
+                    target = DN(targetdn)
+                    kw['targetgroup'] = target['cn']
                 else:
                     kw['subtree'] = unicode(target)
 
@@ -368,7 +381,7 @@ def _convert_strings_to_acis(acistrs):
         try:
             acis.append(ACI(a))
         except SyntaxError, e:
-            logging.warn("Failed to parse: %s" % a)
+            root_logger.warning("Failed to parse: %s" % a)
     return acis
 
 def _find_aci_by_name(acis, aciprefix, aciname):
@@ -416,59 +429,72 @@ class aci(Object):
             cli_name='name',
             label=_('ACI name'),
             primary_key=True,
+            flags=('virtual_attribute',),
         ),
         Str('permission?',
             cli_name='permission',
             label=_('Permission'),
             doc=_('Permission ACI grants access to'),
+            flags=('virtual_attribute',),
         ),
         Str('group?',
             cli_name='group',
             label=_('User group'),
             doc=_('User group ACI grants access to'),
+            flags=('virtual_attribute',),
         ),
-        List('permissions', validate_permissions,
+        Str('permissions+', validate_permissions,
             cli_name='permissions',
             label=_('Permissions'),
             doc=_('comma-separated list of permissions to grant' \
                 '(read, write, add, delete, all)'),
+            csv=True,
             normalizer=_normalize_permissions,
+            flags=('virtual_attribute',),
         ),
-        List('attrs?',
+        Str('attrs*',
             cli_name='attrs',
             label=_('Attributes'),
             doc=_('Comma-separated list of attributes'),
+            csv=True,
+            flags=('virtual_attribute',),
         ),
         StrEnum('type?',
             cli_name='type',
             label=_('Type'),
             doc=_('type of IPA object (user, group, host, hostgroup, service, netgroup)'),
             values=(u'user', u'group', u'host', u'service', u'hostgroup', u'netgroup', u'dnsrecord'),
+            flags=('virtual_attribute',),
         ),
         Str('memberof?',
             cli_name='memberof',
             label=_('Member of'),  # FIXME: Does this label make sense?
             doc=_('Member of a group'),
+            flags=('virtual_attribute',),
         ),
         Str('filter?',
             cli_name='filter',
             label=_('Filter'),
             doc=_('Legal LDAP filter (e.g. ou=Engineering)'),
+            flags=('virtual_attribute',),
         ),
         Str('subtree?',
             cli_name='subtree',
             label=_('Subtree'),
             doc=_('Subtree to apply ACI to'),
+            flags=('virtual_attribute',),
         ),
         Str('targetgroup?',
             cli_name='targetgroup',
             label=_('Target group'),
             doc=_('Group to apply ACI to'),
+            flags=('virtual_attribute',),
         ),
         Flag('selfaci?',
              cli_name='self',
              label=_('Target your own entry (self)'),
              doc=_('Apply ACI to your own entry (self)'),
+             flags=('virtual_attribute',),
         ),
     )
 
@@ -543,7 +569,7 @@ class aci_del(crud.Delete):
         """
         Execute the aci-delete operation.
 
-        :param aciname: The name of the ACI being added.
+        :param aciname: The name of the ACI being deleted.
         :param kw: unused
         """
         assert 'aciname' not in kw
@@ -598,14 +624,18 @@ class aci_mod(crud.Update):
         # The strategy here is to convert the ACI we're updating back into
         # a series of keywords. Then we replace any keywords that have been
         # updated and convert that back into an ACI and write it out.
-        newkw =  _aci_to_kw(ldap, aci)
+        oldkw = _aci_to_kw(ldap, aci)
+        newkw = deepcopy(oldkw)
         if 'selfaci' in newkw and newkw['selfaci'] == True:
             # selfaci is set in aci_to_kw to True only if the target is self
             kw['selfaci'] = True
         for k in kw.keys():
             newkw[k] = kw[k]
-        if 'aciname' in newkw:
-            del newkw['aciname']
+        for acikw in (oldkw, newkw):
+            try:
+                del acikw['aciname']
+            except KeyError:
+                pass
 
         # _make_aci is what is run in aci_add and validates the input.
         # Do this before we delete the existing ACI.
@@ -615,7 +645,16 @@ class aci_mod(crud.Update):
 
         self.api.Command['aci_del'](aciname, **kw)
 
-        result = self.api.Command['aci_add'](aciname, **newkw)['result']
+        try:
+            result = self.api.Command['aci_add'](aciname, **newkw)['result']
+        except Exception, e:
+            # ACI could not be added, try to restore the old deleted ACI and
+            # report the ADD error back to user
+            try:
+                self.api.Command['aci_add'](aciname, **oldkw)
+            except:
+                pass
+            raise e
 
         if kw.get('raw', False):
             result = dict(aci=unicode(newaci))
@@ -652,7 +691,8 @@ class aci_find(crud.Search):
     NO_CLI = True
     msg_summary = ngettext('%(count)d ACI matched', '%(count)d ACIs matched', 0)
 
-    takes_options = (_prefix_option.clone_rename("aciprefix?", required=False),)
+    takes_options = (_prefix_option.clone_rename("aciprefix?", required=False),
+                     gen_pkey_only_option("name"),)
 
     def execute(self, term, **kw):
         ldap = self.api.Backend.ldap2
@@ -671,21 +711,21 @@ class aci_find(crud.Search):
         else:
             results = list(acis)
 
-        if 'aciname' in kw:
+        if kw.get('aciname'):
             for a in acis:
                 prefix, name = _parse_aci_name(a.name)
                 if name != kw['aciname']:
                     results.remove(a)
             acis = list(results)
 
-        if 'aciprefix' in kw:
+        if kw.get('aciprefix'):
             for a in acis:
                 prefix, name = _parse_aci_name(a.name)
                 if prefix != kw['aciprefix']:
                     results.remove(a)
             acis = list(results)
 
-        if 'attrs' in kw:
+        if kw.get('attrs'):
             for a in acis:
                 if not 'targetattr' in a.target:
                     results.remove(a)
@@ -698,7 +738,7 @@ class aci_find(crud.Search):
                     results.remove(a)
             acis = list(results)
 
-        if 'permission' in kw:
+        if kw.get('permission'):
             try:
                 self.api.Command['permission_show'](
                     kw['permission']
@@ -711,7 +751,7 @@ class aci_find(crud.Search):
                         results.remove(a)
                 acis = list(results)
 
-        if 'permissions' in kw:
+        if kw.get('permissions'):
             for a in acis:
                 alist1 = sorted(a.permissions)
                 alist2 = sorted(kw['permissions'])
@@ -719,7 +759,7 @@ class aci_find(crud.Search):
                     results.remove(a)
             acis = list(results)
 
-        if 'memberof' in kw:
+        if kw.get('memberof'):
             try:
                 dn = _group_from_memberof(kw['memberof'])
             except errors.NotFound:
@@ -734,7 +774,7 @@ class aci_find(crud.Search):
                     else:
                         results.remove(a)
 
-        if 'type' in kw:
+        if kw.get('type'):
             for a in acis:
                 if 'target' in a.target:
                     target = a.target['target']['expression']
@@ -752,7 +792,7 @@ class aci_find(crud.Search):
                     except ValueError:
                         pass
 
-        if 'selfaci' in kw and kw['selfaci'] == True:
+        if kw.get('selfaci', False) is True:
             for a in acis:
                 if a.bindrule['expression'] != u'ldap:///self':
                     try:
@@ -760,7 +800,7 @@ class aci_find(crud.Search):
                     except ValueError:
                         pass
 
-        if 'group' in kw:
+        if kw.get('group'):
             for a in acis:
                 groupdn = a.bindrule['expression']
                 groupdn = groupdn.replace('ldap:///','')
@@ -774,7 +814,7 @@ class aci_find(crud.Search):
                     except ValueError:
                         pass
 
-        if 'targetgroup' in kw:
+        if kw.get('targetgroup'):
             for a in acis:
                 found = False
                 if 'target' in a.target:
@@ -791,7 +831,7 @@ class aci_find(crud.Search):
                     except ValueError:
                         pass
 
-        if 'filter' in kw:
+        if kw.get('filter'):
             if not kw['filter'].startswith('('):
                 kw['filter'] = unicode('('+kw['filter']+')')
             for a in acis:
@@ -807,7 +847,8 @@ class aci_find(crud.Search):
             if kw.get('raw', False):
                 aci = dict(aci=unicode(result))
             else:
-                aci = _aci_to_kw(ldap, result)
+                aci = _aci_to_kw(ldap, result,
+                        pkey_only=kw.get('pkey_only', False))
             acis.append(aci)
 
         return dict(

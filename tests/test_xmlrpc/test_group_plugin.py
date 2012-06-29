@@ -48,28 +48,28 @@ class test_group(Declarative):
         dict(
             desc='Try to retrieve non-existent %r' % group1,
             command=('group_show', [group1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: group not found' % group1),
         ),
 
 
         dict(
             desc='Try to update non-existent %r' % group1,
             command=('group_mod', [group1], dict(description=u'Foo')),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: group not found' % group1),
         ),
 
 
         dict(
             desc='Try to delete non-existent %r' % group1,
             command=('group_del', [group1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: group not found' % group1),
         ),
 
 
         dict(
             desc='Try to rename non-existent %r' % group1,
             command=('group_mod', [group1], dict(setattr=u'cn=%s' % renamedgroup1)),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: group not found' % group1),
         ),
 
 
@@ -99,7 +99,8 @@ class test_group(Declarative):
             command=(
                 'group_add', [group1], dict(description=u'Test desc 1')
             ),
-            expected=errors.DuplicateEntry(),
+            expected=errors.DuplicateEntry(
+                message=u'group with name "%s" already exists' % group1),
         ),
 
 
@@ -216,21 +217,21 @@ class test_group(Declarative):
         dict(
             desc='Try to retrieve non-existent %r' % group2,
             command=('group_show', [group2], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: group not found' % group2),
         ),
 
 
         dict(
             desc='Try to update non-existent %r' % group2,
             command=('group_mod', [group2], dict(description=u'Foo')),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: group not found' % group2),
         ),
 
 
         dict(
             desc='Try to delete non-existent %r' % group2,
             command=('group_del', [group2], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: group not found' % group2),
         ),
 
 
@@ -261,7 +262,8 @@ class test_group(Declarative):
             command=(
                 'group_add', [group2], dict(description=u'Test desc 2')
             ),
-            expected=errors.DuplicateEntry(),
+            expected=errors.DuplicateEntry(
+                message=u'group with name "%s" already exists' % group2),
         ),
 
 
@@ -368,7 +370,6 @@ class test_group(Declarative):
                         'dn': lambda x: DN(x) == \
                             DN(('cn','ipausers'),('cn','groups'),('cn','accounts'),
                                api.env.basedn),
-                        'gidnumber': [fuzzy_digits],
                         'cn': [u'ipausers'],
                         'description': [u'Default group for all users'],
                     },
@@ -544,21 +545,21 @@ class test_group(Declarative):
         dict(
             desc='Try to delete non-existent %r' % group1,
             command=('group_del', [group1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: group not found' % group1),
         ),
 
 
         dict(
             desc='Try to retrieve non-existent %r' % group1,
             command=('group_show', [group1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: group not found' % group1),
         ),
 
 
         dict(
             desc='Try to update non-existent %r' % group1,
             command=('group_mod', [group1], dict(description=u'Foo')),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: group not found' % group1),
         ),
 
 
@@ -579,27 +580,53 @@ class test_group(Declarative):
         dict(
             desc='Try to delete non-existent %r' % group2,
             command=('group_del', [group2], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: group not found' % group2),
         ),
 
 
         dict(
             desc='Try to retrieve non-existent %r' % group2,
             command=('group_show', [group2], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: group not found' % group2),
         ),
 
 
         dict(
             desc='Try to update non-existent %r' % group2,
             command=('group_mod', [group2], dict(description=u'Foo')),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: group not found' % group2),
         ),
 
         dict(
             desc='Test an invalid group name %r' % invalidgroup1,
             command=('group_add', [invalidgroup1], dict(description=u'Test')),
-            expected=errors.ValidationError(name='cn', error='may only include letters, numbers, _, -, . and $'),
+            expected=errors.ValidationError(name='group_name',
+                error=u'may only include letters, numbers, _, -, . and $'),
+        ),
+
+        # The assumption on these next 4 tests is that if we don't get a
+        # validation error then the request was processed normally.
+        dict(
+            desc='Test that validation is disabled on mods',
+            command=('group_mod', [invalidgroup1], {}),
+            expected=errors.NotFound(
+                reason=u'%s: group not found' % invalidgroup1),
+        ),
+
+
+        dict(
+            desc='Test that validation is disabled on deletes',
+            command=('group_del', [invalidgroup1], {}),
+            expected=errors.NotFound(
+                reason=u'%s: group not found' % invalidgroup1),
+        ),
+
+
+        dict(
+            desc='Test that validation is disabled on show',
+            command=('group_show', [invalidgroup1], {}),
+            expected=errors.NotFound(
+                reason=u'%s: group not found' % invalidgroup1),
         ),
 
 
@@ -711,11 +738,10 @@ class test_group(Declarative):
             )
         ),
 
-
         dict(
             desc='Verify that %r is really gone' % user1,
             command=('group_show', [user1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: group not found' % user1),
         ),
 
         dict(
@@ -731,7 +757,7 @@ class test_group(Declarative):
         dict(
             desc='Create %r without User Private Group' % user1,
             command=(
-                'user_add', [user1], dict(givenname=u'Test', sn=u'User1', noprivate=True)
+                'user_add', [user1], dict(givenname=u'Test', sn=u'User1', noprivate=True, gidnumber=1000)
             ),
             expected=dict(
                 value=user1,
@@ -747,7 +773,7 @@ class test_group(Declarative):
                     sn=[u'User1'],
                     uid=[user1],
                     uidnumber=[fuzzy_digits],
-                    gidnumber=[fuzzy_digits],
+                    gidnumber=[u'1000'],
                     displayname=[u'Test User1'],
                     cn=[u'Test User1'],
                     initials=[u'TU'],
@@ -755,6 +781,10 @@ class test_group(Declarative):
                     dn=lambda x: DN(x) == \
                         DN(('uid','tuser1'),('cn','users'),('cn','accounts'),
                            api.env.basedn),
+                    krbpwdpolicyreference=lambda x: [DN(i) for i in x] == \
+                        [DN(('cn','global_policy'),('cn',api.env.realm),
+                            ('cn','kerberos'),api.env.basedn)],
+                    memberof_group=[u'ipausers'],
                     has_keytab=False,
                     has_password=False,
                 ),
@@ -764,7 +794,7 @@ class test_group(Declarative):
         dict(
             desc='Verify the managed group %r was not created' % user1,
             command=('group_show', [user1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: group not found' % user1),
         ),
 
     ]

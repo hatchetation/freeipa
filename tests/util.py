@@ -107,6 +107,14 @@ def assert_equal(val1, val2):
     assert val1 == val2, '%r != %r' % (val1, val2)
 
 
+def assert_not_equal(val1, val2):
+    """
+    Assert ``val1`` and ``val2`` are the same type and of non-equal value.
+    """
+    assert type(val1) is type(val2), '%r != %r' % (val1, val2)
+    assert val1 != val2, '%r == %r' % (val1, val2)
+
+
 class Fuzzy(object):
     """
     Perform a fuzzy (non-strict) equality tests.
@@ -287,6 +295,9 @@ def assert_deepequal(expected, got, doc='', stack=tuple()):
       expected = u'how are you?'
       got = 'how are you?'
       path = (0, 'world')
+
+    Note that lists and tuples are considered equivalent, and the order of
+    their elements does not matter.
     """
     if isinstance(expected, tuple):
         expected = list(expected)
@@ -446,7 +457,7 @@ def check_TypeError(value, type_, name, callback, *args, **kw):
     assert e.type is type_
     assert e.name == name
     assert type(e.name) is str
-    assert str(e) == ipalib.errors.TYPE_FORMAT % (name, type_, value)
+    assert str(e) == ipalib.errors.TYPE_ERROR % (name, type_, value)
     return e
 
 
@@ -592,7 +603,7 @@ class DummyClass(object):
     def __process(self, name_, args_, kw_):
         if self.__i >= len(self.__calls):
             raise AssertionError(
-                'extra call: %s, %r, %r' % (name, args, kw)
+                'extra call: %s, %r, %r' % (name_, args_, kw_)
             )
         (name, args, kw, result) = self.__calls[self.__i]
         self.__i += 1

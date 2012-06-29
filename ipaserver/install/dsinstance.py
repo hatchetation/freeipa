@@ -19,7 +19,7 @@
 #
 
 import shutil
-import logging
+from ipapython.ipa_log_manager import *
 import pwd
 import glob
 import sys
@@ -90,17 +90,33 @@ def erase_ds_instance_data(serverid):
 #    except:
 #        pass
 
-def check_existing_installation():
-    dirs = glob.glob("/etc/dirsrv/slapd-*")
-    if not dirs:
-        return []
+def get_ds_instances():
+    '''
+    Return a sorted list of all 389ds instances.
 
-    serverids = []
-    for d in dirs:
-        logging.debug('Found existing 389-ds instance %s' % d)
-        serverids.append(os.path.basename(d).split("slapd-", 1)[1])
+    If the instance name ends with '.removed' it is ignored. This
+    matches 389ds behavior.
+    '''
 
-    return serverids
+    dirsrv_instance_dir='/etc/dirsrv'
+    instance_prefix = 'slapd-'
+
+    instances = []
+
+    for basename in os.listdir(dirsrv_instance_dir):
+        pathname = os.path.join(dirsrv_instance_dir, basename)
+        # Must be a directory
+        if os.path.isdir(pathname):
+            # Must start with prefix and not end with .removed
+            if basename.startswith(instance_prefix) and not basename.endswith('.removed'):
+                # Strip off prefix
+                instance = basename[len(instance_prefix):]
+                # Must be non-empty
+                if instance:
+                    instances.append(instance)
+
+    instances.sort()
+    return instances
 
 def check_ports():
     ds_unsecure = installutils.port_available(389)
@@ -110,29 +126,9 @@ def check_ports():
 def is_ds_running(server_id=''):
     return ipaservices.knownservices.dirsrv.is_running(instance_name=server_id)
 
-def has_managed_entries(host_name, dm_password):
-    """Check to see if the Managed Entries plugin is available"""
-    ldapuri = 'ldap://%s' % ipautil.format_netloc(host_name)
-    conn = None
-    try:
-        conn = ldap2(shared_instance=False, ldap_uri=ldapuri, base_dn='cn=config')
-        conn.connect(bind_dn='cn=Directory Manager', bind_pw=dm_password)
-        (dn, attrs) = conn.get_entry('cn=Managed Entries,cn=plugins',
-                      ['*'], time_limit=2, size_limit=3000)
-        return True
-    except errors.NotFound:
-        return False
-    except errors.ExecutionError, e:
-        logging.critical("Could not connect to the Directory Server on %s" % host_name)
-        raise e
-    finally:
-        if conn.isconnected():
-            conn.disconnect()
-
-
 INF_TEMPLATE = """
 [General]
-FullMachineName=   $FQHN
+FullMachineName=   $FQDN
 SuiteSpotUserID=   $USER
 SuiteSpotGroup=    $GROUP
 ServerRoot=    $SERVER_ROOT
@@ -169,6 +165,7 @@ class DsInstance(service.Service):
         self.idmax = None
         self.subject_base = None
         self.open_ports = []
+        self.run_init_memberof = True
         if realm_name:
             self.suffix = util.realm_to_suffix(self.realm_name)
             self.__setup_sub_dict()
@@ -278,6 +275,7 @@ class DsInstance(service.Service):
         self.step("adding replication acis", self.__add_replication_acis)
         # See LDIFs for automember configuration during replica install
         self.step("setting Auto Member configuration", self.__add_replica_automember_config)
+        self.step("enabling S4U2Proxy delegation", self.__setup_s4u2proxy)
 
         self.__common_post_setup()
 
@@ -295,6 +293,7 @@ class DsInstance(service.Service):
         repl.setup_replication(self.master_fqdn,
                                r_binddn="cn=Directory Manager",
                                r_bindpw=self.dm_password)
+        self.run_init_memberof = repl.needs_memberof_fixup()
 
     def __enable(self):
         self.backup_state("enabled", self.is_enabled())
@@ -304,7 +303,7 @@ class DsInstance(service.Service):
 
     def __setup_sub_dict(self):
         server_root = find_server_root()
-        self.sub_dict = dict(FQHN=self.fqdn, SERVERID=self.serverid,
+        self.sub_dict = dict(FQDN=self.fqdn, SERVERID=self.serverid,
                              PASSWORD=self.dm_password,
                              RANDOM_PASSWORD=self.generate_random(),
                              SUFFIX=self.suffix.lower(),
@@ -317,13 +316,11 @@ class DsInstance(service.Service):
                          )
 
     def __create_ds_user(self):
-        user_exists = True
         try:
             pwd.getpwnam(DS_USER)
-            logging.debug("ds user %s exists" % DS_USER)
+            root_logger.debug("ds user %s exists" % DS_USER)
         except KeyError:
-            user_exists = False
-            logging.debug("adding ds user %s" % DS_USER)
+            root_logger.debug("adding ds user %s" % DS_USER)
             args = ["/usr/sbin/useradd", "-g", DS_GROUP,
                                          "-c", "DS System User",
                                          "-d", "/var/lib/dirsrv",
@@ -331,20 +328,17 @@ class DsInstance(service.Service):
                                          "-M", "-r", DS_USER]
             try:
                 ipautil.run(args)
-                logging.debug("done adding user")
+                root_logger.debug("done adding user")
             except ipautil.CalledProcessError, e:
-                logging.critical("failed to add user %s" % e)
-
-        self.backup_state("user_exists", user_exists)
+                root_logger.critical("failed to add user %s" % e)
 
     def __create_instance(self):
-        self.backup_state("running", is_ds_running())
         self.backup_state("serverid", self.serverid)
         self.fstore.backup_file("/etc/sysconfig/dirsrv")
 
         self.sub_dict['BASEDC'] = self.realm_name.split('.')[0].lower()
         base_txt = ipautil.template_str(BASE_TEMPLATE, self.sub_dict)
-        logging.debug(base_txt)
+        root_logger.debug(base_txt)
 
         target_fname = '/var/lib/dirsrv/boot.ldif'
         base_fd = open(target_fname, "w")
@@ -355,32 +349,32 @@ class DsInstance(service.Service):
         os.chmod(target_fname, 0440)
 
         inf_txt = ipautil.template_str(INF_TEMPLATE, self.sub_dict)
-        logging.debug("writing inf template")
+        root_logger.debug("writing inf template")
         inf_fd = ipautil.write_tmp_file(inf_txt)
         inf_txt = re.sub(r"RootDNPwd=.*\n", "", inf_txt)
-        logging.debug(inf_txt)
+        root_logger.debug(inf_txt)
         if ipautil.file_exists("/usr/sbin/setup-ds.pl"):
             args = ["/usr/sbin/setup-ds.pl", "--silent", "--logfile", "-", "-f", inf_fd.name]
-            logging.debug("calling setup-ds.pl")
+            root_logger.debug("calling setup-ds.pl")
         else:
             args = ["/usr/bin/ds_newinst.pl", inf_fd.name]
-            logging.debug("calling ds_newinst.pl")
+            root_logger.debug("calling ds_newinst.pl")
         try:
             ipautil.run(args)
-            logging.debug("completed creating ds instance")
+            root_logger.debug("completed creating ds instance")
         except ipautil.CalledProcessError, e:
-            logging.critical("failed to restart ds instance %s" % e)
+            root_logger.critical("failed to create ds instance %s" % e)
 
         # check for open port 389 from now on
         self.open_ports.append(389)
 
-        logging.debug("restarting ds instance")
+        root_logger.debug("restarting ds instance")
         try:
             self.__restart_instance()
-            logging.debug("done restarting ds instance")
+            root_logger.debug("done restarting ds instance")
         except ipautil.CalledProcessError, e:
             print "failed to restart ds instance", e
-            logging.debug("failed to restart ds instance %s" % e)
+            root_logger.debug("failed to restart ds instance %s" % e)
         inf_fd.close()
         os.remove("/var/lib/dirsrv/boot.ldif")
 
@@ -390,7 +384,9 @@ class DsInstance(service.Service):
                              "60samba.ldif",
                              "60ipaconfig.ldif",
                              "60basev2.ldif",
-                             "60ipasudo.ldif"):
+                             "60basev3.ldif",
+                             "60ipadns.ldif",
+                             "65ipasudo.ldif"):
             target_fname = schema_dirname(self.serverid) + schema_fname
             shutil.copyfile(ipautil.SHARE_DIR + schema_fname, target_fname)
             os.chmod(target_fname, 0440)    # read access for dirsrv user/group
@@ -412,14 +408,14 @@ class DsInstance(service.Service):
         try:
             super(DsInstance, self).restart(instance)
             if not is_ds_running(instance):
-                logging.critical("Failed to restart the directory server. See the installation log for details.")
+                root_logger.critical("Failed to restart the directory server. See the installation log for details.")
                 sys.exit(1)
             installutils.wait_for_open_ports('localhost', self.open_ports, 300)
         except SystemExit, e:
             raise e
         except Exception, e:
             # TODO: roll back here?
-            logging.critical("Failed to restart the directory server (%s). See the installation log for details." % e)
+            root_logger.critical("Failed to restart the directory server (%s). See the installation log for details." % e)
 
     def __restart_instance(self):
         self.restart(self.serverid)
@@ -431,10 +427,14 @@ class DsInstance(service.Service):
         self._ldap_mod("memberof-conf.ldif")
 
     def init_memberof(self):
+
+        if not self.run_init_memberof:
+            return
+
         self._ldap_mod("memberof-task.ldif", self.sub_dict)
         # Note, keep dn in sync with dn in install/share/memberof-task.ldif
         dn = "cn=IPA install %s,cn=memberof task,cn=tasks,cn=config" % self.sub_dict["TIME"]
-        logging.debug("Waiting for memberof task to complete.")
+        root_logger.debug("Waiting for memberof task to complete.")
         conn = ipaldap.IPAdmin("127.0.0.1")
         if self.dm_password:
             conn.simple_bind_s("cn=directory manager", self.dm_password)
@@ -444,7 +444,7 @@ class DsInstance(service.Service):
         conn.unbind()
 
     def apply_updates(self):
-        ld = ldapupdate.LDAPUpdate(dm_password=self.dm_password, sub_dict=self.sub_dict)
+        ld = ldapupdate.LDAPUpdate(dm_password=self.dm_password, sub_dict=self.sub_dict, plugins=True)
         files = ld.get_all_files(ldapupdate.UPDATES_DIR)
         ld.update(files)
 
@@ -455,8 +455,6 @@ class DsInstance(service.Service):
         self._ldap_mod("unique-attributes.ldif", self.sub_dict)
 
     def __config_uidgid_gen(self):
-        if not has_managed_entries(self.fqdn, self.dm_password):
-            raise errors.NotFound(reason='Missing Managed Entries Plugin')
         self._ldap_mod("dna.ldif", self.sub_dict)
 
     def __add_master_entry(self):
@@ -486,23 +484,15 @@ class DsInstance(service.Service):
         self._ldap_mod("lockout-conf.ldif")
 
     def __repoint_managed_entries(self):
-        if not has_managed_entries(self.fqdn, self.dm_password):
-            raise errors.NotFound(reason='Missing Managed Entries Plugin')
         self._ldap_mod("repoint-managed-entries.ldif", self.sub_dict)
 
     def __managed_entries(self):
-        if not has_managed_entries(self.fqdn, self.dm_password):
-            raise errors.NotFound(reason='Missing Managed Entries Plugin')
         self._ldap_mod("managed-entries.ldif", self.sub_dict)
 
     def __user_private_groups(self):
-        if not has_managed_entries(self.fqdn, self.dm_password):
-            raise errors.NotFound(reason='Missing Managed Entries Plugin')
         self._ldap_mod("user_private_groups.ldif", self.sub_dict)
 
     def __host_nis_groups(self):
-        if not has_managed_entries(self.fqdn, self.dm_password):
-            raise errors.NotFound(reason='Missing Managed Entries Plugin')
         self._ldap_mod("host_nis_groups.ldif", self.sub_dict)
 
     def __add_enrollment_module(self):
@@ -523,21 +513,21 @@ class DsInstance(service.Service):
             # We only handle one server cert
             nickname = server_certs[0][0]
             self.dercert = dsdb.get_cert_from_db(nickname, pem=False)
-            dsdb.track_server_cert(nickname, self.principal, dsdb.passwd_fname)
+            dsdb.track_server_cert(nickname, self.principal, dsdb.passwd_fname, 'restart_dirsrv %s' % self.serverid )
         else:
             nickname = "Server-Cert"
             cadb = certs.CertDB(self.realm_name, host_name=self.fqdn, subject_base=self.subject_base)
             if self.self_signed_ca:
                 dsdb.create_from_cacert(cadb.cacert_fname, passwd=None)
                 self.dercert = dsdb.create_server_cert("Server-Cert", self.fqdn, cadb)
-                dsdb.track_server_cert("Server-Cert", self.principal, dsdb.passwd_fname)
+                dsdb.track_server_cert("Server-Cert", self.principal, dsdb.passwd_fname, 'restart_dirsrv %s' % self.serverid)
                 dsdb.create_pin_file()
             else:
                 # FIXME, need to set this nickname in the RA plugin
                 cadb.export_ca_cert('ipaCert', False)
                 dsdb.create_from_cacert(cadb.cacert_fname, passwd=None)
                 self.dercert = dsdb.create_server_cert("Server-Cert", self.fqdn, cadb)
-                dsdb.track_server_cert("Server-Cert", self.principal, dsdb.passwd_fname)
+                dsdb.track_server_cert("Server-Cert", self.principal, dsdb.passwd_fname, 'restart_dirsrv %s' % self.serverid)
                 dsdb.create_pin_file()
 
         conn = ipaldap.IPAdmin("127.0.0.1")
@@ -578,6 +568,9 @@ class DsInstance(service.Service):
     def __add_replication_acis(self):
         self._ldap_mod("replica-acis.ldif", self.sub_dict)
 
+    def __setup_s4u2proxy(self):
+        self._ldap_mod("replica-s4u2proxy.ldif", self.sub_dict)
+
     def __create_indices(self):
         self._ldap_mod("indices.ldif")
 
@@ -592,7 +585,7 @@ class DsInstance(service.Service):
         self._ldap_mod("default-hbac.ldif", self.sub_dict)
 
     def change_admin_password(self, password):
-        logging.debug("Changing admin password")
+        root_logger.debug("Changing admin password")
         dirname = config_dirname(self.serverid)
         dmpwdfile = ""
         admpwdfile = ""
@@ -614,10 +607,10 @@ class DsInstance(service.Service):
                 env = { 'LDAPTLS_CACERTDIR':os.path.dirname(CACERT),
                         'LDAPTLS_CACERT':CACERT }
                 ipautil.run(args, env=env)
-                logging.debug("ldappasswd done")
+                root_logger.debug("ldappasswd done")
             except ipautil.CalledProcessError, e:
                 print "Unable to set admin password", e
-                logging.debug("Unable to set admin password %s" % e)
+                root_logger.debug("Unable to set admin password %s" % e)
 
         finally:
             if os.path.isfile(dmpwdfile):
@@ -629,17 +622,16 @@ class DsInstance(service.Service):
         if self.is_configured():
             self.print_msg("Unconfiguring directory server")
 
-        running = self.restore_state("running")
         enabled = self.restore_state("enabled")
 
-        if not running is None:
-            self.stop()
+        # Just eat this state if it exists
+        running = self.restore_state("running")
 
         try:
             self.fstore.restore_file("/etc/security/limits.conf")
             self.fstore.restore_file("/etc/sysconfig/dirsrv")
         except ValueError, error:
-            logging.debug(error)
+            root_logger.debug(error)
             pass
 
         if not enabled is None and not enabled:
@@ -654,15 +646,10 @@ class DsInstance(service.Service):
             dsdb.untrack_server_cert("Server-Cert")
             erase_ds_instance_data(serverid)
 
+        # At one time we removed this user on uninstall. That can potentially
+        # orphan files, or worse, if another useradd runs in the intermim,
+        # cause files to have a new owner.
         user_exists = self.restore_state("user_exists")
-
-        if user_exists == False:
-            pent = pwd.getpwnam(DS_USER)
-            installutils.remove_file("/var/tmp/ldap_%d" % pent.pw_uid)
-            try:
-                ipautil.run(["/usr/sbin/userdel", DS_USER])
-            except ipautil.CalledProcessError, e:
-                logging.critical("failed to delete user %s" % e)
 
         # Make sure some upgrade-related state is removed. This could cause
         # re-installation problems.
@@ -670,8 +657,13 @@ class DsInstance(service.Service):
         self.restore_state('nsslapd-security')
         self.restore_state('nsslapd-ldapiautobind')
 
-        if self.restore_state("running"):
-            self.start()
+        # If any dirsrv instances remain after we've removed ours then
+        # (re)start them.
+        for ds_instance in get_ds_instances():
+            try:
+                ipaservices.knownservices.dirsrv.restart(ds_instance)
+            except Exception, e:
+                root_logger.error('Unable to restart ds instance %s: %s', ds_instance, e)
 
     # we could probably move this function into the service.Service
     # class - it's very generic - all we need is a way to get an
@@ -687,12 +679,12 @@ class DsInstance(service.Service):
         # first make sure we have a valid cacert_fname
         try:
             if not os.access(cacert_fname, os.R_OK):
-                logging.critical("The given CA cert file named [%s] could not be read" %
-                                 cacert_fname)
+                root_logger.critical("The given CA cert file named [%s] could not be read" %
+                                             cacert_fname)
                 return False
         except OSError, e:
-            logging.critical("The given CA cert file named [%s] could not be read: %s" %
-                             (cacert_fname, str(e)))
+            root_logger.critical("The given CA cert file named [%s] could not be read: %s" %
+                                         (cacert_fname, str(e)))
             return False
         # ok - ca cert file can be read
         # shutdown the server
@@ -708,8 +700,8 @@ class DsInstance(service.Service):
         try:
             certdb.load_cacert(cacert_fname)
         except ipautil.CalledProcessError, e:
-            logging.critical("Error importing CA cert file named [%s]: %s" %
-                             (cacert_fname, str(e)))
+            root_logger.critical("Error importing CA cert file named [%s]: %s" %
+                                         (cacert_fname, str(e)))
             status = False
         # restart the directory server
         self.start()
@@ -763,7 +755,7 @@ class DsInstance(service.Service):
             fd.close()
 
         else:
-            logging.info("Custom file limits are already set! Skipping\n")
+            root_logger.info("Custom file limits are already set! Skipping\n")
             print "Custom file limits are already set! Skipping\n"
             return
 

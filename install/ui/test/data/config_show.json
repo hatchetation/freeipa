@@ -20,6 +20,8 @@
                 "ipapwdexpadvnotify": "rscwo",
                 "ipasearchrecordslimit": "rscwo",
                 "ipasearchtimelimit": "rscwo",
+                "ipaselinuxusermapdefault": "rscwo",
+                "ipaselinuxusermaporder": "rscwo",
                 "ipauserobjectclasses": "rscwo",
                 "ipausersearchfields": "rscwo",
                 "nsaccountlock": "rscwo",
@@ -28,15 +30,15 @@
             "cn": [
                 "ipaConfig"
             ],
-            "dn": "cn=ipaconfig,cn=etc,dc=ipa14,dc=ayoung,dc=boston,dc=devel,dc=redhat,dc=com",
+            "dn": "cn=ipaconfig,cn=etc,dc=example,dc=com",
             "ipacertificatesubjectbase": [
-                "O=IPA14.AYOUNG.BOSTON.DEVEL.REDHAT.COM"
+                "O=EXAMPLE.COM"
             ],
             "ipaconfigstring": [
                 "AllowNThash"
             ],
             "ipadefaultemaildomain": [
-                "ayoung.boston.devel.redhat.com"
+                "example.com"
             ],
             "ipadefaultloginshell": [
                 "/bin/sh"
@@ -71,6 +73,12 @@
             ],
             "ipasearchtimelimit": [
                 "2"
+            ],
+            "ipaselinuxusermapdefault": [
+                "guest_u:s0"
+            ],
+            "ipaselinuxusermaporder": [
+                "guest_u:s0$xguest_u:s0$user_u:s0-s0:c0.c1023$staff_u:s0-s0:c0.c1023$unconfined_u:s0-s0:c0.c1023"
             ],
             "ipauserobjectclasses": [
                 "top",

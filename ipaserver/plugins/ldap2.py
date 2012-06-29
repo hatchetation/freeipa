@@ -34,17 +34,32 @@ import shutil
 import tempfile
 import time
 import re
+import pwd
 
 import krbV
-import logging
+from ipapython.ipa_log_manager import *
 import ldap as _ldap
+from ldap.ldapobject import SimpleLDAPObject
 import ldap.filter as _ldap_filter
 import ldap.sasl as _ldap_sasl
-from ldap.controls import LDAPControl
+try:
+    from ldap.controls.simple import GetEffectiveRightsControl #pylint: disable=F0401,E0611
+except ImportError:
+    """
+    python-ldap 2.4.x introduced a new API for effective rights control, which
+    needs to be used or otherwise bind dn is not passed correctly. The following
+    class is created for backward compatibility with python-ldap 2.3.x.
+    Relevant BZ: https://bugzilla.redhat.com/show_bug.cgi?id=802675
+    """
+    from ldap.controls import LDAPControl
+    class GetEffectiveRightsControl(LDAPControl):
+        def __init__(self, criticality, authzId=None):
+            LDAPControl.__init__(self, '1.3.6.1.4.1.42.2.27.9.5.2', criticality, authzId)
 # for backward compatibility
 from ldap.functions import explode_dn
 from ipalib.dn import DN
 from ipalib import _
+from ipalib.parameters import Bool
 
 import krbV
 
@@ -53,7 +68,6 @@ from ipalib.crud import CrudBackend
 from ipalib.encoder import Encoder, encode_args, decode_retval
 from ipalib.request import context
 
-
 # Group Member types
 MEMBERS_ALL = 0
 MEMBERS_DIRECT = 1
@@ -61,6 +75,127 @@ MEMBERS_INDIRECT = 2
 
 # SASL authentication mechanism
 SASL_AUTH = _ldap_sasl.sasl({}, 'GSSAPI')
+
+# OID 1.3.6.1.4.1.1466.115.121.1.7 (Boolean) syntax encoding
+def _encode_bool(self, value):
+    def encode_bool_value(value):
+        if value is None:
+            return None
+        if value:
+            return u'TRUE'
+        return u'FALSE'
+
+    if type(value) in (tuple, list):
+        return tuple(encode_bool_value(v) for v in value)
+    else:
+        return encode_bool_value(value)
+
+# set own Bool parameter encoder
+Bool._encode = _encode_bool
+
+class IPASimpleLDAPObject(SimpleLDAPObject):
+    '''
+    This is a thin layer over SimpleLDAPObject which allows us to utilize
+    IPA specific types with the python-ldap API without the IPA caller needing
+    to perform the type translation, consider this a convenience layer for the
+    IPA programmer.
+
+    This subclass performs the following translations:
+
+    * DN objects may be passed into any ldap function expecting a dn. The DN
+      object will be converted to a string before being passed to the python-ldap
+      function. This allows us to maintain DN objects as DN objects in the rest
+      of the code (useful for DN manipulation and DN information) and not have
+      to worry about conversion to a string prior to passing it ldap.
+
+    '''
+    def __init__(self, *args, **kwds):
+        SimpleLDAPObject.__init__(self, *args, **kwds)
+
+    def add(self, dn, modlist):
+        return SimpleLDAPObject.add(self, str(dn), modlist)
+
+    def add_ext(self, dn, modlist, serverctrls=None, clientctrls=None):
+        return SimpleLDAPObject.add_ext(self, str(dn), modlist, serverctrls, clientctrls)
+
+    def add_ext_s(self, dn, modlist, serverctrls=None, clientctrls=None):
+        return SimpleLDAPObject.add_ext_s(self, str(dn), modlist, serverctrls, clientctrls)
+
+    def add_s(self, dn, modlist):
+        return SimpleLDAPObject.add_s(self, str(dn), modlist)
+
+    def compare(self, dn, attr, value):
+        return SimpleLDAPObject.compare(self, str(dn), attr, value)
+
+    def compare_ext(self, dn, attr, value, serverctrls=None, clientctrls=None):
+        return SimpleLDAPObject.compare_ext(self, str(dn), attr, value, serverctrls, clientctrls)
+
+    def compare_ext_s(self, dn, attr, value, serverctrls=None, clientctrls=None):
+        return SimpleLDAPObject.compare_ext_s(self, str(dn), attr, value, serverctrls, clientctrls)
+
+    def compare_s(self, dn, attr, value):
+        return SimpleLDAPObject.compare_s(self, str(dn), attr, value)
+
+    def delete(self, dn):
+        return SimpleLDAPObject.delete(self, str(dn))
+
+    def delete_ext(self, dn, serverctrls=None, clientctrls=None):
+        return SimpleLDAPObject.delete_ext(self, str(dn), serverctrls, clientctrls)
+
+    def delete_ext_s(self, dn, serverctrls=None, clientctrls=None):
+        return SimpleLDAPObject.delete_ext_s(self, str(dn), serverctrls, clientctrls)
+
+    def delete_s(self, dn):
+        return SimpleLDAPObject.delete_s(self, str(dn))
+
+    def modify(self, dn, modlist):
+        return SimpleLDAPObject.modify(self, str(dn), modlist)
+
+    def modify_ext(self, dn, modlist, serverctrls=None, clientctrls=None):
+        return SimpleLDAPObject.modify_ext(self, str(dn), modlist, serverctrls, clientctrls)
+
+    def modify_ext_s(self, dn, modlist, serverctrls=None, clientctrls=None):
+        return SimpleLDAPObject.modify_ext_s(self, str(dn), modlist, serverctrls, clientctrls)
+
+    def modify_s(self, dn, modlist):
+        return SimpleLDAPObject.modify_s(self, str(dn), modlist)
+
+    def modrdn(self, dn, newrdn, delold=1):
+        return SimpleLDAPObject.modrdn(self, str(dn), str(newrdn), delold)
+
+    def modrdn_s(self, dn, newrdn, delold=1):
+        return SimpleLDAPObject.modrdn_s(self, str(dn), str(newrdn), delold)
+
+    def read_subschemasubentry_s(self, subschemasubentry_dn, attrs=None):
+        return SimpleLDAPObject.read_subschemasubentry_s(self, str(subschemasubentry_dn), attrs)
+
+    def rename(self, dn, newrdn, newsuperior=None, delold=1, serverctrls=None, clientctrls=None):
+        return SimpleLDAPObject.rename(self, str(dn), str(newrdn), newsuperior, delold, serverctrls, clientctrls)
+
+    def rename_s(self, dn, newrdn, newsuperior=None, delold=1, serverctrls=None, clientctrls=None):
+        return SimpleLDAPObject.rename_s(self, str(dn), str(newrdn), newsuperior, delold, serverctrls, clientctrls)
+
+    def search(self, base, scope, filterstr='(objectClass=*)', attrlist=None, attrsonly=0):
+        return SimpleLDAPObject.search(self, str(base), scope, filterstr, attrlist, attrsonly)
+
+    def search_ext(self, base, scope, filterstr='(objectClass=*)', attrlist=None, attrsonly=0,
+                   serverctrls=None, clientctrls=None, timeout=-1, sizelimit=0):
+        return SimpleLDAPObject.search_ext(self, str(base), scope, filterstr, attrlist, attrsonly,
+                                           serverctrls, clientctrls, timeout, sizelimit)
+
+    def search_ext_s(self, base, scope, filterstr='(objectClass=*)', attrlist=None, attrsonly=0,
+                     serverctrls=None, clientctrls=None, timeout=-1, sizelimit=0):
+        return SimpleLDAPObject.search_ext_s(self, str(base), scope, filterstr, attrlist, attrsonly,
+                                             serverctrls, clientctrls, timeout, sizelimit)
+
+    def search_s(self, base, scope, filterstr='(objectClass=*)', attrlist=None, attrsonly=0):
+        return SimpleLDAPObject.search_s(self, str(base), scope, filterstr, attrlist, attrsonly)
+
+    def search_st(self, base, scope, filterstr='(objectClass=*)', attrlist=None, attrsonly=0, timeout=-1):
+        return SimpleLDAPObject.search_st(self, str(base), scope, filterstr, attrlist, attrsonly, timeout)
+
+    def search_subschemasubentry_s(self, dn=''):
+        return SimpleLDAPObject.search_subschemasubentry_s(self, str(dn))
 
 # universal LDAPError handler
 def _handle_errors(e, **kw):
@@ -88,7 +223,7 @@ def _handle_errors(e, **kw):
         raise errors.DuplicateEntry()
     except _ldap.CONSTRAINT_VIOLATION:
         # This error gets thrown by the uniqueness plugin
-        if info == 'Another entry with the same attribute value already exists':
+        if info.startswith('Another entry with the same attribute value already exists'):
             raise errors.DuplicateEntry()
         else:
             raise errors.DatabaseError(desc=desc, info=info)
@@ -118,6 +253,9 @@ def _handle_errors(e, **kw):
     except _ldap.SUCCESS:
         pass
     except _ldap.LDAPError, e:
+        if 'NOT_ALLOWED_TO_DELEGATE' in info:
+            raise errors.ACIError(info="KDC returned NOT_ALLOWED_TO_DELEGATE")
+        root_logger.info('Unhandled LDAPError: %s' % str(e))
         raise errors.DatabaseError(desc=desc, info=info)
 
 
@@ -162,7 +300,7 @@ def get_schema(url, conn=None):
                 raise StandardError('Unable to retrieve LDAP schema. Error initializing principal %s in %s: %s' % (principal.name, '/etc/httpd/conf/ipa.keytab', str(e)))
 
         if conn is None:
-            conn = _ldap.initialize(url)
+            conn = IPASimpleLDAPObject(url)
             if url.startswith('ldapi://'):
                 conn.set_option(_ldap.OPT_HOST_NAME, api.env.host)
             conn.sasl_interactive_bind_s('', SASL_AUTH)
@@ -296,7 +434,7 @@ class ldap2(CrudBackend, Encoder):
     @encode_args(2, 3, 'bind_dn', 'bind_pw')
     def create_connection(self, ccache=None, bind_dn='', bind_pw='',
             tls_cacertfile=None, tls_certfile=None, tls_keyfile=None,
-            debug_level=0):
+            debug_level=0, autobind=False):
         """
         Connect to LDAP server.
 
@@ -309,6 +447,7 @@ class ldap2(CrudBackend, Encoder):
         tls_cacertfile -- TLS CA certificate filename
         tls_certfile -- TLS certificate filename
         tls_keyfile - TLS bind key filename
+        autobind - autobind as the current user
 
         Extends backend.Connectible.create_connection.
         """
@@ -325,8 +464,17 @@ class ldap2(CrudBackend, Encoder):
 
         try:
             conn = _ldap.initialize(self.ldap_uri)
-            if self.ldap_uri.startswith('ldapi://'):
+            if self.ldap_uri.startswith('ldapi://') and ccache:
                 conn.set_option(_ldap.OPT_HOST_NAME, api.env.host)
+            minssf = conn.get_option(_ldap.OPT_X_SASL_SSF_MIN)
+            maxssf = conn.get_option(_ldap.OPT_X_SASL_SSF_MAX)
+            # Always connect with at least an SSF of 56, confidentiality
+            # This also protects us from a broken ldap.conf
+            if minssf < 56:
+                minssf = 56
+                conn.set_option(_ldap.OPT_X_SASL_SSF_MIN, minssf)
+                if maxssf < minssf:
+                    conn.set_option(_ldap.OPT_X_SASL_SSF_MAX, minssf)
             if ccache is not None:
                 os.environ['KRB5CCNAME'] = ccache
                 conn.sasl_interactive_bind_s('', SASL_AUTH)
@@ -334,10 +482,16 @@ class ldap2(CrudBackend, Encoder):
                             context=krbV.default_context()).principal().name
                 setattr(context, 'principal', principal)
             else:
-                # no kerberos ccache, use simple bind
-                conn.simple_bind_s(bind_dn, bind_pw)
+                # no kerberos ccache, use simple bind or external sasl
+                if autobind:
+                    pent = pwd.getpwuid(os.geteuid())
+                    auth_tokens = _ldap.sasl.external(pent.pw_name)
+                    conn.sasl_interactive_bind_s("", auth_tokens)
+                else:
+                    conn.simple_bind_s(bind_dn, bind_pw)
+
         except _ldap.LDAPError, e:
-            _handle_errors(e, **{})
+            _handle_errors(e)
 
         if _schema:
             object.__setattr__(self, 'schema', _schema)
@@ -425,7 +579,7 @@ class ldap2(CrudBackend, Encoder):
         try:
             self.conn.add_s(dn, list(entry_attrs.iteritems()))
         except _ldap.LDAPError, e:
-            _handle_errors(e, **{})
+            _handle_errors(e)
 
     # generating filters for find_entry
     # some examples:
@@ -446,6 +600,10 @@ class ldap2(CrudBackend, Encoder):
         """
         assert isinstance(filters, (list, tuple))
         filters = [f for f in filters if f]
+        if filters and rules == self.MATCH_NONE: # unary operator
+            return '(%s%s)' % (self.MATCH_NONE,
+                               self.combine_filters(filters, self.MATCH_ANY))
+
         if len(filters) > 1:
             flt = '(%s' % rules
         else:
@@ -474,19 +632,10 @@ class ldap2(CrudBackend, Encoder):
                                       False - forbid trailing filter wildcard when exact=False
         """
         if isinstance(value, (list, tuple)):
-            flts = []
-            if rules == self.MATCH_NONE:
-                for v in value:
-                    flts.append(
-                        self.make_filter_from_attr(attr, v, exact=exact,
+            make_filter_rules = self.MATCH_ANY if rules == self.MATCH_NONE else rules
+            flts = [ self.make_filter_from_attr(attr, v, exact=exact,
                             leading_wildcard=leading_wildcard,
-                            trailing_wildcard=trailing_wildcard)
-                    )
-                return '(!%s)' % self.combine_filters(flts)
-            for v in value:
-                flts.append(self.make_filter_from_attr(attr, v, rules, exact,
-                            leading_wildcard=leading_wildcard,
-                            trailing_wildcard=trailing_wildcard))
+                            trailing_wildcard=trailing_wildcard) for v in value ]
             return self.combine_filters(flts, rules)
         elif value is not None:
             value = _ldap_filter.escape_filter_chars(value)
@@ -522,11 +671,12 @@ class ldap2(CrudBackend, Encoder):
         ldap2.MATCH_ALL - match entries that match all attributes
         ldap2.MATCH_ANY - match entries that match any of attribute
         """
+        make_filter_rules = self.MATCH_ANY if rules == self.MATCH_NONE else rules
         flts = []
         if attrs_list is None:
             for (k, v) in entry_attrs.iteritems():
                 flts.append(
-                    self.make_filter_from_attr(k, v, rules, exact,
+                    self.make_filter_from_attr(k, v, make_filter_rules, exact,
                         leading_wildcard, trailing_wildcard)
                 )
         else:
@@ -534,7 +684,7 @@ class ldap2(CrudBackend, Encoder):
                 value = entry_attrs.get(a, None)
                 if value is not None:
                     flts.append(
-                        self.make_filter_from_attr(a, value, rules, exact,
+                        self.make_filter_from_attr(a, value, make_filter_rules, exact,
                             leading_wildcard, trailing_wildcard)
                     )
         return self.combine_filters(flts, rules)
@@ -599,9 +749,9 @@ class ldap2(CrudBackend, Encoder):
                 _ldap.SIZELIMIT_EXCEEDED), e:
             truncated = True
         except _ldap.LDAPError, e:
-            _handle_errors(e, **{})
+            _handle_errors(e)
 
-        if not res:
+        if not res and not truncated:
             raise errors.NotFound(reason='no such entry')
 
         if attrs_list and ('memberindirect' in attrs_list or '*' in attrs_list):
@@ -648,7 +798,10 @@ class ldap2(CrudBackend, Encoder):
         if len(entries) > 1:
             raise errors.SingleMatchExpected(found=len(entries))
         else:
-            return entries[0]
+            if truncated:
+                raise errors.LimitsExceeded()
+            else:
+                return entries[0]
 
     def get_entry(self, dn, attrs_list=None, time_limit=None,
                   size_limit=None, normalize=True):
@@ -658,10 +811,14 @@ class ldap2(CrudBackend, Encoder):
         Keyword arguments:
         attrs_list - list of attributes to return, all if None (default None)
         """
-        return self.find_entries(
+        (entry, truncated) = self.find_entries(
             None, attrs_list, dn, self.SCOPE_BASE, time_limit=time_limit,
             size_limit=size_limit, normalize=normalize
-        )[0][0]
+        )
+
+        if truncated:
+            raise errors.LimitsExceeded()
+        return entry[0]
 
     config_defaults = {'ipasearchtimelimit': [2], 'ipasearchrecordslimit': [0]}
     def get_ipa_config(self, attrs_list=None):
@@ -674,10 +831,13 @@ class ldap2(CrudBackend, Encoder):
             # Not in our context yet
             pass
         try:
-            (cdn, config_entry) = self.find_entries(
+            (entry, truncated) = self.find_entries(
                 None, attrs_list, base_dn=cdn, scope=self.SCOPE_BASE,
                 time_limit=2, size_limit=10
-            )[0][0]
+            )
+            if truncated:
+                raise errors.LimitsExceeded()
+            (cdn, config_entry) = entry[0]
         except errors.NotFound:
             config_entry = {}
         for a in self.config_defaults:
@@ -733,7 +893,7 @@ class ldap2(CrudBackend, Encoder):
         """
         principal = getattr(context, 'principal')
         (binddn, attrs) = self.find_entry_by_attr("krbprincipalname", principal, "krbPrincipalAux")
-        sctrl = [LDAPControl("1.3.6.1.4.1.42.2.27.9.5.2", True, "dn: " + binddn.encode('UTF-8'))]
+        sctrl = [GetEffectiveRightsControl(True, "dn: " + binddn.encode('UTF-8'))]
         self.conn.set_option(_ldap.OPT_SERVER_CONTROLS, sctrl)
         (dn, attrs) = self.get_entry(dn, entry_attrs)
         # remove the control so subsequent operations don't include GER
@@ -818,7 +978,7 @@ class ldap2(CrudBackend, Encoder):
             self.conn.rename_s(dn, new_rdn, delold=int(del_old))
             time.sleep(.3) # Give memberOf plugin a chance to work
         except _ldap.LDAPError, e:
-            _handle_errors(e, **{})
+            _handle_errors(e)
 
     def _generate_modlist(self, dn, entry_attrs, normalize):
         # get original entry
@@ -886,7 +1046,7 @@ class ldap2(CrudBackend, Encoder):
         try:
             self.conn.modify_s(dn, modlist)
         except _ldap.LDAPError, e:
-            _handle_errors(e, **{})
+            _handle_errors(e)
 
     @encode_args(1)
     def delete_entry(self, dn, normalize=True):
@@ -896,7 +1056,7 @@ class ldap2(CrudBackend, Encoder):
         try:
             self.conn.delete_s(dn)
         except _ldap.LDAPError, e:
-            _handle_errors(e, **{})
+            _handle_errors(e)
 
     @encode_args(1, 2, 3)
     def modify_password(self, dn, new_pass, old_pass=''):
@@ -916,7 +1076,7 @@ class ldap2(CrudBackend, Encoder):
         try:
             self.conn.passwd_s(dn, old_pass, new_pass)
         except _ldap.LDAPError, e:
-            _handle_errors(e, **{})
+            _handle_errors(e)
 
     def add_entry_to_group(self, dn, group_dn, member_attr='member', allow_same=False):
         """
@@ -953,12 +1113,12 @@ class ldap2(CrudBackend, Encoder):
         (group_dn, group_entry_attrs) = self.get_entry(group_dn, [member_attr])
 
         # remove dn from group entry's `member_attr` attribute
-        members = group_entry_attrs.get(member_attr, [])
+        members = [DN(m) for m in group_entry_attrs.get(member_attr, [])]
         try:
-            members.remove(dn.lower())
+            members.remove(DN(dn))
         except ValueError:
             raise errors.NotGroupMember()
-        group_entry_attrs[member_attr] = members
+        group_entry_attrs[member_attr] = [str(m) for m in members]
 
         # update group entry
         self.update_entry(group_dn, group_entry_attrs)
@@ -1002,6 +1162,8 @@ class ldap2(CrudBackend, Encoder):
                         attr_list, member, time_limit=time_limit,
                         size_limit=size_limit, scope=_ldap.SCOPE_BASE,
                         normalize=normalize)
+                    if truncated:
+                        raise errors.LimitsExceeded()
                     results.append(list(result[0]))
                     for m in result[0][1].get('member', []):
                         # This member may contain other members, add it to our
@@ -1081,8 +1243,7 @@ class ldap2(CrudBackend, Encoder):
             try:
                 indirect.remove(r[0].lower())
             except ValueError, e:
-                logging.info('Failed to remove'
-                    ' indirect entry %s from %s' % r[0], entry_dn)
+                root_logger.info('Failed to remove indirect entry %s from %s' % r[0], entry_dn)
                 raise e
 
         return (direct, indirect)
@@ -1132,7 +1293,7 @@ class ldap2(CrudBackend, Encoder):
         try:
             self.conn.modify_s(dn, mod)
         except _ldap.LDAPError, e:
-            _handle_errors(e, **{})
+            _handle_errors(e)
 
     # CrudBackend methods
 

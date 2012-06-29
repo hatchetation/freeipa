@@ -21,21 +21,28 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-/* REQUIRES: ipa.js, details.js, search.js, add.js, entity.js */
+/* REQUIRES: ipa.js, details.js, search.js, add.js, facet.js, entity.js */
 
-/**pwpolicy*/
-IPA.entity_factories.pwpolicy = function() {
-    return IPA.entity_builder().
-        entity('pwpolicy').
-        search_facet({
-            columns:['cn']}).
+IPA.pwpolicy = {};
+
+IPA.pwpolicy.entity = function(spec) {
+
+    var that = IPA.entity(spec);
+
+    that.init = function() {
+        that.entity_init();
+
+        that.builder.search_facet({
+            pagination: false,
+            columns:['cn','cospriority']
+        }).
         details_facet({
             sections:[
                 {
                     name : 'identity',
                     fields:[
                         {
-                            factory: IPA.entity_link_widget,
+                            type: 'link',
                             name: 'cn',
                             other_entity: 'group'
                         },
@@ -52,31 +59,49 @@ IPA.entity_factories.pwpolicy = function() {
                 }]}).
         standard_association_facets().
         adder_dialog({
-            fields:[
+            fields: [
                 {
-                    factory: IPA.entity_select_widget,
+                    type: 'entity_select',
                     name: 'cn',
                     other_entity: 'group',
-                    other_field: 'cn'
+                    other_field: 'cn',
+                    required: true
                 },
-                'cospriority'],
-            height: 250
-        }).
-        build();
+                'cospriority'
+            ],
+            height: 300
+        });
+    };
+
+    return that;
 };
 
-/**
-   krbtpolicy
-   Does not have search
-*/
-IPA.entity_factories.krbtpolicy =  function() {
-    return IPA.entity_builder().
-        entity('krbtpolicy').
-        details_facet({
+IPA.krbtpolicy = {};
+
+IPA.krbtpolicy.entity = function(spec) {
+
+    var that = IPA.entity(spec);
+
+    that.init = function() {
+        that.entity_init();
+
+        that.builder.details_facet({
             title: IPA.metadata.objects.krbtpolicy.label,
-            sections:[{
-                name: 'identity',
-                fields:[ 'krbmaxrenewableage','krbmaxticketlife' ]
-            }]}).
-        build();
+            sections: [
+                {
+                    name: 'identity',
+                    fields: [
+                        'krbmaxrenewableage',
+                        'krbmaxticketlife'
+                    ]
+                }
+            ],
+            needs_update: true
+        });
+    };
+
+    return that;
 };
+
+IPA.register('pwpolicy', IPA.pwpolicy.entity);
+IPA.register('krbtpolicy', IPA.krbtpolicy.entity);

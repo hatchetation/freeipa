@@ -26,16 +26,32 @@ Also see the `ipalib.rpc` module.
 from cgi import parse_qs
 from xml.sax.saxutils import escape
 from xmlrpclib import Fault
+from ipalib import plugable
 from ipalib.backend import Executioner
-from ipalib.errors import PublicError, InternalError, CommandError, JSONError, ConversionError, CCacheError, RefererError
+from ipalib.errors import PublicError, InternalError, CommandError, JSONError, ConversionError, CCacheError, RefererError, InvalidSessionPassword
 from ipalib.request import context, Connection, destroy_context
 from ipalib.rpc import xml_dumps, xml_loads
-from ipalib.util import make_repr
-from ipalib.compat import json
+from ipalib.util import make_repr, parse_time_duration
+from ipalib.dn import DN
+from ipaserver.plugins.ldap2 import ldap2
+from ipapython.compat import json
+from ipalib.session import session_mgr, AuthManager, get_ipa_ccache_name, load_ccache_data, bind_ipa_ccache, release_ipa_ccache, fmt_time, default_max_session_duration
+from ipalib.backend import Backend
+from ipalib.krb_utils import krb5_parse_ccache, KRB5_CCache, krb_ticket_expiration_threshold, krb5_format_principal_name
+from ipapython import ipautil
 from wsgiref.util import shift_path_info
+from ipapython.version import VERSION
 import base64
 import os
 import string
+import datetime
+from decimal import Decimal
+import urlparse
+import time
+
+HTTP_STATUS_SUCCESS = '200 Success'
+HTTP_STATUS_SERVER_ERROR = '500 Internal Server Error'
+
 _not_found_template = """<html>
 <head>
 <title>404 Not Found</title>
@@ -48,18 +64,95 @@ The requested URL <strong>%(url)s</strong> was not found on this server.
 </body>
 </html>"""
 
+_bad_request_template = """<html>
+<head>
+<title>400 Bad Request</title>
+</head>
+<body>
+<h1>Bad Request</h1>
+<p>
+<strong>%(message)s</strong>
+</p>
+</body>
+</html>"""
 
-def not_found(environ, start_response):
-    """
-    Return a 404 Not Found error.
-    """
-    status = '404 Not Found'
-    response_headers = [('Content-Type', 'text/html')]
-    start_response(status, response_headers)
-    output = _not_found_template % dict(
-        url=escape(environ['SCRIPT_NAME'] + environ['PATH_INFO'])
-    )
-    return [output]
+_internal_error_template = """<html>
+<head>
+<title>500 Internal Server Error</title>
+</head>
+<body>
+<h1>Internal Server Error</h1>
+<p>
+<strong>%(message)s</strong>
+</p>
+</body>
+</html>"""
+
+_unauthorized_template = """<html>
+<head>
+<title>401 Unauthorized</title>
+</head>
+<body>
+<h1>Invalid Authentication</h1>
+<p>
+<strong>%(message)s</strong>
+</p>
+</body>
+</html>"""
+
+class HTTP_Status(plugable.Plugin):
+    def not_found(self, environ, start_response, url, message):
+        """
+        Return a 404 Not Found error.
+        """
+        status = '404 Not Found'
+        response_headers = [('Content-Type', 'text/html; charset=utf-8')]
+
+        self.info('%s: URL="%s", %s', status, url, message)
+        start_response(status, response_headers)
+        output = _not_found_template % dict(url=escape(url))
+        return [output]
+
+    def bad_request(self, environ, start_response, message):
+        """
+        Return a 400 Bad Request error.
+        """
+        status = '400 Bad Request'
+        response_headers = [('Content-Type', 'text/html; charset=utf-8')]
+
+        self.info('%s: %s', status, message)
+
+        start_response(status, response_headers)
+        output = _bad_request_template % dict(message=escape(message))
+        return [output]
+
+    def internal_error(self, environ, start_response, message):
+        """
+        Return a 500 Internal Server Error.
+        """
+        status = HTTP_STATUS_SERVER_ERROR
+        response_headers = [('Content-Type', 'text/html; charset=utf-8')]
+
+        self.error('%s: %s', status, message)
+
+        start_response(status, response_headers)
+        output = _internal_error_template % dict(message=escape(message))
+        return [output]
+
+    def unauthorized(self, environ, start_response, message, reason):
+        """
+        Return a 401 Unauthorized error.
+        """
+        status = '401 Unauthorized'
+        response_headers = [('Content-Type', 'text/html; charset=utf-8')]
+        if reason:
+            response_headers.append(('X-IPA-Rejection-Reason', reason))
+
+        self.info('%s: %s', status, message)
+
+        start_response(status, response_headers)
+        output = _unauthorized_template % dict(message=escape(message))
+        return [output]
 
 def read_input(environ):
     """
@@ -112,18 +205,17 @@ def extract_query(environ):
     return query
 
 
-class session(Executioner):
+class wsgi_dispatch(Executioner, HTTP_Status):
     """
     WSGI routing middleware and entry point into IPA server.
 
-    The `session` plugin is the entry point into the IPA server.  It will create
-    an LDAP connection (from a session cookie or the KRB5CCNAME header) and then
-    dispatch the request to the appropriate application.  In WSGI parlance,
-    `session` is *middleware*.
+    The `wsgi_dispatch` plugin is the entry point into the IPA server.
+    It dispatchs the request to the appropriate wsgi application
+    handler which is specific to the authentication and RPC mechanism.
     """
 
     def __init__(self):
-        super(session, self).__init__()
+        super(wsgi_dispatch, self).__init__()
         self.__apps = {}
 
     def __iter__(self):
@@ -137,22 +229,24 @@ class session(Executioner):
         return key in self.__apps
 
     def __call__(self, environ, start_response):
+        self.debug('WSGI wsgi_dispatch.__call__:')
         try:
-            self.create_context(ccache=environ.get('KRB5CCNAME'))
             return self.route(environ, start_response)
         finally:
             destroy_context()
 
-    def finalize(self):
+    def _on_finalize(self):
         self.url = self.env['mount_ipa']
-        super(session, self).finalize()
+        super(wsgi_dispatch, self)._on_finalize()
 
     def route(self, environ, start_response):
-        key = shift_path_info(environ)
+        key = environ.get('PATH_INFO')
         if key in self.__apps:
             app = self.__apps[key]
             return app(environ, start_response)
-        return not_found(environ, start_response)
+        url = environ['SCRIPT_NAME'] + environ['PATH_INFO']
+        return self.not_found(environ, start_response, url,
+                              'URL fragment "%s" does not have a handler' % (key))
 
     def mount(self, app, key):
         """
@@ -183,12 +277,12 @@ class WSGIExecutioner(Executioner):
 
     def set_api(self, api):
         super(WSGIExecutioner, self).set_api(api)
-        if 'session' in self.api.Backend:
-            self.api.Backend.session.mount(self, self.key)
+        if 'wsgi_dispatch' in self.api.Backend:
+            self.api.Backend.wsgi_dispatch.mount(self, self.key)
 
-    def finalize(self):
+    def _on_finalize(self):
         self.url = self.env.mount_ipa + self.key
-        super(WSGIExecutioner, self).finalize()
+        super(WSGIExecutioner, self)._on_finalize()
 
     def wsgi_execute(self, environ):
         result = None
@@ -198,9 +292,7 @@ class WSGIExecutioner(Executioner):
         name = None
         args = ()
         options = {}
-        if not 'KRB5CCNAME' in environ:
-            return self.marshal(result, CCacheError(), _id)
-        self.debug('Request environment: %s' % environ)
+
         if not 'HTTP_REFERER' in environ:
             return self.marshal(result, RefererError(referer='missing'), _id)
         if not environ['HTTP_REFERER'].startswith('https://%s/ipa' % self.api.env.host) and not self.env.in_tree:
@@ -235,7 +327,7 @@ class WSGIExecutioner(Executioner):
             error = InternalError()
         finally:
             os.environ['LANG'] = lang
-        if name:
+        if name and name in self.Command:
             try:
                 params = self.Command[name].args_options_2_params(*args, **options)
             except Exception, e:
@@ -244,10 +336,11 @@ class WSGIExecutioner(Executioner):
                 )
                 # get at least some context of what is going on
                 params = options
+            principal = getattr(context, 'principal', 'UNKNOWN')
             if error:
-                self.info('%s: %s(%s): %s', context.principal, name, ', '.join(self.Command[name]._repr_iter(**params)), e.__class__.__name__)
+                self.info('%s: %s(%s): %s', principal, name, ', '.join(self.Command[name]._repr_iter(**params)), e.__class__.__name__)
             else:
-                self.info('%s: %s(%s): SUCCESS', context.principal, name, ', '.join(self.Command[name]._repr_iter(**params)))
+                self.info('%s: %s(%s): SUCCESS', principal, name, ', '.join(self.Command[name]._repr_iter(**params)))
         else:
             self.info('%s: %s', context.principal, e.__class__.__name__)
         return self.marshal(result, error, _id)
@@ -261,15 +354,25 @@ class WSGIExecutioner(Executioner):
         """
         WSGI application for execution.
         """
+
+        self.debug('WSGI WSGIExecutioner.__call__:')
         try:
-            status = '200 OK'
+            status = HTTP_STATUS_SUCCESS
             response = self.wsgi_execute(environ)
             headers = [('Content-Type', self.content_type + '; charset=utf-8')]
         except StandardError, e:
-            self.exception('%s.__call__():', self.name)
-            status = '500 Internal Server Error'
+            self.exception('WSGI %s.__call__():', self.name)
+            status = HTTP_STATUS_SERVER_ERROR
             response = status
-            headers = [('Content-Type', 'text/plain')]
+            headers = [('Content-Type', 'text/plain; charset=utf-8')]
+
+        session_data = getattr(context, 'session_data', None)
+        if session_data is not None:
+            # Send session cookie back and store session data
+            # FIXME: the URL path should be retreived from somewhere (but where?), not hardcoded
+            session_cookie = session_mgr.generate_cookie('/ipa', session_data['session_id'])
+            headers.append(('Set-Cookie', session_cookie))
+
         start_response(status, headers)
         return [response]
 
@@ -280,7 +383,7 @@ class WSGIExecutioner(Executioner):
         raise NotImplementedError('%s.marshal()' % self.fullname)
 
 
-class xmlserver(WSGIExecutioner):
+class xmlserver(WSGIExecutioner, HTTP_Status):
     """
     Execution backend plugin for XML-RPC server.
 
@@ -288,15 +391,38 @@ class xmlserver(WSGIExecutioner):
     """
 
     content_type = 'text/xml'
-    key = 'xml'
+    key = '/xml'
 
-    def finalize(self):
+    def _on_finalize(self):
         self.__system = {
             'system.listMethods': self.listMethods,
             'system.methodSignature': self.methodSignature,
             'system.methodHelp': self.methodHelp,
         }
-        super(xmlserver, self).finalize()
+        super(xmlserver, self)._on_finalize()
+
+    def __call__(self, environ, start_response):
+        '''
+        '''
+
+        self.debug('WSGI xmlserver.__call__:')
+        user_ccache=environ.get('KRB5CCNAME')
+        if user_ccache is None:
+            self.internal_error(environ, start_response,
+                                'xmlserver.__call__: KRB5CCNAME not defined in HTTP request environment')
+            return self.marshal(None, CCacheError())
+        try:
+            self.create_context(ccache=user_ccache)
+            response = super(xmlserver, self).__call__(environ, start_response)
+        except PublicError, e:
+            status = HTTP_STATUS_SUCCESS
+            response = status
+            headers = [('Content-Type', 'text/plain; charset=utf-8')]
+            start_response(status, headers)
+            return self.marshal(None, e)
+        finally:
+            destroy_context()
+        return response
 
     def listMethods(self, *params):
         return tuple(name.decode('UTF-8') for name in self.Command)
@@ -306,23 +432,6 @@ class xmlserver(WSGIExecutioner):
 
     def methodHelp(self, *params):
         return u'methodHelp not implemented'
-
-    def marshaled_dispatch(self, data, ccache, client_ip):
-        """
-        Execute the XML-RPC request contained in ``data``.
-        """
-        try:
-            self.create_context(ccache=ccache, client_ip=client_ip)
-            (params, name) = xml_loads(data)
-            if name in self.__system:
-                response = (self.__system[name](*params),)
-            else:
-                (args, options) = params_2_args_options(params)
-                response = (self.execute(name, *args, **options),)
-        except PublicError, e:
-            self.debug('response: %s: %s', e.__class__.__name__, str(e))
-            response = Fault(e.errno, e.strerror)
-        return xml_dumps(response, methodresponse=True)
 
     def unmarshal(self, data):
         (params, name) = xml_loads(data)
@@ -384,6 +493,8 @@ def json_encode_binary(val):
         return new_list
     elif isinstance(val, str):
         return {'__base64__' : base64.b64encode(val)}
+    elif isinstance(val, Decimal):
+        return {'__base64__' : base64.b64encode(str(val))}
     else:
         return val
 
@@ -445,7 +556,7 @@ def json_decode_binary(val):
         else:
             return val
 
-class jsonserver(WSGIExecutioner):
+class jsonserver(WSGIExecutioner, HTTP_Status):
     """
     JSON RPC server.
 
@@ -455,7 +566,15 @@ class jsonserver(WSGIExecutioner):
     """
 
     content_type = 'application/json'
-    key = 'json'
+
+    def __call__(self, environ, start_response):
+        '''
+        '''
+
+        self.debug('WSGI jsonserver.__call__:')
+
+        response = super(jsonserver, self).__call__(environ, start_response)
+        return response
 
     def marshal(self, result, error, _id=None):
         if error:
@@ -465,10 +584,13 @@ class jsonserver(WSGIExecutioner):
                 message=error.strerror,
                 name=error.__class__.__name__,
             )
+        principal = getattr(context, 'principal', 'UNKNOWN')
         response = dict(
             result=result,
             error=error,
             id=_id,
+            principal=unicode(principal),
+            version=unicode(VERSION),
         )
         response = json_encode_binary(response)
         return json.dumps(response, sort_keys=True, indent=4)
@@ -506,3 +628,367 @@ class jsonserver(WSGIExecutioner):
             )
         options = dict((str(k), v) for (k, v) in options.iteritems())
         return (method, args, options, _id)
+
+class AuthManagerKerb(AuthManager):
+    '''
+    Instances of the AuthManger class are used to handle
+    authentication events delivered by the SessionManager. This class
+    specifcally handles the management of Kerbeos credentials which
+    may be stored in the session.
+    '''
+
+    def __init__(self, name):
+        super(AuthManagerKerb, self).__init__(name)
+
+    def logout(self, session_data):
+        '''
+        The current user has requested to be logged out. To accomplish
+        this we remove the user's kerberos credentials from their
+        session. This does not destroy the session, it just prevents
+        it from being used for fast authentication. Because the
+        credentials are no longer in the session cache any future
+        attempt will require the acquisition of credentials using one
+        of the login mechanisms.
+        '''
+
+        if session_data.has_key('ccache_data'):
+            self.debug('AuthManager.logout.%s: deleting ccache_data', self.name)
+            del session_data['ccache_data']
+        else:
+            self.error('AuthManager.logout.%s: session_data does not contain ccache_data', self.name)
+
+
+class KerberosSession(object):
+    '''
+    Functionally shared by all RPC handlers using both sessions and
+    Kerberos.  This class must be implemented as a mixin class rather
+    than the more obvious technique of subclassing because the classes
+    needing this do not share a common base class.
+    '''
+
+    def kerb_session_on_finalize(self):
+        '''
+        Initialize values from the Env configuration.
+
+        Why do it this way and not simply reference
+        api.env.session_auth_duration? Because that config item cannot
+        be used directly, it must be parsed and converted to an
+        integer. It would be inefficient to reparse it on every
+        request. So we parse it once and store the result in the class
+        instance.
+        '''
+        # Set the session expiration time
+        try:
+            seconds = parse_time_duration(self.api.env.session_auth_duration)
+            self.session_auth_duration = int(seconds)
+            self.debug("session_auth_duration: %s", datetime.timedelta(seconds=self.session_auth_duration))
+        except Exception, e:
+            self.session_auth_duration = default_max_session_duration
+            self.error('unable to parse session_auth_duration, defaulting to %d: %s',
+                       self.session_auth_duration, e)
+
+    def update_session_expiration(self, session_data, krb_endtime):
+        '''
+        Each time a session is created or accessed we need to update
+        it's expiration time. The expiration time is set inside the
+        session_data.
+
+        :parameters:
+          session_data
+            The session data whose expiration is being updatded.
+          krb_endtime
+            The UNIX timestamp for when the Kerberos credentials expire.
+        :returns:
+          None
+        '''
+
+        # Account for clock skew and/or give us some time leeway
+        krb_expiration = krb_endtime - krb_ticket_expiration_threshold
+
+        # Set the session expiration time
+        session_mgr.set_session_expiration_time(session_data,
+                                                duration=self.session_auth_duration,
+                                                max_age=krb_expiration,
+                                                duration_type=self.api.env.session_duration_type)
+
+
+    def finalize_kerberos_acquisition(self, who, ccache_name, environ, start_response, headers=None):
+        if headers is None:
+            headers = []
+
+        # Retrieve the session data (or newly create)
+        session_data = session_mgr.load_session_data(environ.get('HTTP_COOKIE'))
+        session_id = session_data['session_id']
+
+        self.debug('finalize_kerberos_acquisition: %s ccache_name="%s" session_id="%s"',
+                   who, ccache_name, session_id)
+
+        # Copy the ccache file contents into the session data
+        session_data['ccache_data'] = load_ccache_data(ccache_name)
+
+        # Set when the session will expire
+        cc = KRB5_CCache(ccache_name)
+        endtime = cc.endtime(self.api.env.host, self.api.env.realm)
+        self.update_session_expiration(session_data, endtime)
+
+        # Store the session data now that it's been updated with the ccache
+        session_mgr.store_session_data(session_data)
+
+        # The request is finished with the ccache, destroy it.
+        release_ipa_ccache(ccache_name)
+
+        # Return success and set session cookie
+        session_cookie = session_mgr.generate_cookie('/ipa', session_id)
+        headers.append(('Set-Cookie', session_cookie))
+
+        start_response(HTTP_STATUS_SUCCESS, headers)
+        return ['']
+
+
+class jsonserver_session(jsonserver, KerberosSession):
+    """
+    JSON RPC server protected with session auth.
+    """
+
+    key = '/session/json'
+
+    def __init__(self):
+        super(jsonserver_session, self).__init__()
+        auth_mgr = AuthManagerKerb(self.__class__.__name__)
+        session_mgr.auth_mgr.register(auth_mgr.name, auth_mgr)
+
+    def _on_finalize(self):
+        super(jsonserver_session, self)._on_finalize()
+        self.kerb_session_on_finalize()
+
+    def need_login(self, start_response):
+        status = '401 Unauthorized'
+        headers = []
+        response = ''
+
+        self.debug('jsonserver_session: %s need login', status)
+
+        start_response(status, headers)
+        return [response]
+
+    def __call__(self, environ, start_response):
+        '''
+        '''
+
+        self.debug('WSGI jsonserver_session.__call__:')
+
+        # Load the session data
+        session_data = session_mgr.load_session_data(environ.get('HTTP_COOKIE'))
+        session_id = session_data['session_id']
+
+        self.debug('jsonserver_session.__call__: session_id=%s start_timestamp=%s access_timestamp=%s expiration_timestamp=%s',
+                   session_id,
+                   fmt_time(session_data['session_start_timestamp']),
+                   fmt_time(session_data['session_access_timestamp']),
+                   fmt_time(session_data['session_expiration_timestamp']))
+
+        ccache_data = session_data.get('ccache_data')
+
+        # Redirect to login if no Kerberos credentials
+        if ccache_data is None:
+            self.debug('no ccache, need login')
+            return self.need_login(start_response)
+
+        ipa_ccache_name = bind_ipa_ccache(ccache_data)
+
+        # Redirect to login if Kerberos credentials are expired
+        cc = KRB5_CCache(ipa_ccache_name)
+        if not cc.valid(self.api.env.host, self.api.env.realm):
+            self.debug('ccache expired, deleting session, need login')
+            # The request is finished with the ccache, destroy it.
+            release_ipa_ccache(ipa_ccache_name)
+            return self.need_login(start_response)
+
+        # Update the session expiration based on the Kerberos expiration
+        endtime = cc.endtime(self.api.env.host, self.api.env.realm)
+        self.update_session_expiration(session_data, endtime)
+
+        # Store the session data in the per-thread context
+        setattr(context, 'session_data', session_data)
+
+        self.create_context(ccache=ipa_ccache_name)
+
+        try:
+            response = super(jsonserver_session, self).__call__(environ, start_response)
+        finally:
+            # Kerberos may have updated the ccache data during the
+            # execution of the command therefore we need refresh our
+            # copy of it in the session data so the next command sees
+            # the same state of the ccache.
+            #
+            # However we must be careful not to restore the ccache
+            # data in the session data if it was explicitly deleted
+            # during the execution of the command. For example the
+            # logout command removes the ccache data from the session
+            # data to invalidate the session credentials.
+
+            if session_data.has_key('ccache_data'):
+                session_data['ccache_data'] = load_ccache_data(ipa_ccache_name)
+
+            # The request is finished with the ccache, destroy it.
+            release_ipa_ccache(ipa_ccache_name)
+            # Store the session data.
+            session_mgr.store_session_data(session_data)
+            destroy_context()
+
+        return response
+
+class jsonserver_kerb(jsonserver):
+    """
+    JSON RPC server protected with kerberos auth.
+    """
+
+    key = '/json'
+
+    def __call__(self, environ, start_response):
+        '''
+        '''
+
+        self.debug('WSGI jsonserver_kerb.__call__:')
+
+        user_ccache=environ.get('KRB5CCNAME')
+        if user_ccache is None:
+            self.internal_error(environ, start_response,
+                                'jsonserver_kerb.__call__: KRB5CCNAME not defined in HTTP request environment')
+            return self.marshal(None, CCacheError())
+        self.create_context(ccache=user_ccache)
+
+        try:
+            response = super(jsonserver_kerb, self).__call__(environ, start_response)
+        finally:
+            destroy_context()
+
+        return response
+
+
+class login_kerberos(Backend, KerberosSession, HTTP_Status):
+    key = '/session/login_kerberos'
+
+    def __init__(self):
+        super(login_kerberos, self).__init__()
+
+    def _on_finalize(self):
+        super(login_kerberos, self)._on_finalize()
+        self.api.Backend.wsgi_dispatch.mount(self, self.key)
+        self.kerb_session_on_finalize()
+
+    def __call__(self, environ, start_response):
+        self.debug('WSGI login_kerberos.__call__:')
+
+        # Get the ccache created by mod_auth_kerb
+        user_ccache_name=environ.get('KRB5CCNAME')
+        if user_ccache_name is None:
+            return self.internal_error(environ, start_response,
+                                       'login_kerberos: KRB5CCNAME not defined in HTTP request environment')
+
+        return self.finalize_kerberos_acquisition('login_kerberos', user_ccache_name, environ, start_response)
+
+class login_password(Backend, KerberosSession, HTTP_Status):
+
+    content_type = 'text/plain'
+    key = '/session/login_password'
+
+    def __init__(self):
+        super(login_password, self).__init__()
+
+    def _on_finalize(self):
+        super(login_password, self)._on_finalize()
+        self.api.Backend.wsgi_dispatch.mount(self, self.key)
+        self.kerb_session_on_finalize()
+
+    def __call__(self, environ, start_response):
+        self.debug('WSGI login_password.__call__:')
+
+        # Get the user and password parameters from the request
+        content_type = environ.get('CONTENT_TYPE', '').lower()
+        if not content_type.startswith('application/x-www-form-urlencoded'):
+            return self.bad_request(environ, start_response, "Content-Type must be application/x-www-form-urlencoded")
+
+        method = environ.get('REQUEST_METHOD', '').upper()
+        if method == 'POST':
+            query_string = read_input(environ)
+        else:
+            return self.bad_request(environ, start_response, "HTTP request method must be POST")
+
+        try:
+            query_dict = urlparse.parse_qs(query_string)
+        except Exception, e:
+            return self.bad_request(environ, start_response, "cannot parse query data")
+
+        user = query_dict.get('user', None)
+        if user is not None:
+            if len(user) == 1:
+                user = user[0]
+            else:
+                return self.bad_request(environ, start_response, "more than one user parameter")
+        else:
+            return self.bad_request(environ, start_response, "no user specified")
+
+        password = query_dict.get('password', None)
+        if password is not None:
+            if len(password) == 1:
+                password = password[0]
+            else:
+                return self.bad_request(environ, start_response, "more than one password parameter")
+        else:
+            return self.bad_request(environ, start_response, "no password specified")
+
+        # Get the ccache we'll use and attempt to get credentials in it with user,password
+        ipa_ccache_name = get_ipa_ccache_name()
+        reason = 'invalid-password'
+        try:
+            self.kinit(user, self.api.env.realm, password, ipa_ccache_name)
+        except InvalidSessionPassword, e:
+            # Ok, now why is this bad. Is the password simply bad or is the
+            # password expired?
+            try:
+                dn = str(DN(('uid', user),
+                            self.api.env.container_user,
+                            self.api.env.basedn))
+                conn = ldap2(shared_instance=False,
+                             ldap_uri=self.api.env.ldap_uri)
+                conn.connect(bind_dn=dn, bind_pw=password)
+
+                # password is ok, must be expired, lets double-check
+                (userdn, entry_attrs) = conn.get_entry(dn,
+                    ['krbpasswordexpiration'])
+                if 'krbpasswordexpiration' in entry_attrs:
+                    expiration = entry_attrs['krbpasswordexpiration'][0]
+                    try:
+                        exp = time.strptime(expiration, '%Y%m%d%H%M%SZ')
+                        if exp <= time.gmtime():
+                            reason = 'password-expired'
+                    except ValueError, v:
+                        self.error('Unable to convert %s to a time string'
+                            % expiration)
+
+            except Exception:
+                # It doesn't really matter how we got here but the user's
+                # password is not accepted or the user is unknown.
+                pass
+            finally:
+                if conn.isconnected():
+                    conn.destroy_connection()
+
+            return self.unauthorized(environ, start_response, str(e), reason)
+
+        return self.finalize_kerberos_acquisition('login_password', ipa_ccache_name, environ, start_response)
+
+    def kinit(self, user, realm, password, ccache_name):
+        # Format the user as a kerberos principal
+        principal = krb5_format_principal_name(user, realm)
+
+        (stdout, stderr, returncode) = ipautil.run(['/usr/bin/kinit', principal],
+                                                   env={'KRB5CCNAME':ccache_name},
+                                                   stdin=password, raiseonerr=False)
+        self.debug('kinit: principal=%s returncode=%s, stderr="%s"',
+                   principal, returncode, stderr)
+
+        if returncode != 0:
+            raise InvalidSessionPassword(principal=principal, message=unicode(stderr))
+

@@ -22,6 +22,7 @@
 All constants centralised in one file.
 """
 import socket
+from ipapython.version import VERSION
 try:
     FQDN = socket.getfqdn()
 except:
@@ -59,27 +60,12 @@ CLI_TAB = '  '  # Two spaces
 # The section to read in the config files, i.e. [global]
 CONFIG_SECTION = 'global'
 
-# Log format for stderr:
-FORMAT_STDERR = ': '.join([
-    'ipa',
-    '%(levelname)s',
-    '%(message)s',
-])
-
-# Log format for log file:
-FORMAT_FILE = '\t'.join([
-    '%(created)f',
-    '%(process)d',
-    '%(threadName)s',
-    '%(levelname)s',
-    '%(message)s',
-])
-
-
 # The default configuration for api.env
 # This is a tuple instead of a dict so that it is immutable.
 # To create a dict with this config, just "d = dict(DEFAULT_CONFIG)".
 DEFAULT_CONFIG = (
+    ('version', VERSION),
+
     # Domain, realm, basedn:
     ('domain', 'example.com'),
     ('realm', 'EXAMPLE.COM'),
@@ -113,6 +99,8 @@ DEFAULT_CONFIG = (
     ('container_sudocmdgroup', 'cn=sudocmdgroups,cn=sudo'),
     ('container_entitlements', 'cn=entitlements,cn=etc'),
     ('container_automember', 'cn=automember,cn=etc'),
+    ('container_selinux', 'cn=usermap,cn=selinux'),
+    ('container_s4u2proxy', 'cn=s4u2proxy,cn=etc'),
 
     # Ports, hosts, and URIs:
     # FIXME: let's renamed xmlrpc_uri to rpc_xml_uri
@@ -122,12 +110,16 @@ DEFAULT_CONFIG = (
 
     # Web Application mount points
     ('mount_ipa', '/ipa/'),
-    ('mount_xmlserver', 'xml'),
-    ('mount_jsonserver', 'json'),
 
     # WebUI stuff:
     ('webui_prod', True),
-    ('webui_assets_dir', None),
+
+    # Session stuff:
+
+    # Maximum time before a session expires forcing credentials to be reacquired.
+    ('session_auth_duration', '20 minutes'),
+    # How a session expiration is computed, see SessionManager.set_session_expiration_time()
+    ('session_duration_type', 'inactivity_timeout'),
 
     # Debugging:
     ('verbose', 0),
@@ -149,6 +141,7 @@ DEFAULT_CONFIG = (
     ('prompt_all', False),
     ('interactive', True),
     ('fallback', True),
+    ('delegate', False),
 
     # Enable certain optional plugins:
     ('enable_ra', False),
@@ -188,6 +181,7 @@ DEFAULT_CONFIG = (
     ('confdir', object),  # Directory containing config files
     ('conf', object),  # File containing context specific config
     ('conf_default', object),  # File containing context independent config
+    ('plugins_on_demand', object),  # Whether to finalize plugins on-demand (bool)
 
     # Set in Env._finalize_core():
     ('in_server', object),  # Whether or not running in-server (bool)

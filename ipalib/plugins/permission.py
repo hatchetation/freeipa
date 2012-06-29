@@ -18,6 +18,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import copy
+
 from ipalib.plugins.baseldap import *
 from ipalib import api, _, ngettext
 from ipalib import Flag, Str, StrEnum
@@ -84,6 +85,9 @@ output_params = (
     Str('ipapermissiontype',
         label=_('Permission Type'),
     ),
+    Str('aci',
+        label=_('ACI'),
+    ),
 )
 
 class permission(LDAPObject):
@@ -97,13 +101,13 @@ class permission(LDAPObject):
     default_attributes = ['cn', 'member', 'memberof',
         'memberindirect', 'ipapermissiontype',
     ]
-    aci_attributes = ['group', 'permissions', 'attrs', 'type',
-        'filter', 'subtree', 'targetgroup',
+    aci_attributes = ['aci', 'group', 'permissions', 'attrs', 'type',
+        'filter', 'subtree', 'targetgroup', 'memberof',
     ]
     attribute_members = {
         'member': ['privilege'],
     }
-    rdnattr='cn'
+    rdn_is_primary_key = True
 
     label = _('Permissions')
     label_singular = _('Permission')
@@ -113,17 +117,21 @@ class permission(LDAPObject):
             cli_name='name',
             label=_('Permission name'),
             primary_key=True,
+            pattern='^[-_ a-zA-Z0-9]+$',
+            pattern_errmsg="May only contain letters, numbers, -, _, and space",
         ),
-        List('permissions',
+        Str('permissions+',
             cli_name='permissions',
             label=_('Permissions'),
             doc=_('Comma-separated list of permissions to grant ' \
                 '(read, write, add, delete, all)'),
+            csv=True,
         ),
-        List('attrs?',
+        Str('attrs*',
             cli_name='attrs',
             label=_('Attributes'),
             doc=_('Comma-separated list of attributes'),
+            csv=True,
             normalizer=lambda value: value.lower(),
             flags=('ask_create', 'ask_update'),
         ),
@@ -178,6 +186,7 @@ class permission_add(LDAPCreate):
     __doc__ = _('Add a new permission.')
 
     msg_summary = _('Added permission "%(value)s"')
+    has_output_params = LDAPCreate.has_output_params + output_params
 
     def pre_callback(self, ldap, dn, entry_attrs, attrs_list, *keys, **options):
         # Test the ACI before going any further
@@ -270,14 +279,17 @@ class permission_mod(LDAPUpdate):
         # when renaming permission, check if the target permission does not
         # exists already. Then, make changes to underlying ACI
         if 'rename' in options:
-            try:
-                new_dn = dn.replace(keys[-1], options['rename'], 1)
-                (new_dn, attrs) = ldap.get_entry(
-                    new_dn, attrs_list, normalize=self.obj.normalize_dn
-                )
-                raise errors.DuplicateEntry()
-            except errors.NotFound:
-                pass    # permission may be renamed, continue
+            if options['rename']:
+                try:
+                    new_dn = dn.replace(keys[-1].lower(), options['rename'], 1)
+                    (new_dn, attrs) = ldap.get_entry(
+                        new_dn, attrs_list, normalize=self.obj.normalize_dn
+                    )
+                    raise errors.DuplicateEntry()
+                except errors.NotFound:
+                    pass    # permission may be renamed, continue
+            else:
+                raise errors.ValidationError(name='rename',error=_('New name can not be empty'))
 
         opts = copy.copy(options)
         for o in ['all', 'raw', 'rights', 'rename']:
@@ -336,7 +348,7 @@ class permission_mod(LDAPUpdate):
 
         result = self.api.Command.permission_show(cn, **options)['result']
         for r in result:
-            if not r.startswith('member'):
+            if not r.startswith('member_'):
                 entry_attrs[r] = result[r]
         return dn
 
@@ -352,10 +364,12 @@ class permission_find(LDAPSearch):
     has_output_params = LDAPSearch.has_output_params + output_params
 
     def post_callback(self, ldap, entries, truncated, *args, **options):
+        if options.get('pkey_only', False):
+            return
         for entry in entries:
             (dn, attrs) = entry
             try:
-                aci = self.api.Command.aci_show(attrs['cn'][0], aciprefix=ACI_PREFIX)['result']
+                aci = self.api.Command.aci_show(attrs['cn'][0], aciprefix=ACI_PREFIX, **options)['result']
 
                 # copy information from respective ACI to permission entry
                 for attr in self.obj.aci_attributes:
@@ -368,7 +382,13 @@ class permission_find(LDAPSearch):
         # aren't already in the list along with their permission info.
         options['aciprefix'] = ACI_PREFIX
 
-        aciresults = self.api.Command.aci_find(*args, **options)
+        opts = copy.copy(options)
+        try:
+            # permission ACI attribute is needed
+            del opts['raw']
+        except:
+            pass
+        aciresults = self.api.Command.aci_find(*args, **opts)
         truncated = truncated or aciresults['truncated']
         results = aciresults['result']
 
@@ -381,15 +401,11 @@ class permission_find(LDAPSearch):
                         found = True
                         break
                 if not found:
-                    permission = self.api.Command.permission_show(aci['permission'])
-                    attrs = permission['result']
-                    for attr in self.obj.aci_attributes:
-                        if attr in aci:
-                            attrs[attr] = aci[attr]
-                    dn = attrs['dn']
-                    del attrs['dn']
-                    if (dn, attrs) not in entries:
-                        entries.append((dn, attrs))
+                    permission = self.api.Command.permission_show(aci['permission'], **options)['result']
+                    dn = permission['dn']
+                    del permission['dn']
+                    if (dn, permission) not in entries:
+                        entries.append((dn, permission))
 
 api.register(permission_find)
 
@@ -400,7 +416,7 @@ class permission_show(LDAPRetrieve):
     has_output_params = LDAPRetrieve.has_output_params + output_params
     def post_callback(self, ldap, dn, entry_attrs, *keys, **options):
         try:
-            aci = self.api.Command.aci_show(keys[-1], aciprefix=ACI_PREFIX)['result']
+            aci = self.api.Command.aci_show(keys[-1], aciprefix=ACI_PREFIX, **options)['result']
             for attr in self.obj.aci_attributes:
                 if attr in aci:
                     entry_attrs[attr] = aci[attr]

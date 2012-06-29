@@ -23,15 +23,12 @@ module('navigation', {
 
     setup: function() {
         IPA.ajax_options.async = false;
-        IPA.init(
-            'data',
-            true,
-            function(data, text_status, xhr) {
-            },
-            function(xhr, text_status, error_thrown) {
+        IPA.init({
+            url: 'data',
+            on_error: function(xhr, text_status, error_thrown) {
                 ok(false, 'ipa_init() failed: '+error_thrown);
             }
-        );
+        });
     }
 
 });
@@ -44,28 +41,42 @@ test("Testing IPA.navigation.create().", function() {
     //Force reset of entities
     IPA.entities = $.ordered_map();
 
-    IPA.entity_factories.user =  function() {
-        var that = IPA.entity({name: 'user',
-                               metadata:IPA.metadata.objects.user});
-        that.add_facet(IPA.search_facet({'entity':that}));
+    IPA.register('user', function(spec) {
+
+        var that = IPA.entity({
+            name: 'user',
+            metadata: IPA.metadata.objects.user,
+            facets: [
+                {
+                    type: 'search'
+                }
+            ]
+        });
 
         that.display = function(container){
             user_mock_called = true;
             same(container.attr('name'), 'user', 'user container name');
             same(container[0].nodeName, 'DIV', 'user container element');
         };
+
         return that;
-    };
-    IPA.entity_factories.group = function(){
-        var that  = IPA.entity({name: 'group',
-                               metadata:IPA.metadata.objects.group});
+    });
+
+    IPA.register('group', function(spec) {
+
+        var that = IPA.entity({
+            name: 'group',
+            metadata: IPA.metadata.objects.group
+        });
+
         that.display = function(container){
             group_mock_called = true;
             same(container.attr('name'), 'group','user container name');
             same(container[0].nodeName, 'DIV', 'user container element');
         };
+
         return that;
-    };
+    });
 
     var navigation_container = $('<div id="navigation"/>').appendTo(document.body);
     var entity_container = $('<div id="content"/>').appendTo(document.body);
@@ -146,13 +157,11 @@ test("Testing IPA.navigation.update() with valid index.", function() {
 
     same(
         tabs_container.tabs('option', 'selected'), 0,
-        "Active tab at level 1"
-    );
+        "Active tab at level 1");
 
     same(
         $('.tabs[name=identity]', tabs_container).tabs('option', 'selected'), 1,
-        "Active tab at level 2"
-    );
+        "Active tab at level 2");
 
     navigation.remove_state("identity");
 
@@ -198,13 +207,11 @@ test("Testing IPA.navigation.update() with out-of-range index.", function() {
 
     same(
         tabs_container.tabs('option', 'selected'), 0,
-        "Active tab at level 1"
-    );
+        "Active tab at level 1");
 
     same(
         $('.tabs[name=identity]', tabs_container).tabs('option', 'selected'), 0,
-        "Active tab at level 2"
-    );
+        "Active tab at level 2");
 
     navigation.remove_state("identity");
 

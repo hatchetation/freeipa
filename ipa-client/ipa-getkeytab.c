@@ -82,14 +82,24 @@ static int ldap_sasl_interact(LDAP *ld, unsigned flags, void *priv_data, void *s
 			krberr = krb5_init_context(&krbctx);
 
 			if (krberr) {
-				fprintf(stderr, _("Kerberos context initialization failed\n"));
+				fprintf(stderr, _("Kerberos context initialization failed: %1$s (%2$d)\n"),
+                                error_message(krberr), krberr);
 				in->result = NULL;
 				in->len = 0;
 				ret = LDAP_LOCAL_ERROR;
 				break;
 			}
 
-			krb5_unparse_name(krbctx, princ, &outname);
+			krberr = krb5_unparse_name(krbctx, princ, &outname);
+
+			if (krberr) {
+                fprintf(stderr, _("Unable to parse principal: %1$s (%2$d)\n"),
+                                error_message(krberr), krberr);
+				in->result = NULL;
+				in->len = 0;
+				ret = LDAP_LOCAL_ERROR;
+				break;
+			}
 
 			in->result = outname;
 			in->len = strlen(outname);
@@ -201,10 +211,10 @@ static int prep_ksdata(krb5_context krbctx, const char *str,
             if (krberr != 0) {
                 fprintf(stderr,
                         _("Warning unrecognized encryption type: [%s]\n"), t);
-                t = p+1;
+                if (p) t = p + 1;
                 continue;
             }
-            t = p+1;
+            if (p) t = p + 1;
 
             if (!q) {
                 ksdata[j].salttype = KRB5_KDB_SALTTYPE_NORMAL;
@@ -278,7 +288,7 @@ static int create_keys(krb5_context krbctx,
     struct krb_key_salt *ksdata;
     krb5_error_code krberr;
     krb5_data key_password;
-    krb5_data *realm;
+    krb5_data *realm = NULL;
     int i, nkeys;
     int ret;
 
@@ -501,7 +511,7 @@ static int ipa_ldap_init(LDAP ** ld, const char * scheme, const char * servernam
 {
 	char* url = NULL;
 	int  url_len = snprintf(url,0,"%s://%s:%d",scheme,servername,port) +1;
-       
+
 	url = (char *)malloc (url_len);
 	if (!url){
 		fprintf(stderr, _("Out of memory \n"));
@@ -538,6 +548,7 @@ static int ldap_set_keytab(krb5_context krbctx,
 	int kvno, i;
 	ber_tag_t rtag;
 	ber_int_t *encs = NULL;
+	int successful_keys = 0;
 
 	/* cant' return more than nkeys, sometimes less */
 	encs = calloc(keys->nkeys + 1, sizeof(ber_int_t));
@@ -559,7 +570,7 @@ static int ldap_set_keytab(krb5_context krbctx,
 		if (ldap_set_option(NULL, LDAP_OPT_X_TLS_CACERTFILE, "/etc/ipa/ca.crt") != LDAP_OPT_SUCCESS) {
 			goto error_out;
 		}
- 
+
 		if ( ipa_ldap_init(&ld, "ldaps",servername, 636) != LDAP_SUCCESS){
 		  goto error_out;
 		}
@@ -568,7 +579,7 @@ static int ldap_set_keytab(krb5_context krbctx,
 		}
 	} else {
 		if (ipa_ldap_init(&ld, "ldap",servername, 389) != LDAP_SUCCESS){
-			goto error_out;			
+			goto error_out;
 		}
 	}
 
@@ -577,12 +588,14 @@ static int ldap_set_keytab(krb5_context krbctx,
 		goto error_out;
 	}
 
+#ifdef LDAP_OPT_X_SASL_NOCANON
         /* Don't do DNS canonicalization */
 	ret = ldap_set_option(ld, LDAP_OPT_X_SASL_NOCANON, LDAP_OPT_ON);
 	if (ret != LDAP_SUCCESS) {
 	    fprintf(stderr, _("Unable to set LDAP_OPT_X_SASL_NOCANON\n"));
 	    goto error_out;
 	}
+#endif
 
 	version = LDAP_VERSION3;
 	ret = ldap_set_option(ld, LDAP_OPT_PROTOCOL_VERSION, &version);
@@ -610,7 +623,13 @@ static int ldap_set_keytab(krb5_context krbctx,
 						   LDAP_SASL_QUIET,
 						   ldap_sasl_interact, princ);
 		if (ret != LDAP_SUCCESS) {
-			fprintf(stderr, _("SASL Bind failed!\n"));
+			char *msg=NULL;
+#ifdef LDAP_OPT_DIAGNOSTIC_MESSAGE
+			ldap_get_option(ld, LDAP_OPT_DIAGNOSTIC_MESSAGE,
+				(void*)&msg);
+#endif
+			fprintf(stderr, "SASL Bind failed %s (%d) %s!\n",
+				ldap_err2string(ret), ret, msg ? msg : "");
 			goto error_out;
 		}
 	}
@@ -695,16 +714,34 @@ static int ldap_set_keytab(krb5_context krbctx,
 
 	rtag = ber_scanf(sctrl, "{i{", &kvno);
 	if (rtag == LBER_ERROR) {
-		fprintf(stderr, _("ber_scanf() failed, Invalid control ?!\n"));
+		fprintf(stderr, _("ber_scanf() failed, unable to find kvno ?!\n"));
 		goto error_out;
 	}
 
 	for (i = 0; i < keys->nkeys; i++) {
 		ret = ber_scanf(sctrl, "{i}", &encs[i]);
 		if (ret == LBER_ERROR) {
-                    fprintf(stderr, _("ber_scanf() failed, Invalid control ?!\n"));
-                    goto error_out;
-                }
+			char enc[79]; /* fit std terminal or truncate */
+			krb5_error_code krberr;
+			krberr = krb5_enctype_to_string(
+				keys->ksdata[i].enctype, enc, 79);
+			if (krberr) {
+				fprintf(stderr, _("Failed to retrieve "
+					"encryption type type #%d\n"),
+					keys->ksdata[i].enctype);
+			} else {
+				fprintf(stderr, _("Failed to retrieve "
+					"encryption type %1$s (#%2$d)\n"),
+					enc, keys->ksdata[i].enctype);
+			}
+                } else {
+			successful_keys++;
+		}
+	}
+
+	if (successful_keys == 0) {
+		fprintf(stderr, _("Failed to retrieve any keys"));
+		goto error_out;
 	}
 
 	ret = filter_keys(krbctx, keys, encs);

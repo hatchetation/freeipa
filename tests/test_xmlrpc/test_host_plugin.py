@@ -26,6 +26,7 @@ from ipalib import api, errors, x509
 from ipalib.dn import *
 from tests.test_xmlrpc.xmlrpc_test import Declarative, fuzzy_uuid, fuzzy_digits
 from tests.test_xmlrpc.xmlrpc_test import fuzzy_hash, fuzzy_date, fuzzy_issuer
+from tests.test_xmlrpc.xmlrpc_test import fuzzy_hex
 from tests.test_xmlrpc import objectclasses
 import base64
 
@@ -47,6 +48,7 @@ dn3 = DN(('fqdn',fqdn3),('cn','computers'),('cn','accounts'),
 fqdn4 = u'testhost2.lab.%s' % api.env.domain
 dn4 = DN(('fqdn',fqdn4),('cn','computers'),('cn','accounts'),
          api.env.basedn)
+invalidfqdn1 = u'foo_bar.lab.%s' % api.env.domain
 
 # We can use the same cert we generated for the service tests
 fd = open('tests/test_xmlrpc/service.crt', 'r')
@@ -70,21 +72,24 @@ class test_host(Declarative):
         dict(
             desc='Try to retrieve non-existent %r' % fqdn1,
             command=('host_show', [fqdn1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(
+                reason=u'%s: host not found' % fqdn1),
         ),
 
 
         dict(
             desc='Try to update non-existent %r' % fqdn1,
             command=('host_mod', [fqdn1], dict(description=u'Nope')),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(
+                reason=u'%s: host not found' % fqdn1),
         ),
 
 
         dict(
             desc='Try to delete non-existent %r' % fqdn1,
             command=('host_del', [fqdn1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(
+                reason=u'%s: host not found' % fqdn1),
         ),
 
 
@@ -121,11 +126,12 @@ class test_host(Declarative):
             command=('host_add', [fqdn1],
                 dict(
                     description=u'Test host 1',
-                    localityname=u'Undisclosed location 1',
+                    locality=u'Undisclosed location 1',
                     force=True,
                 ),
             ),
-            expected=errors.DuplicateEntry(),
+            expected=errors.DuplicateEntry(message=u'host with name ' +
+                u'"%s" already exists' %  fqdn1),
         ),
 
 
@@ -250,8 +256,9 @@ class test_host(Declarative):
                     valid_not_before=fuzzy_date,
                     valid_not_after=fuzzy_date,
                     subject=lambda x: DN(x) == \
-                        DN(('CN',api.env.host),('O',api.env.realm)),
+                        DN(('CN',api.env.host),x509.subject_base()),
                     serial_number=fuzzy_digits,
+                    serial_number_hex=fuzzy_hex,
                     md5_fingerprint=fuzzy_hash,
                     sha1_fingerprint=fuzzy_hash,
                     issuer=fuzzy_issuer,
@@ -281,8 +288,9 @@ class test_host(Declarative):
                     valid_not_before=fuzzy_date,
                     valid_not_after=fuzzy_date,
                     subject=lambda x: DN(x) == \
-                        DN(('CN',api.env.host),('O',api.env.realm)),
+                        DN(('CN',api.env.host),x509.subject_base()),
                     serial_number=fuzzy_digits,
+                    serial_number_hex=fuzzy_hex,
                     md5_fingerprint=fuzzy_hash,
                     sha1_fingerprint=fuzzy_hash,
                     issuer=fuzzy_issuer,
@@ -391,6 +399,39 @@ class test_host(Declarative):
         ),
 
         dict(
+            desc='Search for hosts with --man-hosts and --not-man-hosts',
+            command=('host_find', [], {'man_host' : fqdn3, 'not_man_host' : fqdn1}),
+            expected=dict(
+                count=1,
+                truncated=False,
+                summary=u'1 host matched',
+                result=[
+                    dict(
+                        dn=lambda x: DN(x) == dn3,
+                        fqdn=[fqdn3],
+                        description=[u'Test host 2'],
+                        l=[u'Undisclosed location 2'],
+                        krbprincipalname=[u'host/%s@%s' % (fqdn3, api.env.realm)],
+                        has_keytab=False,
+                        has_password=False,
+                        managedby_host=[u'%s' % fqdn3, u'%s' % fqdn1],
+                    ),
+                ],
+            ),
+        ),
+
+        dict(
+            desc='Try to search for hosts with --man-hosts',
+            command=('host_find', [], {'man_host' : [fqdn3,fqdn4]}),
+            expected=dict(
+                count=0,
+                truncated=False,
+                summary=u'0 hosts matched',
+                result=[],
+            ),
+        ),
+
+        dict(
             desc='Remove managedby_host %r from %r' % (fqdn1, fqdn3),
             command=('host_remove_managedby', [fqdn3],
                 dict(
@@ -425,8 +466,77 @@ class test_host(Declarative):
 
         dict(
             desc='Try to rename %r' % fqdn1,
-            command=('host_mod', [fqdn1], dict(setattr=u'fqdn=changed')),
+            command=('host_mod', [fqdn1], dict(setattr=u'fqdn=changed.example.com')),
             expected=errors.NotAllowedOnRDN()
+        ),
+
+
+        dict(
+            desc='Add MAC address to %r' % fqdn1,
+            command=('host_mod', [fqdn1], dict(macaddress=u'00:50:56:30:F6:5F')),
+            expected=dict(
+                value=fqdn1,
+                summary=u'Modified host "%s"' % fqdn1,
+                result=dict(
+                    description=[u'Updated host 1'],
+                    fqdn=[fqdn1],
+                    l=[u'Undisclosed location 1'],
+                    krbprincipalname=[u'host/%s@%s' % (fqdn1, api.env.realm)],
+                    managedby_host=[u'%s' % fqdn1],
+                    usercertificate=[base64.b64decode(servercert)],
+                    valid_not_before=fuzzy_date,
+                    valid_not_after=fuzzy_date,
+                    subject=lambda x: DN(x) == \
+                        DN(('CN',api.env.host),x509.subject_base()),
+                    serial_number=fuzzy_digits,
+                    serial_number_hex=fuzzy_hex,
+                    md5_fingerprint=fuzzy_hash,
+                    sha1_fingerprint=fuzzy_hash,
+                    macaddress=[u'00:50:56:30:F6:5F'],
+                    issuer=fuzzy_issuer,
+                    has_keytab=False,
+                    has_password=False,
+                ),
+            ),
+        ),
+
+
+        dict(
+            desc='Add another MAC address to %r' % fqdn1,
+            command=('host_mod', [fqdn1], dict(macaddress=[u'00:50:56:30:F6:5F', u'00:50:56:2C:8D:82'])),
+            expected=dict(
+                value=fqdn1,
+                summary=u'Modified host "%s"' % fqdn1,
+                result=dict(
+                    description=[u'Updated host 1'],
+                    fqdn=[fqdn1],
+                    l=[u'Undisclosed location 1'],
+                    krbprincipalname=[u'host/%s@%s' % (fqdn1, api.env.realm)],
+                    managedby_host=[u'%s' % fqdn1],
+                    usercertificate=[base64.b64decode(servercert)],
+                    valid_not_before=fuzzy_date,
+                    valid_not_after=fuzzy_date,
+                    subject=lambda x: DN(x) == \
+                        DN(('CN',api.env.host),x509.subject_base()),
+                    serial_number=fuzzy_digits,
+                    serial_number_hex=fuzzy_hex,
+                    md5_fingerprint=fuzzy_hash,
+                    sha1_fingerprint=fuzzy_hash,
+                    macaddress=[u'00:50:56:30:F6:5F', u'00:50:56:2C:8D:82'],
+                    issuer=fuzzy_issuer,
+                    has_keytab=False,
+                    has_password=False,
+                ),
+            ),
+        ),
+
+
+        dict(
+            desc='Add an illegal MAC address to %r' % fqdn1,
+            command=('host_mod', [fqdn1], dict(macaddress=[u'xx'])),
+            expected=errors.ValidationError(name='macaddress',
+                error=u'Must be of the form HH:HH:HH:HH:HH:HH, where ' +
+                    u'each H is a hexadecimal character.'),
         ),
 
 
@@ -444,21 +554,21 @@ class test_host(Declarative):
         dict(
             desc='Try to retrieve non-existent %r' % fqdn1,
             command=('host_show', [fqdn1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: host not found' % fqdn1),
         ),
 
 
         dict(
             desc='Try to update non-existent %r' % fqdn1,
             command=('host_mod', [fqdn1], dict(description=u'Nope')),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: host not found' % fqdn1),
         ),
 
 
         dict(
             desc='Try to delete non-existent %r' % fqdn1,
             command=('host_del', [fqdn1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: host not found' % fqdn1),
         ),
 
         # Test deletion using a non-fully-qualified hostname. Services
@@ -532,7 +642,8 @@ class test_host(Declarative):
         dict(
             desc='Try to add host not in DNS %r without force' % fqdn2,
             command=('host_add', [fqdn2], {}),
-            expected=errors.DNSNotARecordError(reason='Host does not have corresponding DNS A record'),
+            expected=errors.DNSNotARecordError(
+                reason=u'Host does not have corresponding DNS A record'),
         ),
 
 
@@ -556,10 +667,75 @@ class test_host(Declarative):
                     krbprincipalname=[u'host/%s@%s' % (fqdn2, api.env.realm)],
                     objectclass=objectclasses.host,
                     ipauniqueid=[fuzzy_uuid],
-                    managedby_host=[u'%s' % fqdn2],
+                    managedby_host=[fqdn2],
                     has_keytab=False,
                     has_password=False,
                 ),
+            ),
+        ),
+
+
+        # This test will only succeed when running against lite-server.py
+        # on same box as IPA install.
+        dict(
+            desc='Delete the current host (master?) %s should be caught' % api.env.host,
+            command=('host_del', [api.env.host], {}),
+            expected=errors.ValidationError(name='hostname',
+                error=u'An IPA master host cannot be deleted or disabled'),
+        ),
+
+
+        dict(
+            desc='Disable the current host (master?) %s should be caught' % api.env.host,
+            command=('host_disable', [api.env.host], {}),
+            expected=errors.ValidationError(name='hostname',
+                error=u'An IPA master host cannot be deleted or disabled'),
+        ),
+
+
+        dict(
+            desc='Test that validation is enabled on adds',
+            command=('host_add', [invalidfqdn1], {}),
+            expected=errors.ValidationError(name='hostname',
+                error=u'invalid domain-name: only letters, numbers, and - ' +
+                    u'are allowed. DNS label may not start or end with -'),
+        ),
+
+
+        # The assumption on these next 4 tests is that if we don't get a
+        # validation error then the request was processed normally.
+        dict(
+            desc='Test that validation is disabled on mods',
+            command=('host_mod', [invalidfqdn1], {}),
+            expected=errors.NotFound(
+                reason=u'%s: host not found' % invalidfqdn1),
+        ),
+
+
+        dict(
+            desc='Test that validation is disabled on deletes',
+            command=('host_del', [invalidfqdn1], {}),
+            expected=errors.NotFound(
+                reason=u'%s: host not found' % invalidfqdn1),
+        ),
+
+
+        dict(
+            desc='Test that validation is disabled on show',
+            command=('host_show', [invalidfqdn1], {}),
+            expected=errors.NotFound(
+                reason=u'%s: host not found' % invalidfqdn1),
+        ),
+
+
+        dict(
+            desc='Test that validation is disabled on find',
+            command=('host_find', [invalidfqdn1], {}),
+            expected=dict(
+                count=0,
+                truncated=False,
+                summary=u'0 hosts matched',
+                result=[],
             ),
         ),
 

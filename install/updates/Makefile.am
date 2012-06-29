@@ -3,10 +3,14 @@ NULL =
 appdir = $(IPA_DATA_DIR)/updates
 app_DATA =				\
 	10-60basev2.update		\
+	10-60basev3.update		\
 	10-RFC2307bis.update		\
 	10-RFC4876.update		\
 	10-config.update		\
+	10-selinuxusermap.update	\
 	10-sudo.update			\
+	10-ssh.update			\
+	10-bind-schema.update		\
 	19-managed-entries.update	\
 	20-aci.update			\
 	20-dna.update			\
@@ -18,6 +22,7 @@ app_DATA =				\
 	20-user_private_groups.update	\
 	20-winsync_index.update		\
 	21-replicas_container.update	\
+	30-s4u2proxy.update		\
 	40-delegation.update		\
 	40-dns.update			\
 	40-automember.update		\
@@ -26,6 +31,8 @@ app_DATA =				\
 	50-groupuuid.update		\
 	50-hbacservice.update		\
 	50-nis.update			\
+	50-ipaconfig.update		\
+	55-pbacmemberof.update		\
 	$(NULL)
 
 EXTRA_DIST =				\

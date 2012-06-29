@@ -19,7 +19,6 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 
-import logging
 import pwd
 import os
 import sys
@@ -56,6 +55,7 @@ from ipaserver.install import dsinstance
 from ipaserver.install import certs
 from ipaserver.install.installutils import ReplicaConfig
 from ipalib import util
+from ipapython.ipa_log_manager import *
 
 HTTPD_CONFD = "/etc/httpd/conf.d/"
 DEFAULT_DSPORT=7389
@@ -72,12 +72,13 @@ EE_CLIENT_AUTH_PORT=9446
 UNSECURE_PORT=9180
 TOMCAT_SERVER_PORT=9701
 
+IPA_SERVICE_PROFILE = '/var/lib/%s/profiles/ca/caIPAserviceCert.cfg' % PKI_INSTANCE_NAME
 
 # We need to reset the template because the CA uses the regular boot
 # information
 INF_TEMPLATE = """
 [General]
-FullMachineName=   $FQHN
+FullMachineName=   $FQDN
 SuiteSpotUserID=   $USER
 SuiteSpotGroup=    $GROUP
 ServerRoot=    $SERVER_ROOT
@@ -115,7 +116,7 @@ def get_preop_pin(instance_root, instance_name):
     try:
         f=open(filename)
     except IOError, e:
-        logging.error("Cannot open configuration file." + str(e))
+        root_logger.error("Cannot open configuration file." + str(e))
         raise e
     data = f.read()
     data = data.split('\n')
@@ -266,7 +267,7 @@ class CADSInstance(service.Service):
 
     def __setup_sub_dict(self):
         server_root = dsinstance.find_server_root()
-        self.sub_dict = dict(FQHN=self.fqdn, SERVERID=self.serverid,
+        self.sub_dict = dict(FQDN=self.fqdn, SERVERID=self.serverid,
                              PASSWORD=self.dm_password, SUFFIX=self.suffix.lower(),
                              REALM=self.realm_name, USER=PKI_DS_USER,
                              SERVER_ROOT=server_root, DOMAIN=self.domain,
@@ -274,13 +275,11 @@ class CADSInstance(service.Service):
                              GROUP=dsinstance.DS_GROUP)
 
     def __create_ds_user(self):
-        user_exists = True
         try:
             pwd.getpwnam(PKI_DS_USER)
-            logging.debug("ds user %s exists" % PKI_DS_USER)
+            root_logger.debug("ds user %s exists" % PKI_DS_USER)
         except KeyError:
-            user_exists = False
-            logging.debug("adding ds user %s" % PKI_DS_USER)
+            root_logger.debug("adding ds user %s" % PKI_DS_USER)
             args = ["/usr/sbin/useradd", "-g", dsinstance.DS_GROUP,
                                          "-c", "PKI DS System User",
                                          "-d", "/var/lib/dirsrv",
@@ -288,32 +287,29 @@ class CADSInstance(service.Service):
                                          "-M", "-r", PKI_DS_USER]
             try:
                 ipautil.run(args)
-                logging.debug("done adding user")
+                root_logger.debug("done adding user")
             except ipautil.CalledProcessError, e:
-                logging.critical("failed to add user %s" % e)
-
-        self.backup_state("user_exists", user_exists)
+                root_logger.critical("failed to add user %s" % e)
 
     def __create_instance(self):
-        self.backup_state("running", dsinstance.is_ds_running())
         self.backup_state("serverid", self.serverid)
 
         inf_txt = ipautil.template_str(INF_TEMPLATE, self.sub_dict)
-        logging.debug("writing inf template")
+        root_logger.debug("writing inf template")
         inf_fd = ipautil.write_tmp_file(inf_txt)
         inf_txt = re.sub(r"RootDNPwd=.*\n", "", inf_txt)
-        logging.debug(inf_txt)
+        root_logger.debug(inf_txt)
         if ipautil.file_exists("/usr/sbin/setup-ds.pl"):
             args = ["/usr/sbin/setup-ds.pl", "--silent", "--logfile", "-", "-f", inf_fd.name]
-            logging.debug("calling setup-ds.pl")
+            root_logger.debug("calling setup-ds.pl")
         else:
             args = ["/usr/bin/ds_newinst.pl", inf_fd.name]
-            logging.debug("calling ds_newinst.pl")
+            root_logger.debug("calling ds_newinst.pl")
         try:
             ipautil.run(args)
-            logging.debug("completed creating ds instance")
+            root_logger.debug("completed creating ds instance")
         except ipautil.CalledProcessError, e:
-            logging.critical("failed to restart ds instance %s" % e)
+            root_logger.critical("failed to create ds instance %s" % e)
         inf_fd.close()
 
     def load_pkcs12(self):
@@ -376,22 +372,21 @@ class CADSInstance(service.Service):
         try:
             ipaservices.knownservices.dirsrv.restart(self.serverid)
             if not dsinstance.is_ds_running(self.serverid):
-                logging.critical("Failed to restart the directory server. See the installation log for details.")
+                root_logger.critical("Failed to restart the directory server. See the installation log for details.")
                 sys.exit(1)
         except Exception:
             # TODO: roll back here?
-            logging.critical("Failed to restart the directory server. See the installation log for details.")
+            root_logger.critical("Failed to restart the directory server. See the installation log for details.")
 
     def uninstall(self):
         if self.is_configured():
             self.print_msg("Unconfiguring CA directory server")
 
-        running = self.restore_state("running")
         enabled = self.restore_state("enabled")
         serverid = self.restore_state("serverid")
 
-        if not running is None:
-            ipaservices.knownservices.dirsrv.stop(self.serverid)
+        # Just eat this state if it exists
+        running = self.restore_state("running")
 
         if not enabled is None and not enabled:
             ipaservices.knownservices.dirsrv.disable()
@@ -406,11 +401,9 @@ class CADSInstance(service.Service):
 
         user_exists = self.restore_state("user_exists")
 
-        if user_exists == False:
-            try:
-                ipautil.run(["/usr/sbin/userdel", PKI_DS_USER])
-            except ipautil.CalledProcessError, e:
-                logging.critical("failed to delete user %s" % e)
+        # At one time we removed this user on uninstall. That can potentially
+        # orphan files, or worse, if another useradd runs in the intermim,
+        # cause files to have a new owner.
 
 class CAInstance(service.Service):
     """
@@ -526,6 +519,7 @@ class CAInstance(service.Service):
             self.step("setting up signing cert profile", self.__setup_sign_profile)
             self.step("set up CRL publishing", self.__enable_crl_publish)
             self.step("set certificate subject base", self.__set_subject_in_config)
+            self.step("enabling Subject Key Identifier", self.enable_subject_key_identifier)
             self.step("configuring certificate server to start on boot", self.__enable)
             if not self.clone:
                 self.step("restarting certificate server", self.__restart_instance)
@@ -566,24 +560,20 @@ class CAInstance(service.Service):
         # so actual enablement is delayed.
 
     def __create_ca_user(self):
-        user_exists = True
         try:
             pwd.getpwnam(PKI_USER)
-            logging.debug("ca user %s exists" % PKI_USER)
+            root_logger.debug("ca user %s exists" % PKI_USER)
         except KeyError:
-            user_exists = False
-            logging.debug("adding ca user %s" % PKI_USER)
+            root_logger.debug("adding ca user %s" % PKI_USER)
             args = ["/usr/sbin/useradd", "-c", "CA System User",
                                          "-d", "/var/lib",
                                          "-s", "/sbin/nologin",
                                          "-M", "-r", PKI_USER]
             try:
                 ipautil.run(args)
-                logging.debug("done adding user")
+                root_logger.debug("done adding user")
             except ipautil.CalledProcessError, e:
-                logging.critical("failed to add user %s" % e)
-
-        self.backup_state("user_exists", user_exists)
+                root_logger.critical("failed to add user %s" % e)
 
     def __configure_instance(self):
         preop_pin = get_preop_pin(self.server_root, PKI_INSTANCE_NAME)
@@ -668,15 +658,12 @@ class CAInstance(service.Service):
                 args.append("-clone")
                 args.append("false")
 
-            # pkisilent does not escape the arguments before passing them to shell
-            args[2:] = [ipautil.shell_quote(i) for i in args[2:]]
-
             # Define the things we don't want logged
             nolog = (self.admin_password, self.dm_password,)
 
             ipautil.run(args, env={'PKI_HOSTNAME':self.fqdn}, nolog=nolog)
         except ipautil.CalledProcessError, e:
-            logging.critical("failed to configure ca instance %s" % e)
+            root_logger.critical("failed to configure ca instance %s" % e)
             raise RuntimeError('Configuration of CA failed')
 
         if self.external == 1:
@@ -689,7 +676,7 @@ class CAInstance(service.Service):
         if ipautil.file_exists("/root/tmp-ca.p12"):
             shutil.move("/root/tmp-ca.p12", "/root/cacert.p12")
 
-        logging.debug("completed creating ca instance")
+        root_logger.debug("completed creating ca instance")
 
     def __restart_instance(self):
         try:
@@ -697,7 +684,7 @@ class CAInstance(service.Service):
             installutils.wait_for_open_ports('localhost', 9180, 300)
         except Exception:
             # TODO: roll back here?
-            logging.critical("Failed to restart the certificate server. See the installation log for details.")
+            root_logger.critical("Failed to restart the certificate server. See the installation log for details.")
 
     def __disable_nonce(self):
         # Turn off Nonces
@@ -746,6 +733,7 @@ class CAInstance(service.Service):
         # mod_nss.
         args = [
             '/usr/bin/sslget',
+            '-v',
             '-n', 'ipa-ca-agent',
             '-p', self.admin_password,
             '-d', self.ca_agent_db,
@@ -765,6 +753,7 @@ class CAInstance(service.Service):
         # Now issue the RA certificate.
         args = [
             '/usr/bin/sslget',
+            '-v',
             '-n', 'ipa-ca-agent',
             '-p', self.admin_password,
             '-d', self.ca_agent_db,
@@ -1038,14 +1027,17 @@ class CAInstance(service.Service):
         installutils.set_directive(caconfig, 'ca.publish.rule.instance.LdapXCertRule.enable', 'false', quotes=False, separator='=')
 
         # Fix the CRL URI in the profile
-        installutils.set_directive('/var/lib/%s/profiles/ca/caIPAserviceCert.cfg' % PKI_INSTANCE_NAME, 'policyset.serverCertSet.9.default.params.crlDistPointsPointName_0', 'https://%s/ipa/crl/MasterCRL.bin' % ipautil.format_netloc(self.fqdn), quotes=False, separator='=')
+        installutils.set_directive(IPA_SERVICE_PROFILE,
+            'policyset.serverCertSet.9.default.params.crlDistPointsPointName_0',
+            'https://%s/ipa/crl/MasterCRL.bin' % ipautil.format_netloc(self.fqdn),
+            quotes=False, separator='=')
 
         ipaservices.restore_context(publishdir)
 
     def __set_subject_in_config(self):
         # dogtag ships with an IPA-specific profile that forces a subject
         # format. We need to update that template with our base subject
-        if installutils.update_file("/var/lib/%s/profiles/ca/caIPAserviceCert.cfg" % PKI_INSTANCE_NAME, 'OU=pki-ipa, O=IPA', self.subject_base):
+        if installutils.update_file(IPA_SERVICE_PROFILE, 'OU=pki-ipa, O=IPA', self.subject_base):
             print "Updating subject_base in CA template failed"
 
     def uninstall(self):
@@ -1060,14 +1052,12 @@ class CAInstance(service.Service):
             ipautil.run(["/usr/bin/pkiremove", "-pki_instance_root=/var/lib",
                          "-pki_instance_name=%s" % PKI_INSTANCE_NAME, "--force"])
         except ipautil.CalledProcessError, e:
-            logging.critical("failed to uninstall CA instance %s" % e)
+            root_logger.critical("failed to uninstall CA instance %s" % e)
 
+        # At one time we removed this user on uninstall. That can potentially
+        # orphan files, or worse, if another useradd runs in the intermim,
+        # cause files to have a new owner.
         user_exists = self.restore_state("user_exists")
-        if user_exists == False:
-            try:
-                ipautil.run(["/usr/sbin/userdel", PKI_USER])
-            except ipautil.CalledProcessError, e:
-                logging.critical("failed to delete user %s" % e)
 
     def publish_ca_cert(self, location):
         args = ["-L", "-n", self.canickname, "-a"]
@@ -1081,6 +1071,44 @@ class CAInstance(service.Service):
         shutil.copy(ipautil.SHARE_DIR + "ipa-pki-proxy.conf",
                     HTTPD_CONFD + "ipa-pki-proxy.conf")
 
+    def enable_subject_key_identifier(self):
+        """
+        See if Subject Key Identifier is set in the profile and if not, add it.
+        """
+        setlist = installutils.get_directive(IPA_SERVICE_PROFILE,
+            'policyset.serverCertSet.list', separator='=')
+
+        # this is the default setting from pki-ca. Don't touch it if a user
+        # has manually modified it.
+        if setlist == '1,2,3,4,5,6,7,8':
+            installutils.set_directive(IPA_SERVICE_PROFILE,
+                'policyset.serverCertSet.list',
+                '1,2,3,4,5,6,7,8,10',
+                quotes=False, separator='=')
+            installutils.set_directive(IPA_SERVICE_PROFILE,
+                'policyset.serverCertSet.10.constraint.class_id',
+                'noConstraintImpl',
+                quotes=False, separator='=')
+            installutils.set_directive(IPA_SERVICE_PROFILE,
+                'policyset.serverCertSet.10.constraint.name',
+                'No Constraint',
+                quotes=False, separator='=')
+            installutils.set_directive(IPA_SERVICE_PROFILE,
+                'policyset.serverCertSet.10.default.class_id',
+                'subjectKeyIdentifierExtDefaultImpl',
+                quotes=False, separator='=')
+            installutils.set_directive(IPA_SERVICE_PROFILE,
+                'policyset.serverCertSet.10.default.name',
+                'Subject Key Identifier Extension Default',
+                quotes=False, separator='=')
+            installutils.set_directive(IPA_SERVICE_PROFILE,
+                'policyset.serverCertSet.10.default.params.critical',
+                'false',
+                quotes=False, separator='=')
+            return True
+
+        # No update was done
+        return False
 
 def install_replica_ca(config, postinstall=False):
     """
@@ -1153,7 +1181,7 @@ def install_replica_ca(config, postinstall=False):
     return (ca, cs)
 
 if __name__ == "__main__":
-    installutils.standard_logging_setup("install.log", False)
+    standard_logging_setup("install.log")
     cs = CADSInstance()
     cs.create_instance("EXAMPLE.COM", "catest.example.com", "example.com", "password")
     ca = CAInstance("EXAMPLE.COM", "/etc/httpd/alias")

@@ -27,24 +27,29 @@ module('entity',{
 
         IPA.ajax_options.async = false;
 
-        IPA.init(
-            "data",
-            true,
-            function(data, text_status, xhr) {
+        IPA.init({
+            url: 'data',
+            on_success: function(data, text_status, xhr) {
 
-                IPA.entity_factories.user = function(){
-                    return IPA.
-                        entity_builder().
-                        entity('user').
-                        search_facet({
-                            columns:['uid']}).
-                        build();
-                };
+                IPA.register('user', function(spec) {
+
+                    var that = IPA.entity(spec);
+
+                    that.init = function() {
+                        that.entity_init();
+
+                        that.builder.search_facet({
+                            columns: [ 'uid' ]
+                        });
+                    };
+
+                    return that;
+                });
             },
-            function(xhr, text_status, error_thrown) {
+            on_error: function(xhr, text_status, error_thrown) {
                 ok(false, "ipa_init() failed: "+error_thrown);
             }
-        );
+        });
 
         entities_container = $('<div id="entities"/>').appendTo(document.body);
 
@@ -61,12 +66,7 @@ test('Testing IPA.entity_set_search_definition().', function() {
         return true;
     };
 
-    var entity =   IPA.
-        entity_builder().
-        entity('user').
-        search_facet({
-            columns:['uid']}).
-        build();
+    var entity = IPA.get_entity('user');
 
     var entity_container = $('<div/>', {
         name: 'user',
@@ -88,18 +88,15 @@ test('Testing IPA.entity_set_search_definition().', function() {
     var column = facet.get_columns()[0];
     ok(
         column,
-        'column is not null'
-    );
+        'column is not null');
 
     equals(
         column.name, 'uid',
-        'column.name'
-    );
+        'column.name');
 
     equals(
         column.label, 'User login',
-        'column.label'
-    );
+        'column.label');
 
 });
 

@@ -39,21 +39,24 @@ class test_delegation(Declarative):
         dict(
             desc='Try to retrieve non-existent %r' % delegation1,
             command=('delegation_show', [delegation1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(
+                reason=u'ACI with name "%s" not found' % delegation1),
         ),
 
 
         dict(
             desc='Try to update non-existent %r' % delegation1,
-            command=('delegation_mod', [delegation1], dict(description=u'Foo')),
-            expected=errors.NotFound(reason='no such entry'),
+            command=('delegation_mod', [delegation1], dict(group=u'admins')),
+            expected=errors.NotFound(
+                reason=u'ACI with name "%s" not found' % delegation1),
         ),
 
 
         dict(
             desc='Try to delete non-existent %r' % delegation1,
             command=('delegation_del', [delegation1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(
+                reason=u'ACI with name "%s" not found' % delegation1),
         ),
 
 
@@ -68,6 +71,18 @@ class test_delegation(Declarative):
             ),
         ),
 
+        dict(
+            desc='Try to create %r for non-existing member group' % delegation1,
+            command=(
+                'delegation_add', [delegation1], dict(
+                     attrs=u'street,c,l,st,postalCode',
+                     permissions=u'write',
+                     group=u'editors',
+                     memberof=u'nonexisting',
+                ),
+            ),
+            expected=errors.NotFound(reason=u'nonexisting: group not found'),
+        ),
 
         # Note that we add postalCode but expect postalcode. This tests
         # the attrs normalizer.
@@ -75,7 +90,7 @@ class test_delegation(Declarative):
             desc='Create %r' % delegation1,
             command=(
                 'delegation_add', [delegation1], dict(
-                     attrs=u'street,c,l,st,postalCode',
+                     attrs=[u'street', u'c', u'l', u'st', u'postalCode'],
                      permissions=u'write',
                      group=u'editors',
                      memberof=u'admins',
@@ -99,7 +114,7 @@ class test_delegation(Declarative):
             desc='Try to create duplicate %r' % delegation1,
             command=(
                 'delegation_add', [delegation1], dict(
-                     attrs=u'street,c,l,st,postalCode',
+                     attrs=[u'street', u'c', u'l', u'st', u'postalCode'],
                      permissions=u'write',
                      group=u'editors',
                      memberof=u'admins',
@@ -127,6 +142,20 @@ class test_delegation(Declarative):
 
 
         dict(
+            desc='Retrieve %r with --raw' % delegation1,
+            command=('delegation_show', [delegation1], {'raw' : True}),
+            expected=dict(
+                value=delegation1,
+                summary=None,
+                result={
+                    'aci': u'(targetattr = "street || c || l || st || postalcode")(targetfilter = "(memberOf=cn=admins,cn=groups,cn=accounts,%s)")(version 3.0;acl "delegation:testdelegation";allow (write) groupdn = "ldap:///cn=editors,cn=groups,cn=accounts,%s";)' \
+                            % (api.env.basedn, api.env.basedn)
+                },
+            ),
+        ),
+
+
+        dict(
             desc='Search for %r' % delegation1,
             command=('delegation_find', [delegation1], {}),
             expected=dict(
@@ -140,6 +169,39 @@ class test_delegation(Declarative):
                     'aciname': delegation1,
                     'group': u'editors',
                     'memberof': member1,
+                    },
+                ],
+            ),
+        ),
+
+
+        dict(
+            desc='Search for %r with --pkey-only' % delegation1,
+            command=('delegation_find', [delegation1], {'pkey_only' : True}),
+            expected=dict(
+                count=1,
+                truncated=False,
+                summary=u'1 delegation matched',
+                result=[
+                    {
+                    'aciname': delegation1,
+                    },
+                ],
+            ),
+        ),
+
+
+        dict(
+            desc='Search for %r with --raw' % delegation1,
+            command=('delegation_find', [delegation1], {'raw' : True}),
+            expected=dict(
+                count=1,
+                truncated=False,
+                summary=u'1 delegation matched',
+                result=[
+                    {
+                    'aci': u'(targetattr = "street || c || l || st || postalcode")(targetfilter = "(memberOf=cn=admins,cn=groups,cn=accounts,%s)")(version 3.0;acl "delegation:testdelegation";allow (write) groupdn = "ldap:///cn=editors,cn=groups,cn=accounts,%s";)' \
+                            % (api.env.basedn, api.env.basedn),
                     },
                 ],
             ),

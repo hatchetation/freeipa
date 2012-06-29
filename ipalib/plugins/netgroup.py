@@ -49,6 +49,15 @@ EXAMPLES:
    ipa netgroup-del admins
 """)
 
+
+NETGROUP_PATTERN='^[a-zA-Z0-9_.][a-zA-Z0-9_.-]+$'
+NETGROUP_PATTERN_ERRMSG='may only include letters, numbers, _, -, and .'
+
+# according to most common use cases the netgroup pattern should fit
+# also the nisdomain pattern
+NISDOMAIN_PATTERN=NETGROUP_PATTERN
+NISDOMAIN_PATTERN_ERRMSG=NETGROUP_PATTERN_ERRMSG
+
 output_params = (
         Str('memberuser_user?',
             label='Member User',
@@ -101,6 +110,8 @@ class netgroup(LDAPObject):
 
     takes_params = (
         Str('cn',
+            pattern=NETGROUP_PATTERN,
+            pattern_errmsg=NETGROUP_PATTERN_ERRMSG,
             cli_name='name',
             label=_('Netgroup name'),
             primary_key=True,
@@ -112,6 +123,8 @@ class netgroup(LDAPObject):
             doc=_('Netgroup description'),
         ),
         Str('nisdomainname?',
+            pattern=NISDOMAIN_PATTERN,
+            pattern_errmsg=NISDOMAIN_PATTERN_ERRMSG,
             cli_name='nisdomain',
             label=_('NIS domain name'),
         ),
@@ -143,13 +156,20 @@ class netgroup_add(LDAPCreate):
 
     has_output_params = LDAPCreate.has_output_params + output_params
     msg_summary = _('Added netgroup "%(value)s"')
+
+    msg_collision = _(u'hostgroup with name "%s" already exists. ' \
+                      u'Hostgroups and netgroups share a common namespace')
+
     def pre_callback(self, ldap, dn, entry_attrs, attrs_list, *keys, **options):
         entry_attrs.setdefault('nisdomainname', self.api.env.domain)
 
         try:
-            # check duplicity with netgroups first to provide proper error
-            netgroup = api.Command['netgroup_show'](keys[-1])
-            self.obj.handle_duplicate_entry(*keys)
+            test_dn = self.obj.get_dn(keys[-1])
+            (test_dn_, netgroup) = ldap.get_entry(test_dn, ['objectclass'])
+            if 'mepManagedEntry' in netgroup.get('objectclass', []):
+                raise errors.DuplicateEntry(message=unicode(self.msg_collision % keys[-1]))
+            else:
+                self.obj.handle_duplicate_entry(*keys)
         except errors.NotFound:
             pass
 
@@ -158,10 +178,7 @@ class netgroup_add(LDAPCreate):
             # make sure that we don't create a collision if the plugin is
             # (temporarily) disabled
             netgroup = api.Command['hostgroup_show'](keys[-1])
-            raise errors.DuplicateEntry(message=unicode(_(\
-                    u'hostgroup with name "%s" already exists. ' \
-                    u'Hostgroups and netgroups share a common namespace'\
-                    ) % keys[-1]))
+            raise errors.DuplicateEntry(message=unicode(self.msg_collision % keys[-1]))
         except errors.NotFound:
             pass
 
@@ -185,7 +202,10 @@ class netgroup_mod(LDAPUpdate):
     msg_summary = _('Modified netgroup "%(value)s"')
 
     def pre_callback(self, ldap, dn, entry_attrs, attrs_list, *keys, **options):
-        (dn, entry_attrs) = ldap.get_entry(dn, attrs_list)
+        try:
+            (dn, entry_attrs) = ldap.get_entry(dn, attrs_list)
+        except errors.NotFound:
+            self.obj.handle_not_found(*keys)
         if is_all(options, 'usercategory') and 'memberuser' in entry_attrs:
             raise errors.MutuallyExclusiveError(reason="user category cannot be set to 'all' while there are allowed users")
         if is_all(options, 'hostcategory') and 'memberhost' in entry_attrs:
@@ -245,32 +265,10 @@ class netgroup_add_member(LDAPAddMember):
 
     member_attributes = ['memberuser', 'memberhost', 'member']
     has_output_params = LDAPAddMember.has_output_params + output_params
+    def pre_callback(self, ldap, dn, found, not_found, *keys, **options):
+        return add_external_pre_callback('host', ldap, dn, keys, options)
     def post_callback(self, ldap, completed, failed, dn, entry_attrs, *keys, **options):
-        completed_external = 0
-        # Sift through the host failures. We assume that these are all
-        # hosts that aren't stored in IPA, aka external hosts.
-        if 'memberhost' in failed and 'host' in failed['memberhost']:
-            (dn, entry_attrs_) = ldap.get_entry(dn, ['externalhost'])
-            members = entry_attrs.get('memberhost', [])
-            external_hosts = entry_attrs_.get('externalhost', [])
-            failed_hosts = []
-            for host in failed['memberhost']['host']:
-                hostname = host[0].lower()
-                host_dn = self.api.Object['host'].get_dn(hostname)
-                if hostname not in external_hosts and host_dn not in members:
-                    external_hosts.append(hostname)
-                    completed_external += 1
-                else:
-                    failed_hosts.append(hostname)
-            if completed_external:
-                try:
-                    ldap.update_entry(dn, {'externalhost': external_hosts})
-                except errors.EmptyModlist:
-                    pass
-                failed['memberhost']['host'] = failed_hosts
-                entry_attrs['externalhost'] = external_hosts
-        return (completed + completed_external, dn)
-
+        return add_external_post_callback('memberhost', 'host', 'externalhost', ldap, completed, failed, dn, entry_attrs, keys, options)
 
 api.register(netgroup_add_member)
 
@@ -281,27 +279,6 @@ class netgroup_remove_member(LDAPRemoveMember):
     member_attributes = ['memberuser', 'memberhost', 'member']
     has_output_params = LDAPRemoveMember.has_output_params + output_params
     def post_callback(self, ldap, completed, failed, dn, entry_attrs, *keys, **options):
-        # Run through the host failures and gracefully remove any defined as
-        # as an externalhost.
-        if 'memberhost' in failed and 'host' in failed['memberhost']:
-            (dn, entry_attrs_) = ldap.get_entry(dn, ['externalhost'])
-            external_hosts = entry_attrs_.get('externalhost', [])
-            failed_hosts = []
-            completed_external = 0
-            for host in failed['memberhost']['host']:
-                hostname = host[0].lower()
-                if hostname in external_hosts:
-                    external_hosts.remove(hostname)
-                    completed_external += 1
-                else:
-                    failed_hosts.append(hostname)
-            if completed_external:
-                try:
-                    ldap.update_entry(dn, {'externalhost': external_hosts})
-                except errors.EmptyModlist:
-                    pass
-                failed['memberhost']['host'] = failed_hosts
-                entry_attrs['externalhost'] = external_hosts
-        return (completed + completed_external, dn)
+        return remove_external_post_callback('memberhost', 'host', 'externalhost', ldap, completed, failed, dn, entry_attrs, keys, options)
 
 api.register(netgroup_remove_member)

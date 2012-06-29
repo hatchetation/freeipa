@@ -84,6 +84,9 @@ EXAMPLES:
 """)
 
 output_params = (
+    Flag('has_keytab',
+        label=_('Keytab'),
+    ),
     Str('managedby_host',
         label='Managed by',
     ),
@@ -92,6 +95,9 @@ output_params = (
     ),
     Str('serial_number',
         label=_('Serial Number'),
+    ),
+    Str('serial_number_hex',
+        label=_('Serial Number (hex)'),
     ),
     Str('issuer',
         label=_('Issuer'),
@@ -187,11 +193,24 @@ def set_certificate_attrs(entry_attrs):
     cert = x509.load_certificate(cert, datatype=x509.DER)
     entry_attrs['subject'] = unicode(cert.subject)
     entry_attrs['serial_number'] = unicode(cert.serial_number)
+    entry_attrs['serial_number_hex'] = u'0x%X' % cert.serial_number
     entry_attrs['issuer'] = unicode(cert.issuer)
     entry_attrs['valid_not_before'] = unicode(cert.valid_not_before_str)
     entry_attrs['valid_not_after'] = unicode(cert.valid_not_after_str)
     entry_attrs['md5_fingerprint'] = unicode(nss.data_to_hex(nss.md5_digest(cert.der_data), 64)[0])
     entry_attrs['sha1_fingerprint'] = unicode(nss.data_to_hex(nss.sha1_digest(cert.der_data), 64)[0])
+
+def check_required_principal(ldap, hostname, service):
+    """
+    Raise an error if the host of this prinicipal is an IPA master and one
+    of the principals required for proper execution.
+    """
+    try:
+        host_is_master(ldap, hostname)
+    except errors.ValidationError, e:
+        service_types = ['HTTP', 'ldap', 'DNS', 'dogtagldap']
+        if service in service_types:
+            raise errors.ValidationError(name='principal', error=_('This principal is required by the IPA master'))
 
 class service(LDAPObject):
     """
@@ -285,6 +304,11 @@ class service_del(LDAPDelete):
     msg_summary = _('Deleted service "%(value)s"')
     member_attributes = ['managedby']
     def pre_callback(self, ldap, dn, *keys, **options):
+        # In the case of services we don't want IPA master services to be
+        # deleted. This is a limited few though. If the user has their own
+        # custom services allow them to manage them.
+        (service, hostname, realm) = split_principal(keys[-1])
+        check_required_principal(ldap, hostname, service)
         if self.api.env.enable_ra:
             (dn, entry_attrs) = ldap.get_entry(dn, ['usercertificate'])
             cert = entry_attrs.get('usercertificate')
@@ -358,6 +382,7 @@ class service_find(LDAPSearch):
     member_attributes = ['managedby']
     takes_options = LDAPSearch.takes_options
     has_output_params = LDAPSearch.has_output_params + output_params
+
     def pre_callback(self, ldap, filter, attrs_list, base_dn, scope, *args, **options):
         # lisp style!
         custom_filter = '(&(objectclass=ipaService)' \
@@ -373,6 +398,8 @@ class service_find(LDAPSearch):
         )
 
     def post_callback(self, ldap, entries, truncated, *args, **options):
+        if options.get('pkey_only', False):
+            return
         for entry in entries:
             (dn, entry_attrs) = entry
             self.obj.get_password_attributes(ldap, dn, entry_attrs)
@@ -390,6 +417,7 @@ class service_show(LDAPRetrieve):
             doc=_('file to store certificate in'),
         ),
     )
+    has_output_params = LDAPRetrieve.has_output_params + output_params
 
     def post_callback(self, ldap, dn, entry_attrs, *keys, **options):
         self.obj.get_password_attributes(ldap, dn, entry_attrs)
@@ -443,6 +471,9 @@ class service_disable(LDAPQuery):
 
         dn = self.obj.get_dn(*keys, **options)
         (dn, entry_attrs) = ldap.get_entry(dn, ['usercertificate'])
+
+        (service, hostname, realm) = split_principal(keys[-1])
+        check_required_principal(ldap, hostname, service)
 
         # See if we do any work at all here and if not raise an exception
         done_work = False

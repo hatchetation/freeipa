@@ -68,7 +68,7 @@ install: all server-install
 		(cd $$subdir && $(MAKE) $@) || exit 1; \
 	done
 
-client-install: client
+client-install: client client-dirs
 	@for subdir in $(CLIENTDIRS); do \
 		(cd $$subdir && $(MAKE) install) || exit 1; \
 	done
@@ -77,6 +77,15 @@ client-install: client
 		python setup-client.py install; \
 	else \
 		python setup-client.py install --root $(DESTDIR); \
+	fi
+
+client-dirs:
+	@if [ "$(DESTDIR)" != "" ] ; then \
+		mkdir -p $(DESTDIR)/etc/ipa ; \
+		mkdir -p $(DESTDIR)/var/lib/ipa-client/sysrestore ; \
+	else \
+		echo "DESTDIR was not set, please create /etc/ipa and /var/lib/ipa-client/sysrestore" ; \
+		echo "Without those directories ipa-client-install will fail" ; \
 	fi
 
 lint:
@@ -152,6 +161,7 @@ tarballs: local-archive
 	rm -rf dist/$(TARBALL_PREFIX)
 
 rpmroot:
+	rm -rf $(RPMBUILD)
 	mkdir -p $(RPMBUILD)/BUILD
 	mkdir -p $(RPMBUILD)/RPMS
 	mkdir -p $(RPMBUILD)/SOURCES
@@ -165,22 +175,22 @@ rpmdistdir:
 rpms: rpmroot rpmdistdir version-update lint tarballs
 	cp dist/sources/$(TARBALL) $(RPMBUILD)/SOURCES/.
 	rpmbuild --define "_topdir $(RPMBUILD)" -ba freeipa.spec
-	cp rpmbuild/RPMS/*/$(PRJ_PREFIX)-*-$(IPA_VERSION)-*.rpm dist/rpms/
-	cp rpmbuild/SRPMS/$(PRJ_PREFIX)-$(IPA_VERSION)-*.src.rpm dist/srpms/
-	rm -rf rpmbuild
+	cp $(RPMBUILD)/RPMS/*/$(PRJ_PREFIX)-*-$(IPA_VERSION)-*.rpm dist/rpms/
+	cp $(RPMBUILD)/SRPMS/$(PRJ_PREFIX)-$(IPA_VERSION)-*.src.rpm dist/srpms/
+	rm -rf $(RPMBUILD)
 
 client-rpms: rpmroot rpmdistdir version-update lint tarballs
 	cp dist/sources/$(TARBALL) $(RPMBUILD)/SOURCES/.
 	rpmbuild --define "_topdir $(RPMBUILD)" --define "ONLY_CLIENT 1" -ba freeipa.spec
-	cp rpmbuild/RPMS/*/$(PRJ_PREFIX)-*-$(IPA_VERSION)-*.rpm dist/rpms/
-	cp rpmbuild/SRPMS/$(PRJ_PREFIX)-$(IPA_VERSION)-*.src.rpm dist/srpms/
-	rm -rf rpmbuild
+	cp $(RPMBUILD)/RPMS/*/$(PRJ_PREFIX)-*-$(IPA_VERSION)-*.rpm dist/rpms/
+	cp $(RPMBUILD)/SRPMS/$(PRJ_PREFIX)-$(IPA_VERSION)-*.src.rpm dist/srpms/
+	rm -rf $(RPMBUILD)
 
 srpms: rpmroot rpmdistdir version-update lint tarballs
 	cp dist/sources/$(TARBALL) $(RPMBUILD)/SOURCES/.
 	rpmbuild --define "_topdir $(RPMBUILD)" -bs freeipa.spec
-	cp rpmbuild/SRPMS/$(PRJ_PREFIX)-$(IPA_VERSION)-*.src.rpm dist/srpms/
-	rm -rf rpmbuild
+	cp $(RPMBUILD)/SRPMS/$(PRJ_PREFIX)-$(IPA_VERSION)-*.src.rpm dist/srpms/
+	rm -rf $(RPMBUILD)
 
 
 repodata:
@@ -203,12 +213,12 @@ distclean: version-update
 	@for subdir in $(SUBDIRS); do \
 		(cd $$subdir && $(MAKE) $@) || exit 1; \
 	done
-	rm -fr rpmbuild dist build
+	rm -fr $(RPMBUILD) dist build
 	rm -f daemons/NEWS daemons/README daemons/AUTHORS daemons/ChangeLog
 	rm -f install/NEWS install/README install/AUTHORS install/ChangeLog
 
 maintainer-clean: clean
-	rm -fr rpmbuild dist build
+	rm -fr $(RPMBUILD) dist build
 	cd selinux && $(MAKE) maintainer-clean
 	cd daemons && $(MAKE) maintainer-clean
 	cd install && $(MAKE) maintainer-clean

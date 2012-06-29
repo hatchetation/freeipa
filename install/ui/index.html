@@ -9,27 +9,34 @@
     <script type="text/javascript" src="jquery-ui.js"></script>
     <script type="text/javascript" src="jquery.ba-bbq.js"></script>
     <script type="text/javascript" src="jquery.ordered-map.js"></script>
+    <script type="text/javascript" src="browser.js"></script>
+    <script type="text/javascript" src="net.js"></script>
 
     <script type="text/javascript" src="ipa.js"></script>
     <script type="text/javascript" src="widget.js"></script>
+    <script type="text/javascript" src="field.js"></script>
     <script type="text/javascript" src="dialog.js"></script>
     <script type="text/javascript" src="search.js"></script>
     <script type="text/javascript" src="details.js"></script>
     <script type="text/javascript" src="add.js"></script>
     <script type="text/javascript" src="association.js"></script>
+    <script type="text/javascript" src="facet.js"></script>
     <script type="text/javascript" src="entity.js"></script>
     <script type="text/javascript" src="navigation.js"></script>
     <script type="text/javascript" src="rule.js"></script>
 
+    <script type="text/javascript" src="automember.js"></script>
     <script type="text/javascript" src="automount.js"></script>
     <script type="text/javascript" src="dns.js"></script>
     <script type="text/javascript" src="certificate.js"></script>
     <script type="text/javascript" src="user.js"></script>
     <script type="text/javascript" src="group.js"></script>
     <script type="text/javascript" src="hbac.js"></script>
+    <script type="text/javascript" src="hbactest.js"></script>
     <script type="text/javascript" src="host.js"></script>
     <script type="text/javascript" src="hostgroup.js"></script>
     <script type="text/javascript" src="netgroup.js"></script>
+    <script type="text/javascript" src="selinux.js"></script>
     <script type="text/javascript" src="service.js"></script>
     <script type="text/javascript" src="serverconfig.js"></script>
     <script type="text/javascript" src="sudo.js"></script>
@@ -37,8 +44,7 @@
     <script type="text/javascript" src="aci.js"></script>
     <script type="text/javascript" src="entitle.js"></script>
 
-
-    <script type="text/javascript" src="develop.js"></script>
+    <script type="text/javascript" src="ext/extension.js"></script>
     <script type="text/javascript" src="webui.js"></script>
 
     <link rel="stylesheet" type="text/css" href="jquery-ui.css" />
@@ -60,13 +66,18 @@
 
         <div id="header">
             <span class="header-logo">
-                 <a href="#"><img src="ipalogo.png" /><img src="ipabanner.png" /></a>
+                <a href="#"><img src="images/ipa-logo.png" /><img src="images/ipa-banner.png" /></a>
             </span>
-            <span id="header-network-activity-indicator" class="network-activity-indicator">
-                 <img src="spinner_header.gif" />
-            </span>
-            <span id="loggedinas" class="header-loggedinas">
-                 <a href="#"><span id="login_header">Logged in as</span>: <strong>user@FREEIPA.ORG</strong></a>
+            <span class="header-right">
+                <span id="loggedinas" class="header-loggedinas">
+                    <a href="#"><span id="login_header">Logged in as</span>: <strong>user@FREEIPA.ORG</strong></a>
+                </span>
+                <span class="header-loggedinas">
+                    | <a href="#logout" id="logout">Logout</a>
+                </span>
+                <span id="header-network-activity-indicator" class="network-activity-indicator">
+                    <img src="images/spinner-header.gif" />
+                </span>
             </span>
         </div>
 

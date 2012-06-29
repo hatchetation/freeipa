@@ -29,7 +29,6 @@ import re
 import sys
 import inspect
 import threading
-import logging
 import os
 from os import path
 import subprocess
@@ -40,7 +39,8 @@ import util
 import text
 from text import _
 from base import ReadOnly, NameSpace, lock, islocked, check_name
-from constants import DEFAULT_CONFIG, FORMAT_STDERR, FORMAT_FILE
+from constants import DEFAULT_CONFIG
+from ipapython.ipa_log_manager import *
 
 # FIXME: Updated constants.TYPE_ERROR to use this clearer format from wehjit:
 TYPE_ERROR = '%s: need a %r; got a %r: %r'
@@ -172,10 +172,15 @@ class Plugin(ReadOnly):
     Base class for all plugins.
     """
 
+    finalize_early = True
+
     label = None
 
     def __init__(self):
         self.__api = None
+        self.__finalize_called = False
+        self.__finalized = False
+        self.__finalize_lock = threading.RLock()
         cls = self.__class__
         self.name = cls.__name__
         self.module = cls.__module__
@@ -188,14 +193,7 @@ class Plugin(ReadOnly):
             self.summary = '<%s>' % self.fullname
         else:
             self.summary = unicode(self.doc).split('\n\n', 1)[0].strip()
-        log = logging.getLogger(self.fullname)
-        for name in ('debug', 'info', 'warning', 'error', 'critical', 'exception'):
-            if hasattr(self, name):
-                raise StandardError(
-                    '%s.%s attribute (%r) conflicts with Plugin logger' % (
-                        self.name, name, getattr(self, name))
-                )
-            setattr(self, name, getattr(log, name))
+        log_mgr.get_logger(self, True)
         if self.label is None:
             self.label = text.FixMe(self.name + '.label')
         if not isinstance(self.label, text.LazyText):
@@ -210,18 +208,85 @@ class Plugin(ReadOnly):
 
     def __get_api(self):
         """
-        Return `API` instance passed to `finalize()`.
+        Return `API` instance passed to `set_api()`.
 
-        If `finalize()` has not yet been called, None is returned.
+        If `set_api()` has not yet been called, None is returned.
         """
         return self.__api
     api = property(__get_api)
 
     def finalize(self):
         """
+        Finalize plugin initialization.
+
+        This method calls `_on_finalize()` and locks the plugin object.
+
+        Subclasses should not override this method. Custom finalization is done
+        in `_on_finalize()`.
         """
-        if not is_production_mode(self):
-            lock(self)
+        with self.__finalize_lock:
+            assert self.__finalized is False
+            if self.__finalize_called:
+                # No recursive calls!
+                return
+            self.__finalize_called = True
+            self._on_finalize()
+            self.__finalized = True
+            if not is_production_mode(self):
+                lock(self)
+
+    def _on_finalize(self):
+        """
+        Do custom finalization.
+
+        This method is called from `finalize()`. Subclasses can override this
+        method in order to add custom finalization.
+        """
+        pass
+
+    def ensure_finalized(self):
+        """
+        Finalize plugin initialization if it has not yet been finalized.
+        """
+        with self.__finalize_lock:
+            if not self.__finalized:
+                self.finalize()
+
+    class finalize_attr(object):
+        """
+        Create a stub object for plugin attribute that isn't set until the
+        finalization of the plugin initialization.
+
+        When the stub object is accessed, it calls `ensure_finalized()` to make
+        sure the plugin initialization is finalized. The stub object is expected
+        to be replaced with the actual attribute value during the finalization
+        (preferably in `_on_finalize()`), otherwise an `AttributeError` is
+        raised.
+
+        This is used to implement on-demand finalization of plugin
+        initialization.
+        """
+        __slots__ = ('name', 'value')
+
+        def __init__(self, name, value=None):
+            self.name = name
+            self.value = value
+
+        def __get__(self, obj, cls):
+            if obj is None or obj.api is None:
+                return self.value
+            obj.ensure_finalized()
+            try:
+                return getattr(obj, self.name)
+            except RuntimeError:
+                # If the actual attribute value is not set in _on_finalize(),
+                # getattr() calls __get__() again, which leads to infinite
+                # recursion. This can happen only if the plugin is written
+                # badly, so advise the developer about that instead of giving
+                # them a generic "maximum recursion depth exceeded" error.
+                raise AttributeError(
+                    "attribute '%s' of plugin '%s' was not set in finalize()" % (self.name, obj.name)
+                )
 
     def set_api(self, api):
         """
@@ -235,8 +300,7 @@ class Plugin(ReadOnly):
         for name in api:
             assert not hasattr(self, name)
             setattr(self, name, api[name])
-        # FIXME: the 'log' attribute is depreciated.  See Plugin.__init__()
-        for name in ('env', 'context', 'log'):
+        for name in ('env', 'context'):
             if hasattr(api, name):
                 assert not hasattr(self, name)
                 setattr(self, name, getattr(api, name))
@@ -397,34 +461,33 @@ class API(DictProxy):
         self.__doing('bootstrap')
         self.env._bootstrap(**overrides)
         self.env._finalize_core(**dict(DEFAULT_CONFIG))
-        log = logging.getLogger()
+        object.__setattr__(self, 'log_mgr', log_mgr)
+        log = log_mgr.root_logger
         object.__setattr__(self, 'log', log)
-
         # If logging has already been configured somewhere else (like in the
         # installer), don't add handlers or change levels:
-        if len(log.handlers) > 0 or self.env.validate_api:
+        if log_mgr.configure_state != 'default' or self.env.validate_api:
             return
 
-        if self.env.debug:
-            log.setLevel(logging.DEBUG)
-        else:
-            log.setLevel(logging.INFO)
-
+        log_mgr.default_level = 'info'
+        log_mgr.configure_from_env(self.env, configure_state='api')
         # Add stderr handler:
-        stderr = logging.StreamHandler()
+        level = 'info'
         if self.env.debug:
-            stderr.setLevel(logging.DEBUG)
+            level = 'debug'
         else:
             if self.env.context == 'cli':
                 if self.env.verbose > 0:
-                    stderr.setLevel(logging.INFO)
+                    level = 'info'
                 else:
-                    stderr.setLevel(logging.WARNING)
-            else:
-                stderr.setLevel(logging.INFO)
-        stderr.setFormatter(util.LogFormatter(FORMAT_STDERR))
-        log.addHandler(stderr)
+                    level = 'warning'
 
+        if log_mgr.handlers.has_key('console'):
+            log_mgr.remove_handler('console')
+        log_mgr.create_log_handlers([dict(name='console',
+                                          stream=sys.stderr,
+                                          level=level,
+                                          format=LOGGING_FORMAT_STDERR)])
         # Add file handler:
         if self.env.mode in ('dummy', 'unit_test'):
             return  # But not if in unit-test mode
@@ -437,17 +500,19 @@ class API(DictProxy):
             except OSError:
                 log.error('Could not create log_dir %r', log_dir)
                 return
-        try:
-            handler = logging.FileHandler(self.env.log)
-        except IOError, e:
-            log.error('Cannot open log file %r: %s', self.env.log, e.strerror)
-            return
-        handler.setFormatter(util.LogFormatter(FORMAT_FILE))
+
+
+        level = 'info'
         if self.env.debug:
-            handler.setLevel(logging.DEBUG)
-        else:
-            handler.setLevel(logging.INFO)
-        log.addHandler(handler)
+            level = 'debug'
+        try:
+            log_mgr.create_log_handlers([dict(name='file',
+                                              filename=self.env.log,
+                                              level=level,
+                                              format=LOGGING_FORMAT_FILE)])
+        except IOError, e:
+            log.error('Cannot open log file %r: %s', self.env.log, e)
+            return
 
     def build_global_parser(self, parser=None, context=None):
         """
@@ -464,6 +529,9 @@ class API(DictProxy):
         )
         parser.add_option('-d', '--debug', action='store_true',
             help='Produce full debuging output',
+        )
+        parser.add_option('--delegate', action='store_true',
+            help='Delegate the TGT to the IPA server',
         )
         parser.add_option('-v', '--verbose', action='count',
             help='Produce more verbose output. A second -v displays the XML-RPC request',
@@ -505,7 +573,7 @@ class API(DictProxy):
                     pass
                 overrides[str(key.strip())] = value.strip()
         for key in ('conf', 'debug', 'verbose', 'prompt_all', 'interactive',
-            'fallback'):
+            'fallback', 'delegate'):
             value = getattr(options, key, None)
             if value is not None:
                 overrides[key] = value
@@ -528,18 +596,31 @@ class API(DictProxy):
         if self.env.mode in ('dummy', 'unit_test'):
             return
         self.import_plugins('ipalib')
-        if self.env.in_server:
+        if self.env.context in ('server', 'lite'):
             self.import_plugins('ipaserver')
+        if self.env.context in ('installer', 'updates'):
+            self.import_plugins('ipaserver/install/plugins')
 
     # FIXME: This method has no unit test
     def import_plugins(self, package):
         """
         Import modules in ``plugins`` sub-package of ``package``.
         """
+        package = package.replace(os.path.sep, '.')
         subpackage = '%s.plugins' % package
         try:
             parent = __import__(package)
-            plugins = __import__(subpackage).plugins
+            parts = package.split('.')[1:]
+            if parts:
+                for part in parts:
+                    if part == 'plugins':
+                        plugins = subpackage.plugins
+                        subpackage = plugins.__name__
+                        break
+                    subpackage = parent.__getattribute__(part)
+                    parent = subpackage
+            else:
+                plugins = __import__(subpackage).plugins
         except ImportError, e:
             self.log.error(
                 'cannot import plugins sub-package %s: %s', subpackage, e
@@ -607,6 +688,7 @@ class API(DictProxy):
                     lock(self)
 
         plugins = {}
+        tofinalize = set()
         def plugin_iter(base, subclasses):
             for klass in subclasses:
                 assert issubclass(klass, base)
@@ -616,6 +698,8 @@ class API(DictProxy):
                 if not is_production_mode(self):
                     assert base not in p.bases
                 p.bases.append(base)
+                if klass.finalize_early or not self.env.plugins_on_demand:
+                    tofinalize.add(p)
                 yield p.instance
 
         production_mode = is_production_mode(self)
@@ -637,8 +721,8 @@ class API(DictProxy):
             if not production_mode:
                 assert p.instance.api is self
 
-        for p in plugins.itervalues():
-            p.instance.finalize()
+        for p in tofinalize:
+            p.instance.ensure_finalized()
             if not production_mode:
                 assert islocked(p.instance) is True
         object.__setattr__(self, '_API__finalized', True)
