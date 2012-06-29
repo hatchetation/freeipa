@@ -11,11 +11,9 @@ usr/sbin/ipa-ldap-updater
 usr/sbin/ipa-compat-manage
 usr/sbin/ipa-nis-manage
 usr/sbin/ipa-managed-entries
-usr/sbin/ipa_kpasswd
 usr/sbin/ipactl
 usr/sbin/ipa-upgradeconfig
 usr/sbin/ipa-compliance
-etc/rc.d/init.d/ipa_kpasswd	etc/init.d
 usr/lib/python*/dist-packages/ipaserver/*
 usr/share/ipa/wsgi.py
 usr/share/ipa/*.ldif
@@ -31,7 +29,6 @@ usr/share/ipa/updates/*
 usr/lib/*/dirsrv/plugins/*.so
 var/lib/ipa/sysrestore
 var/cache/ipa/sessions
-var/cache/ipa/kpasswd
 usr/share/man/man1/ipa-replica-conncheck.1.gz
 usr/share/man/man1/ipa-replica-install.1.gz
 usr/share/man/man1/ipa-replica-manage.1.gz
@@ -45,6 +42,5 @@ usr/share/man/man1/ipa-compat-manage.1.gz
 usr/share/man/man1/ipa-nis-manage.1.gz
 usr/share/man/man1/ipa-managed-entries.1.gz
 usr/share/man/man1/ipa-ldap-updater.1.gz
-usr/share/man/man8/ipa_kpasswd.8.gz
 usr/share/man/man8/ipactl.8.gz
 usr/share/man/man1/ipa-compliance.1.gz
