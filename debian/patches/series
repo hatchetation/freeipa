@@ -1,8 +1,5 @@
 fix_dnsclient.py.patch
 add_debian.py.patch
-include-stdint.patch
-no-arrows.patch
 no-testcert.patch
 prefix.patch
 fix-string-format.diff
-create-client-dirs.patch

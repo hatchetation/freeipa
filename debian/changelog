@@ -1,4 +1,4 @@
-freeipa (2.1.4-1) UNRELEASED; urgency=low
+freeipa (2.2.0-1) UNRELEASED; urgency=low
 
   [ Michele Baldessari ]
   * Initial release (Closes: #12345)
@@ -13,8 +13,6 @@ freeipa (2.1.4-1) UNRELEASED; urgency=low
   * Fix dependencies.
   * Add fix_dnsclient.py.patch, we don't use autconfig.
   * Add add_debian.py.patch, platform support code.
-  * Add include-stdint.patch from upstream to fix build errors.
-  * Add no-arrows.patch to not fail test_lang.
   * Add no-testcert.patch to not fail make-testcert.
   * Bump compat and debhelper build-depends to 9.
   * Add missing files to freeipa.install.
@@ -25,9 +23,6 @@ freeipa (2.1.4-1) UNRELEASED; urgency=low
   * rules: Strip the executable bit from translation files.
   * fix-format-string.diff: Fix build errors, thanks Krzysztof Klimonda!
   * Use dh_python2.
-  * create-client-dirs.patch: Add a patch from upstream that creates
-    /etc/ipa and /var/lib/ipa-client/sysrestore paths. Stop creating them in
-    rules.
   * Add DEP-3 compliant headers to the patches.
   * control: client; Move libpam-krb5 to Suggests.
   * control: Update the maintainer address and repo location.
