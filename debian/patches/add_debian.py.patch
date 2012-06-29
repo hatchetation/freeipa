@@ -3,9 +3,7 @@ Date:   Fri Oct 28 15:57:04 2011 +0300
 
     Add add_debian.py.patch, platform support code.
 
-diff --git a/ipapython/platform/debian.py b/ipapython/platform/debian.py
-index e69de29..ba8bf2d 100644
---- a/ipapython/platform/debian.py
+--- /dev/null
 +++ b/ipapython/platform/debian.py
 @@ -0,0 +1,174 @@
 +# Authors: Simo Sorce <ssorce redhat com>

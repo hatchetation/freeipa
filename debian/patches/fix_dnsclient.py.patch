@@ -3,11 +3,9 @@ Date:   Fri Oct 28 15:44:52 2011 +0300
 
     Add fix_dnsclient.py.patch, we don't use authconfig.
 
-diff --git a/ipapython/dnsclient.py b/ipapython/dnsclient.py
-index 9a59d9b..857e1c7 100644
 --- a/ipapython/dnsclient.py
 +++ b/ipapython/dnsclient.py
-@@ -18,7 +18,7 @@ import struct
+@@ -18,7 +18,7 @@
  import socket
  import sys
  
@@ -16,7 +14,7 @@ index 9a59d9b..857e1c7 100644
  
  DNS_C_IN = 1
  DNS_C_CS = 2
-@@ -446,7 +446,7 @@ def query(query, qclass, qtype):
+@@ -456,7 +456,7 @@
  	qdata = dnsFormatQuery(query, qclass, qtype)
  	if not qdata:
  		return []

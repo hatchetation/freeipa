@@ -8,11 +8,9 @@ Subject: [PATCH] Fix -Wformat-security warnings
  .../ipa-pwd-extop/ipa_pwd_extop.c                  |    8 ++++----
  2 files changed, 7 insertions(+), 7 deletions(-)
 
-diff --git a/daemons/ipa-slapi-plugins/ipa-enrollment/ipa_enrollment.c b/daemons/ipa-slapi-plugins/ipa-enrollment/ipa_enrollment.c
-index 78fb359..cb8bb84 100644
 --- a/daemons/ipa-slapi-plugins/ipa-enrollment/ipa_enrollment.c
 +++ b/daemons/ipa-slapi-plugins/ipa-enrollment/ipa_enrollment.c
-@@ -317,7 +317,7 @@ free_and_return:
+@@ -317,7 +317,7 @@
  
      if (krbLastPwdChange) slapi_ch_free_string(&krbLastPwdChange);
  
@@ -21,7 +19,7 @@ index 78fb359..cb8bb84 100644
      slapi_send_ldap_result(pb, rc, NULL, errMesg, 0, NULL);
  
      free(principal);
-@@ -344,7 +344,7 @@ ipaenrollment_extop(Slapi_PBlock *pb)
+@@ -344,7 +344,7 @@
      if (slapi_pblock_get(pb, SLAPI_EXT_OP_REQ_OID, &oid ) != 0) {
          errMesg = "Could not get OID and value from request.\n";
          rc = LDAP_OPERATIONS_ERROR;
@@ -30,7 +28,7 @@ index 78fb359..cb8bb84 100644
          goto free_and_return;
      }
  
-@@ -357,7 +357,7 @@ ipaenrollment_extop(Slapi_PBlock *pb)
+@@ -357,7 +357,7 @@
      rc = LDAP_OPERATIONS_ERROR;
  
  free_and_return:
@@ -39,11 +37,9 @@ index 78fb359..cb8bb84 100644
      slapi_send_ldap_result(pb, rc, NULL, errMesg, 0, NULL);
  
      return SLAPI_PLUGIN_EXTENDED_SENT_RESULT;
-diff --git a/daemons/ipa-slapi-plugins/ipa-pwd-extop/ipa_pwd_extop.c b/daemons/ipa-slapi-plugins/ipa-pwd-extop/ipa_pwd_extop.c
-index 61e0df1..d526b47 100644
 --- a/daemons/ipa-slapi-plugins/ipa-pwd-extop/ipa_pwd_extop.c
 +++ b/daemons/ipa-slapi-plugins/ipa-pwd-extop/ipa_pwd_extop.c
-@@ -500,7 +500,7 @@ free_and_return:
+@@ -519,7 +519,7 @@
  	if (targetEntry) slapi_entry_free(targetEntry);
  	if (ber) ber_free(ber, 1);
  
@@ -52,7 +48,7 @@ index 61e0df1..d526b47 100644
  	slapi_send_ldap_result(pb, rc, NULL, errMesg, 0, NULL);
  
  	return SLAPI_PLUGIN_EXTENDED_SENT_RESULT;
-@@ -1079,7 +1079,7 @@ free_and_return:
+@@ -1089,7 +1089,7 @@
  
          if (rc == LDAP_SUCCESS)
              errMesg = NULL;
@@ -61,7 +57,7 @@ index 61e0df1..d526b47 100644
  	slapi_send_ldap_result(pb, rc, NULL, errMesg, 0, NULL);
  
  	return SLAPI_PLUGIN_EXTENDED_SENT_RESULT;
-@@ -1106,7 +1106,7 @@ static int ipapwd_extop(Slapi_PBlock *pb)
+@@ -1116,7 +1116,7 @@
  	if (slapi_pblock_get(pb, SLAPI_EXT_OP_REQ_OID, &oid) != 0) {
  		errMesg = "Could not get OID value from request.\n";
  		rc = LDAP_OPERATIONS_ERROR;
@@ -70,7 +66,7 @@ index 61e0df1..d526b47 100644
  		goto free_and_return;
  	} else {
  	        LOG("Received extended operation request with OID %s\n", oid);
-@@ -1129,7 +1129,7 @@ static int ipapwd_extop(Slapi_PBlock *pb)
+@@ -1139,7 +1139,7 @@
  free_and_return:
  	if (krbcfg) free_ipapwd_krbcfg(&krbcfg);
  
@@ -79,7 +75,3 @@ index 61e0df1..d526b47 100644
  	slapi_send_ldap_result(pb, rc, NULL, errMesg, 0, NULL);
  
  	return SLAPI_PLUGIN_EXTENDED_SENT_RESULT;
--- 
-1.7.9
-
-
