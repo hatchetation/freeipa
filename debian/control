@@ -91,6 +91,7 @@ Depends: ${shlibs:Depends}, ${misc:Depends}, ${python:Depends},
  libxmlrpc-core-c3 (>= 1.16.33-3.1ubuntu5),
  ntp,
  python-ldap,
+ python-krbv,
  sssd,
  wget,
 Suggests:
