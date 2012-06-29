@@ -69,8 +69,6 @@ Depends: ${shlibs:Depends}, ${misc:Depends}, ${python:Depends},
  python-ldap,
  python-krbv,
  python-pyasn1,
-# not packaged yet
-# slapi-nis,
  tomcat6,
 Description: FreeIPA centralized identity framework -- server
  FreeIPA is an integrated solution to provide centrally managed Identity
