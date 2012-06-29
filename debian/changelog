@@ -28,5 +28,6 @@ freeipa (2.2.0-1) UNRELEASED; urgency=low
   * control: Update the maintainer address and repo location.
   * control: Fix package descriptions.
   * control: Add python-krbv to client depends.
+  * Add fix-nss-include.diff, fix nss include path.
 
  -- Timo Aaltonen <tjaalton@ubuntu.com>  Tue, 01 Nov 2011 10:52:25 -0400
