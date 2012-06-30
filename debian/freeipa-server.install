@@ -27,6 +27,8 @@ usr/share/ipa/ipa-rewrite.conf
 usr/share/ipa/ipa-pki-proxy.conf
 usr/share/ipa/updates/*
 usr/lib/*/dirsrv/plugins/*.so
+usr/lib/*/ipa/certmonger/*
+usr/lib/*/krb5/plugins/kdb/*.so
 var/lib/ipa/sysrestore
 var/cache/ipa/sessions
 usr/share/man/man1/ipa-replica-conncheck.1.gz
@@ -43,4 +45,5 @@ usr/share/man/man1/ipa-nis-manage.1.gz
 usr/share/man/man1/ipa-managed-entries.1.gz
 usr/share/man/man1/ipa-ldap-updater.1.gz
 usr/share/man/man8/ipactl.8.gz
+usr/share/man/man8/ipa-upgradeconfig.8.gz
 usr/share/man/man1/ipa-compliance.1.gz
