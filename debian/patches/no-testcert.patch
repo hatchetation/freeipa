@@ -1,0 +1,18 @@
+Author: Timo Aaltonen <tjaalton@ubuntu.com>
+Date:   Tue Nov 1 11:48:27 2011 -0400
+
+    Add no-testcert.patch to not fail make-testcert.
+
+they need a working certificate server running
+
+--- a/Makefile
++++ b/Makefile
+@@ -93,7 +93,7 @@
+ 
+ test:
+ 	$(MAKE) -C install/po test_lang
+-	./make-testcert
++#	./make-testcert
+ 	./make-test
+ 
+ release-update:

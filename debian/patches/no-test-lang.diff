@@ -1,0 +1,11 @@
+--- a/Makefile
++++ b/Makefile
+@@ -92,7 +92,7 @@
+ 	./make-lint $(LINT_OPTIONS)
+ 
+ test:
+-	$(MAKE) -C install/po test_lang
++#	$(MAKE) -C install/po test_lang
+ #	./make-testcert
+ 	./make-test
+ 

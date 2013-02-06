@@ -1,0 +1,71 @@
+#!/usr/bin/make -f 
+
+# Uncomment this to turn on verbose mode.
+#export DH_VERBOSE=1
+
+ONLY_CLIENT=0
+DESTDIR=$(CURDIR)/debian/tmp
+
+PLATFORM="SUPPORTED_PLATFORM=debian"
+
+override_dh_auto_clean:
+	for i in daemons install ipapython ipaserver ipa-client; do \
+		(cd $$i && [ ! -f Makefile ] || $(MAKE) distclean); \
+		(cd $$i && rm -f COPYING INSTALL depcomp install-sh missing py-compile config.guess config.sub aclocal.m4 config.h.in version.m4); \
+	done
+	find . -name "*.pyo" -o -name "*.pyc" -type f -exec rm -f "{}" \;
+	find . -name "ltmain.sh" -exec rm -f "{}" \;
+	find . -name "configure" -exec rm -f "{}" \;
+	rm -rf daemons/ipa-version.h freeipa.spec freeipa.egg-info ipa-client/ipa-client.spec version.m4
+	rm -rf ipapython/build RELEASE build
+	dh_clean 
+	rm -rf $(DESTDIR)
+
+override_dh_autoreconf:
+	make IPA_VERSION_IS_GIT_SNAPSHOT=no version-update
+	dh_autoreconf; cd ..
+
+override_dh_auto_configure:
+	dh_auto_configure -Dipa-client
+ifneq ($(ONLY_CLIENT), 1)
+	dh_auto_configure -Ddaemons -- --with-openldap
+	dh_auto_configure -Dinstall
+endif
+
+override_dh_auto_build:
+ifneq ($(ONLY_CLIENT), 1)
+	make $(PLATFORM) IPA_VERSION_IS_GIT_SNAPSHOT=no all
+#	cd selinux ; make all
+else
+	make $(PLATFORM) IPA_VERSION_IS_GIT_SNAPSHOT=no client
+endif
+
+ifeq ($(ONLY_CLIENT), 1)
+override_dh_auto_test:
+endif
+
+override_dh_auto_install:
+ifneq ($(ONLY_CLIENT), 1)
+	# Force re-generate of platform support
+	rm -f ipapython/services.py
+	make $(PLATFORM) IPA_VERSION_IS_GIT_SNAPSHOT=no install DESTDIR=$(DESTDIR)
+#	cd selinux
+#	make $(PLATFORM) IPA_VERSION_IS_GIT_SNAPSHOT=no install DESTDIR=$(DESTDIR)
+	cd ..
+else
+	make $(PLATFORM) IPA_VERSION_IS_GIT_SNAPSHOT=no client-install DESTDIR=$(DESTDIR)
+endif
+
+	touch $(DESTDIR)/etc/ipa/default.conf
+
+	# purge .la files
+	find $(CURDIR)/debian/tmp -name "*.la" -type f -exec rm -f "{}" \;
+	# purge precompiled .pyc/.pyo files
+	find $(CURDIR)/debian/tmp -name '*.py[c,o]' -exec rm '{}' ';'
+	# fix permissions
+	find $(CURDIR)/debian/tmp -name "*.mo" -type f -exec chmod -x "{}" \;
+
+	dh_install --list-missing
+
+%:
+	dh $@ --with quilt,autoreconf,python2

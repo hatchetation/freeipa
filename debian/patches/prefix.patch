@@ -1,0 +1,38 @@
+Author: Timo Aaltonen <tjaalton@ubuntu.com>
+Date:   Mon Jan 2 16:09:40 2012 +0200
+
+use the debian layout when installing python modules
+
+--- a/Makefile
++++ b/Makefile
+@@ -137,7 +137,7 @@
+ 	if [ "$(DESTDIR)" = "" ]; then \
+ 		python setup.py install; \
+ 	else \
+-		python setup.py install --root $(DESTDIR); \
++		python setup.py install --root $(DESTDIR) --install-layout=deb; \
+ 	fi
+ 
+ archive:
+--- a/ipapython/Makefile
++++ b/ipapython/Makefile
+@@ -14,7 +14,7 @@
+ 	if [ "$(DESTDIR)" = "" ]; then \
+ 		python setup.py install; \
+ 	else \
+-		python setup.py install --root $(DESTDIR); \
++		python setup.py install --root $(DESTDIR) --install-layout=deb; \
+ 	fi
+ 	@for subdir in $(SUBDIRS); do \
+ 		(cd $$subdir && $(MAKE) $@) || exit 1; \
+--- a/ipapython/py_default_encoding/Makefile
++++ b/ipapython/py_default_encoding/Makefile
+@@ -9,7 +9,7 @@
+ 	if [ "$(DESTDIR)" = "" ]; then \
+ 		python setup.py install; \
+ 	else \
+-		python setup.py install --root $(DESTDIR); \
++		python setup.py install --root $(DESTDIR) --install-layout=deb; \
+ 	fi
+ 
+ clean:

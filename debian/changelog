@@ -1,0 +1,34 @@
+freeipa (2.2.0-1) UNRELEASED; urgency=low
+
+  [ Michele Baldessari ]
+  * Initial release (Closes: #12345)
+  * New upstream
+  * Dropped 10_ipa_kpasswd patch, applied upstream
+
+  [ Timo Aaltonen ]
+  * New upstream release.
+  * Remove radius subpackages.
+  * Migrate to source format 3.0 (quilt).
+  * Migrate to dh.
+  * Fix dependencies.
+  * Add fix_dnsclient.py.patch, we don't use autconfig.
+  * Add add_debian.py.patch, platform support code.
+  * Add no-testcert.patch to not fail make-testcert.
+  * Bump compat and debhelper build-depends to 9.
+  * Add missing files to freeipa.install.
+  * Add --list-missing for dh_install.
+  * copyright: Updated, with OpenSSL exception.
+  * control: Add python-libipa-hbac to build-depends.
+  * control: Add ${shlibs:Depends} to python-freeipa depends.
+  * rules: Strip the executable bit from translation files.
+  * fix-format-string.diff: Fix build errors, thanks Krzysztof Klimonda!
+  * Use dh_python2.
+  * Add DEP-3 compliant headers to the patches.
+  * control: client; Move libpam-krb5 to Suggests.
+  * control: Update the maintainer address and repo location.
+  * control: Fix package descriptions.
+  * control: Add python-krbv to client depends.
+  * Add fix-nss-include.diff, fix nss include path.
+  * Add no-test-lang.diff, test_lang is gone.
+
+ -- Timo Aaltonen <tjaalton@ubuntu.com>  Tue, 01 Nov 2011 10:52:25 -0400
