@@ -1,4 +1,4 @@
-freeipa (2.1.4-0ubuntu2) UNRELEASED; urgency=low
+freeipa (2.1.4-0ubuntu2) raring; urgency=low
 
   * 0110-Upload-CA-cert-in-the-directory-on-install.patch
     0111-Update-plugin-to-upload-CA-certificate-to-LDAP.patch
@@ -7,12 +7,12 @@ freeipa (2.1.4-0ubuntu2) UNRELEASED; urgency=low
     - CVE-2012-5484 - The client in FreeIPA 2.x and 3.x before 3.1.2 does
       not properly obtain the Certification Authority (CA) certificate
       from the server, which allows man-in-the-middle attackers to spoof
-      a join procedure via a crafted certificate.
+      a join procedure via a crafted certificate. (LP: #1104954)
   * check-through-all-ldap-servers.patch: Check through all LDAP servers
     in the domain during IPA discovery (ticket #1827). Patch from 2.2
     to aid in porting patch 0113.
 
- -- Timo Aaltonen <tjaalton@ubuntu.com>  Mon, 11 Feb 2013 00:13:39 +0200
+ -- Timo Aaltonen <tjaalton@ubuntu.com>  Mon, 11 Feb 2013 00:32:12 +0200
 
 freeipa (2.1.4-0ubuntu1) precise; urgency=low
 
