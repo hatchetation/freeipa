@@ -1,6 +1,6 @@
 --- a/util/ipa_pwd.c
 +++ b/util/ipa_pwd.c
-@@ -25,10 +25,10 @@
+@@ -27,10 +27,10 @@
  #include <stdio.h>
  #include <time.h>
  #include <ctype.h>

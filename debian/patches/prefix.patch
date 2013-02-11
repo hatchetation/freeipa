@@ -5,18 +5,18 @@ use the debian layout when installing python modules
 
 --- a/Makefile
 +++ b/Makefile
-@@ -137,7 +137,7 @@
+@@ -140,7 +140,7 @@ server-install: server
  	if [ "$(DESTDIR)" = "" ]; then \
- 		python setup.py install; \
+ 		$(PYTHON) setup.py install; \
  	else \
--		python setup.py install --root $(DESTDIR); \
-+		python setup.py install --root $(DESTDIR) --install-layout=deb; \
+-		$(PYTHON) setup.py install --root $(DESTDIR); \
++		$(PYTHON) setup.py install --root $(DESTDIR) --install-layout=deb; \
  	fi
  
  archive:
 --- a/ipapython/Makefile
 +++ b/ipapython/Makefile
-@@ -14,7 +14,7 @@
+@@ -14,7 +14,7 @@ install:
  	if [ "$(DESTDIR)" = "" ]; then \
  		python setup.py install; \
  	else \
@@ -27,7 +27,7 @@ use the debian layout when installing python modules
  		(cd $$subdir && $(MAKE) $@) || exit 1; \
 --- a/ipapython/py_default_encoding/Makefile
 +++ b/ipapython/py_default_encoding/Makefile
-@@ -9,7 +9,7 @@
+@@ -9,7 +9,7 @@ install:
  	if [ "$(DESTDIR)" = "" ]; then \
  		python setup.py install; \
  	else \

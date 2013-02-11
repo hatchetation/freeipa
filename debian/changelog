@@ -11,7 +11,6 @@ freeipa (3.1.2-1) UNRELEASED; urgency=low
   * Migrate to source format 3.0 (quilt).
   * Migrate to dh.
   * Fix dependencies.
-  * Add fix_dnsclient.py.patch, we don't use autconfig.
   * Add add_debian.py.patch, platform support code.
   * Add no-testcert.patch to not fail make-testcert.
   * Bump compat and debhelper build-depends to 9.

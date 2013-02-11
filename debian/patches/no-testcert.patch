@@ -7,10 +7,10 @@ they need a working certificate server running
 
 --- a/Makefile
 +++ b/Makefile
-@@ -93,7 +93,7 @@
+@@ -96,7 +96,7 @@ lint: bootstrap-autogen
+ 
  
  test:
- 	$(MAKE) -C install/po test_lang
 -	./make-testcert
 +#	./make-testcert
  	./make-test

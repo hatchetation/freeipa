@@ -1,4 +1,3 @@
-fix_dnsclient.py.patch
 add_debian.py.patch
 no-testcert.patch
 prefix.patch

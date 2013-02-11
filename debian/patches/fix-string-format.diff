@@ -10,7 +10,7 @@ Subject: [PATCH] Fix -Wformat-security warnings
 
 --- a/daemons/ipa-slapi-plugins/ipa-enrollment/ipa_enrollment.c
 +++ b/daemons/ipa-slapi-plugins/ipa-enrollment/ipa_enrollment.c
-@@ -317,7 +317,7 @@
+@@ -317,7 +317,7 @@ free_and_return:
  
      if (krbLastPwdChange) slapi_ch_free_string(&krbLastPwdChange);
  
@@ -19,7 +19,7 @@ Subject: [PATCH] Fix -Wformat-security warnings
      slapi_send_ldap_result(pb, rc, NULL, errMesg, 0, NULL);
  
      free(principal);
-@@ -344,7 +344,7 @@
+@@ -344,7 +344,7 @@ ipaenrollment_extop(Slapi_PBlock *pb)
      if (slapi_pblock_get(pb, SLAPI_EXT_OP_REQ_OID, &oid ) != 0) {
          errMesg = "Could not get OID and value from request.\n";
          rc = LDAP_OPERATIONS_ERROR;
@@ -28,7 +28,7 @@ Subject: [PATCH] Fix -Wformat-security warnings
          goto free_and_return;
      }
  
-@@ -357,7 +357,7 @@
+@@ -357,7 +357,7 @@ ipaenrollment_extop(Slapi_PBlock *pb)
      rc = LDAP_OPERATIONS_ERROR;
  
  free_and_return:
@@ -39,7 +39,7 @@ Subject: [PATCH] Fix -Wformat-security warnings
      return SLAPI_PLUGIN_EXTENDED_SENT_RESULT;
 --- a/daemons/ipa-slapi-plugins/ipa-pwd-extop/ipa_pwd_extop.c
 +++ b/daemons/ipa-slapi-plugins/ipa-pwd-extop/ipa_pwd_extop.c
-@@ -519,7 +519,7 @@
+@@ -545,7 +545,7 @@ free_and_return:
  	if (targetEntry) slapi_entry_free(targetEntry);
  	if (ber) ber_free(ber, 1);
  
@@ -48,7 +48,7 @@ Subject: [PATCH] Fix -Wformat-security warnings
  	slapi_send_ldap_result(pb, rc, NULL, errMesg, 0, NULL);
  
  	return SLAPI_PLUGIN_EXTENDED_SENT_RESULT;
-@@ -1089,7 +1089,7 @@
+@@ -1115,7 +1115,7 @@ free_and_return:
  
          if (rc == LDAP_SUCCESS)
              errMesg = NULL;
@@ -57,7 +57,7 @@ Subject: [PATCH] Fix -Wformat-security warnings
  	slapi_send_ldap_result(pb, rc, NULL, errMesg, 0, NULL);
  
  	return SLAPI_PLUGIN_EXTENDED_SENT_RESULT;
-@@ -1116,7 +1116,7 @@
+@@ -1142,7 +1142,7 @@ static int ipapwd_extop(Slapi_PBlock *pb
  	if (slapi_pblock_get(pb, SLAPI_EXT_OP_REQ_OID, &oid) != 0) {
  		errMesg = "Could not get OID value from request.\n";
  		rc = LDAP_OPERATIONS_ERROR;
@@ -66,7 +66,7 @@ Subject: [PATCH] Fix -Wformat-security warnings
  		goto free_and_return;
  	} else {
  	        LOG("Received extended operation request with OID %s\n", oid);
-@@ -1139,7 +1139,7 @@
+@@ -1165,7 +1165,7 @@ static int ipapwd_extop(Slapi_PBlock *pb
  free_and_return:
  	if (krbcfg) free_ipapwd_krbcfg(&krbcfg);
  
