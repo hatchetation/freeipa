@@ -5,3 +5,4 @@ fix-string-format.diff
 fix-nss-include.diff
 no-test-lang.diff
 correct-python-path.diff
+dont-search-platform-path.diff

@@ -31,5 +31,7 @@ freeipa (3.1.2-1) UNRELEASED; urgency=low
   * Add no-test-lang.diff, test_lang is gone.
   * correct-python-path.diff: Fallback on the correct path if rpm query
     fails.
+  * dont-search-platform-path.diff: Don't use Python.h from the
+    platform specific path.
 
  -- Timo Aaltonen <tjaalton@ubuntu.com>  Tue, 01 Nov 2011 10:52:25 -0400
