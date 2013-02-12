@@ -23,13 +23,14 @@ Test kerberos ticket policy
 from ipalib import api, errors
 from tests.test_xmlrpc import objectclasses
 from xmlrpc_test import Declarative, fuzzy_digits, fuzzy_uuid
-from ipalib.dn import *
+from ipapython.dn import DN
 
 user1 = u'tuser1'
 
 class test_krbtpolicy(Declarative):
     cleanup_commands = [
         ('user_del', [user1], {}),
+        ('krbtpolicy_reset', [], {}),
     ]
 
     tests = [
@@ -60,9 +61,8 @@ class test_krbtpolicy(Declarative):
                 value=u'',
                 summary=None,
                 result=dict(
-                    dn=lambda x: DN(x) == \
-                        DN(('cn',api.env.domain),('cn','kerberos'),
-                           api.env.basedn),
+                    dn=DN(('cn',api.env.domain),('cn','kerberos'),
+                          api.env.basedn),
                     krbmaxticketlife=[u'86400'],
                     krbmaxrenewableage=[u'604800'],
                 ),
@@ -105,22 +105,19 @@ class test_krbtpolicy(Declarative):
                     uid=[user1],
                     uidnumber=[fuzzy_digits],
                     gidnumber=[fuzzy_digits],
+                    mail=[u'%s@%s' % (user1, api.env.domain)],
                     displayname=[u'Test User1'],
                     cn=[u'Test User1'],
                     initials=[u'TU'],
                     ipauniqueid=[fuzzy_uuid],
-                    krbpwdpolicyreference=lambda x: [DN(i) for i in x] == \
-                        [DN(('cn','global_policy'),('cn',api.env.realm),
-                            ('cn','kerberos'),api.env.basedn)],
-                    mepmanagedentry=lambda x: [DN(i) for i in x] == \
-                        [DN(('cn',user1),('cn','groups'),('cn','accounts'),
-                            api.env.basedn)],
+                    krbpwdpolicyreference=[DN(('cn','global_policy'),('cn',api.env.realm),
+                                              ('cn','kerberos'),api.env.basedn)],
+                    mepmanagedentry=[DN(('cn',user1),('cn','groups'),('cn','accounts'),
+                                        api.env.basedn)],
                     memberof_group=[u'ipausers'],
                     has_keytab=False,
                     has_password=False,
-                    dn=lambda x: DN(x) == \
-                        DN(('uid',user1),('cn','users'),('cn','accounts'),
-                           api.env.basedn)
+                    dn=DN(('uid',user1),('cn','users'),('cn','accounts'), api.env.basedn)
                 ),
             ),
         ),

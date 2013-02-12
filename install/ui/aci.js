@@ -21,85 +21,242 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
-/* REQUIRES: ipa.js, details.js, search.js, add.js, entity.js */
+/* REQUIRES: ipa.js, details.js, search.js, add.js, facet.js, entity.js */
 
-IPA.entity_factories.permission = function() {
+IPA.aci = {};
 
-    return IPA.entity_builder().
-        entity('permission').
-        facet_groups([ 'privilege' , 'settings' ]).
+IPA.aci.permission_entity = function(spec) {
+
+    var that = IPA.entity(spec);
+
+    that.init = function() {
+        that.entity_init();
+
+        that.builder.facet_groups(['settings', 'privilege']).
         search_facet({
-            columns:['cn']
+            columns: [ 'cn' ]
         }).
-        details_facet({sections:[
-            {
-                name: 'identity',
-                fields: [
-                    {
-                        factory: IPA.text_widget,
-                        name: 'cn',
-                        read_only: true
-                    }
-                ]
-            },
-            {
-                name: 'rights',
-                label: IPA.messages.objects.permission.rights,
-                fields: [
-                    {
-                        factory: IPA.rights_widget,
-                        name: 'permissions',
-                        join: true
-                    }
-                ]
-            },
-            {
-                factory: IPA.target_section,
-                name: 'target',
-                label: IPA.messages.objects.permission.target
-            }]}).
+        details_facet({
+            factory: IPA.aci.permission_details_facet,
+            fields: [
+                {
+                    name:'cn',
+                    widget: 'identity.cn'
+                },
+                {
+                    type: 'rights',
+                    name: 'permissions',
+                    widget: 'rights.permissions'
+                },
+                {
+                    type: 'select',
+                    name: 'target',
+                    widget: 'target.target',
+                    enabled: false
+                },
+                {
+                    name: 'filter',
+                    widget: 'target.filter',
+                    enabled: false
+                },
+                {
+                    type: 'entity_select',
+                    name: 'memberof',
+                    widget: 'target.memberof',
+                    enabled: false
+                },
+                {
+                    name: 'subtree',
+                    widget: 'target.subtree',
+                    enabled: false
+                },
+                {
+                    type: 'entity_select',
+                    name: 'targetgroup',
+                    widget: 'target.targetgroup',
+                    enabled: false
+                },
+                {
+                    type: 'select',
+                    name: 'type',
+                    widget: 'target.type',
+                    enabled: false
+                },
+                {
+                    name: 'attrs',
+                    widget: 'target.attrs',
+                    enabled: false
+                },
+                {
+                    name: 'attrs_multi',
+                    param: 'attrs',
+                    type: 'multivalued',
+                    widget: 'target.attrs_multi',
+                    enabled: false
+                }
+            ],
+            widgets: [
+                {
+                    type: 'details_table_section',
+                    name: 'identity',
+                    label: IPA.messages.objects.permission.identity,
+                    widgets: [
+                        'cn'
+                    ]
+                },
+                {
+                    type: 'details_table_section',
+                    name: 'rights',
+                    label: IPA.messages.objects.permission.rights,
+                    widgets: [
+                        {
+                            type: 'rights',
+                            name: 'permissions'
+                        }
+                    ]
+                },
+                {
+                    type: 'permission_target',
+                    container_factory: IPA.details_table_section,
+                    label: IPA.messages.objects.permission.target,
+                    name: 'target',
+                    show_target: false
+                }
+            ],
+            policies: [
+                IPA.permission_target_policy('target')
+            ]
+        }).
         association_facet({
             name: 'member_privilege',
             facet_group: 'privilege'
         }).
         adder_dialog({
-            height: 400,
-            sections: [
+            height: 450,
+            fields: [
                 {
+                    name:'cn',
+                    widget: 'general.cn'
+                },
+                {
+                    type: 'rights',
+                    name: 'permissions',
+                    widget: 'general.permissions'
+                },
+                {
+                    type: 'select',
+                    name: 'target',
+                    widget: 'target.target',
+                    enabled: false
+                },
+                {
+                    name: 'filter',
+                    widget: 'target.filter',
+                    enabled: false
+                },
+                {
+                    type: 'entity_select',
+                    name: 'memberof',
+                    widget: 'target.memberof',
+                    enabled: false
+                },
+                {
+                    name: 'subtree',
+                    widget: 'target.subtree',
+                    enabled: false
+                },
+                {
+                    type: 'entity_select',
+                    name: 'targetgroup',
+                    widget: 'target.targetgroup',
+                    enabled: false
+                },
+                {
+                    type: 'select',
+                    name: 'type',
+                    widget: 'target.type',
+                    enabled: false
+                },
+                {
+                    name: 'attrs',
+                    widget: 'target.attrs',
+                    enabled: false
+                },
+                {
+                    name: 'attrs_multi',
+                    type: 'multivalued',
+                    param: 'attrs',
+                    widget: 'target.attrs_multi',
+                    enabled: false
+                }
+            ],
+            widgets: [
+                {
+                    type: 'details_table_section_nc',
                     name: 'general',
-                    fields: [
+                    widgets: [
                         'cn',
                         {
-                            factory: IPA.rights_widget,
-                            name: 'permissions',
-                            join: true
+                            type: 'rights',
+                            name: 'permissions'
                         }
                     ]
                 },
                 {
-                    factory: IPA.target_section,
-                    name: 'target',
-                    label: IPA.messages.objects.permission.target
+                    type: 'permission_target',
+                    name:'target',
+                    show_target: true
+                }
+            ],
+            policies: [
+                IPA.permission_target_policy('target')
+            ]
+        });
+    };
+
+    return that;
+};
+
+IPA.aci.permission_details_facet = function(spec) {
+
+    var that = IPA.details_facet(spec);
+
+    that.get_refresh_command_name = function() {
+        return that.entity.name+'_show_'+that.pkey;
+    };
+
+    return that;
+};
+
+IPA.aci.privilege_entity = function(spec) {
+
+    var that = IPA.entity(spec);
+
+    that.init = function() {
+        that.entity_init();
+
+        that.builder.facet_groups(['permission', 'settings', 'role']).
+        search_facet({
+            columns: [
+                'cn',
+                'description'
+            ]
+        }).
+        details_facet({
+            sections: [
+                {
+                    name: 'identity',
+                    label: IPA.messages.details.identity,
+                    fields: [
+                        'cn',
+                        {
+                            type: 'textarea',
+                            name: 'description'
+                        }
+                    ]
                 }
             ]
         }).
-        build();
-};
-
-
-IPA.entity_factories.privilege = function() {
-    return IPA.entity_builder().
-        entity('privilege').
-        facet_groups([ 'role', 'settings', 'permission' ]).
-        search_facet({
-            columns:['cn','description']}).
-        details_facet({
-            sections:
-            [{
-                name:'identity',
-                label: IPA.messages.details.identity,
-                fields:['cn','description']
-            }]}).
         association_facet({
             name: 'member_role',
             facet_group: 'role',
@@ -108,127 +265,198 @@ IPA.entity_factories.privilege = function() {
             associator: IPA.serial_associator
         }).
         association_facet({
-                name: 'memberof_permission',
-                facet_group: 'permission',
-                add_method: 'add_permission',
-                remove_method: 'remove_permission'
+            name: 'memberof_permission',
+            facet_group: 'permission',
+            add_method: 'add_permission',
+            remove_method: 'remove_permission'
         }).
         standard_association_facets().
         adder_dialog({
-            fields:['cn', 'description']
-        }).
-        build();
+            fields: [
+                'cn',
+                {
+                    type: 'textarea',
+                    name: 'description'
+                }
+            ]
+        });
+    };
 
+    return that;
 };
 
+IPA.aci.role_entity = function(spec) {
 
-IPA.entity_factories.role = function() {
-    return  IPA.entity_builder().
-        entity('role').
-        facet_groups([ 'member', 'settings', 'privilege' ]).
+    var that = IPA.entity(spec);
+
+    that.init = function() {
+        that.entity_init();
+
+        that.builder.facet_groups(['member', 'privilege', 'settings']).
         search_facet({
-            columns:['cn','description']}).
-        details_facet({sections:[
-            {
-                name:'identity',
-                label:IPA.messages.objects.role.identity,
-                fields:['cn','description']}]}).
-        association_facet({
-                name: 'memberof_privilege',
-                facet_group: 'privilege',
-                add_method: 'add_privilege',
-                remove_method: 'remove_privilege'
+            columns: [
+                'cn',
+                'description'
+            ]
         }).
-        standard_association_facets().
-        adder_dialog({
-            fields:['cn', 'description']
-        }).
-        build();
-};
-
-
-IPA.entity_factories.selfservice = function() {
-    return IPA.entity_builder().
-        entity('selfservice').
-        search_facet({
-            columns:['aciname']}).
         details_facet({
-            sections:[{
-                name:'general',
-                label: IPA.messages.details.general,
-                fields: [
-                    'aciname',
-                    {
-                        factory:IPA.attributes_widget,
-                        object_type:'user',
-                        name:'attrs'
-                    }]}]}).
-        adder_dialog({
-            fields:[
-                'aciname',
-                {factory:IPA.attributes_widget,
-                 object_type:'user',
-                 name:'attrs'
-                }]
+            sections: [
+                {
+                    name: 'identity',
+                    label: IPA.messages.objects.role.identity,
+                    fields: [
+                        'cn',
+                        {
+                            type: 'textarea',
+                            name: 'description'
+                        }
+                    ]
+                }
+            ]
         }).
-        build();
-};
-
-
-IPA.entity_factories.delegation = function() {
-    return IPA.entity_builder().
-        entity('delegation').
-        search_facet({
-            columns:['aciname']}).
-        details_facet({sections:[
-            {
-                name:'general',
-                label: IPA.messages.details.general,
-                fields:[
-                    'aciname',
-                    {
-                        factory: IPA.entity_select_widget,
-                        name: 'group',
-                        other_entity: 'group',
-                        other_field: 'cn'
-                    },
-                    {
-                        factory: IPA.entity_select_widget,
-                        name: 'memberof',
-                        other_entity: 'group',
-                        other_field: 'cn',
-                        join: true
-                    },
-                    {
-                        factory:IPA.attributes_widget,
-                        name: 'attrs', object_type: 'user',
-                        join: true
-                    }]}]}).
+        association_facet({
+            name: 'memberof_privilege',
+            facet_group: 'privilege',
+            add_method: 'add_privilege',
+            remove_method: 'remove_privilege'
+        }).
         standard_association_facets().
         adder_dialog({
-            fields:[
+            fields: [
+                'cn',
+                {
+                    type: 'textarea',
+                    name: 'description'
+                }
+            ]
+        });
+    };
+
+    return that;
+};
+
+IPA.aci.selfservice_entity = function(spec) {
+
+    var that = IPA.entity(spec);
+
+    that.init = function() {
+        that.entity_init();
+
+        that.builder.search_facet({
+            columns: [ 'aciname' ],
+            pagination: false
+        }).
+        details_facet({
+            check_rights: false,
+            sections: [
+                {
+                    name: 'general',
+                    label: IPA.messages.details.general,
+                    fields: [
+                        'aciname',
+                        {
+                            type: 'attributes',
+                            object_type: 'user',
+                            name: 'attrs'
+                        }
+                    ]
+                }
+            ]
+        }).
+        adder_dialog({
+            fields: [
                 'aciname',
                 {
-                    factory: IPA.entity_select_widget,
+                    type: 'attributes',
+                    object_type: 'user',
+                    name: 'attrs'
+                }
+            ]
+        });
+    };
+
+    return that;
+};
+
+IPA.aci.delegation_entity = function(spec) {
+
+    var that = IPA.entity(spec);
+
+    that.group_entity = IPA.get_entity(spec.group_entity || 'group');
+
+    that.init = function() {
+        that.entity_init();
+
+        that.builder.search_facet({
+            columns: [ 'aciname' ],
+            pagination: false
+        }).
+        details_facet({
+            check_rights: false,
+            sections: [
+                {
+                    name: 'general',
+                    label: IPA.messages.details.general,
+                    fields: [
+                        'aciname',
+                        {
+                            type: 'checkboxes',
+                            name: 'permissions',
+                            required: true,
+                            options: IPA.create_options(['read', 'write'])
+                        },
+                        {
+                            type: 'entity_select',
+                            name: 'group',
+                            other_entity: that.group_entity,
+                            other_field: 'cn'
+                        },
+                        {
+                            type: 'entity_select',
+                            name: 'memberof',
+                            other_entity: that.group_entity,
+                            other_field: 'cn'
+                        },
+                        {
+                            type: 'attributes',
+                            name: 'attrs',
+                            object_type: 'user'
+                        }
+                    ]
+                }
+            ]
+        }).
+        standard_association_facets().
+        adder_dialog({
+            fields: [
+                'aciname',
+                {
+                    type: 'checkboxes',
+                    name: 'permissions',
+                    options: IPA.create_options(['read', 'write'])
+                },
+                {
+                    type: 'entity_select',
                     name: 'group',
-                    other_entity: 'group',
+                    other_entity: that.group_entity,
                     other_field: 'cn'
                 },
                 {
-                    factory: IPA.entity_select_widget,
+                    type: 'entity_select',
                     name: 'memberof',
-                    other_entity: 'group',
-                    other_field: 'cn',
-                    join: true
+                    other_entity: that.group_entity,
+                    other_field: 'cn'
                 },
                 {
-                    factory: IPA.attributes_widget,
+                    type: 'attributes',
                     name: 'attrs',
-                    object_type: 'user',
-                    join: true
-                }]
-        }).
-        build();
+                    object_type: 'user'
+                }
+            ]
+        });
+    };
+
+    return that;
 };
 
 
@@ -239,11 +467,16 @@ IPA.attributes_widget = function(spec) {
     var that = IPA.checkboxes_widget(spec);
 
     that.object_type = spec.object_type;
+    that.skip_unmatched = spec.skip_unmatched === undefined ? false : spec.skip_unmatched;
 
     var id = spec.name;
 
     that.create = function(container) {
         that.container = container;
+
+        var attr_container = $('<div/>', {
+            'class': 'aci-attribute-table-container'
+        }).appendTo(container);
 
         that.table = $('<table/>', {
             id:id,
@@ -251,7 +484,7 @@ IPA.attributes_widget = function(spec) {
         }).
             append('<thead/>').
             append('<tbody/>').
-            appendTo(container);
+            appendTo(attr_container);
 
         var tr = $('<tr></tr>').appendTo($('thead', that.table));
 
@@ -260,8 +493,8 @@ IPA.attributes_widget = function(spec) {
                 type: "checkbox",
                 click: function() {
                     $('.aci-attribute', that.table).
-                        attr('checked', $(this).attr('checked'));
-                    that.set_dirty(that.test_dirty());
+                        prop('checked', $(this).prop('checked'));
+                    that.value_changed.notify([], that);
                 }
             })
         })).append($('<th/>', {
@@ -280,24 +513,48 @@ IPA.attributes_widget = function(spec) {
         that.create_error_link(container);
     };
 
-    that.load = function(record) {
+    that.create_options = function(options) {
+        var tbody = $('tbody', that.table);
 
-        that.record = record;
+        for (var i=0; i<options.length ; i++){
+            var value = options[i].toLowerCase();
+            var tr = $('<tr/>').appendTo(tbody);
+
+            var td =  $('<td/>').appendTo(tr);
+            td.append($('<input/>',{
+                type: 'checkbox',
+                name: that.name,
+                value: value,
+                'class': 'aci-attribute',
+                change: function() {
+                    that.value_changed.notify([], that);
+                }
+            }));
+            td = $('<td/>').appendTo(tr);
+            td.append($('<label/>',{
+                text: value
+            }));
+        }
+    };
+
+    that.update = function(values) {
+
         that.values = [];
 
-        var values = record[that.name] || [];
+        values = values || [];
         for (var i=0; i<values.length; i++) {
-            var value = values[i].toLowerCase();
+
+            var value = values[i];
+
+            if (!value || value === '') continue;
+
+            value = value.toLowerCase();
             that.values.push(value);
         }
 
-        that.reset();
-    };
-
-    that.update = function() {
         that.populate(that.object_type);
         that.append();
-        that.checkboxes_update();
+        that.checkboxes_update(values);
     };
 
     that.populate = function(object_type) {
@@ -311,26 +568,7 @@ IPA.attributes_widget = function(spec) {
 
         var aciattrs = metadata.aciattrs;
 
-        var tbody = $('tbody', that.table);
-
-        for (var i=0; i<aciattrs.length ; i++){
-            var value = aciattrs[i].toLowerCase();
-            var aci_tr = $('<tr/>').appendTo(tbody);
-
-            var td =  $('<td/>').appendTo(aci_tr);
-            td.append($('<input/>',{
-                type: 'checkbox',
-                name: that.name,
-                value: value,
-                'class': 'aci-attribute',
-                click: function() {
-                    that.set_dirty(that.test_dirty());
-                }
-            }));
-            td =  $('<td/>').appendTo(aci_tr);
-            td.append($('<label/>',{
-                text:value}));
-        }
+        that.create_options(aciattrs);
     };
 
     that.append = function() {
@@ -347,29 +585,8 @@ IPA.attributes_widget = function(spec) {
             }
         }
 
-        if (unmatched.length > 0) {
-            var tbody = $('tbody', that.table);
-
-            for (var j=0; j<unmatched.length; j++) {
-                var value = unmatched[j].toLowerCase();
-                var tr = $('<tr/>').appendTo(tbody);
-
-                var td = $('<td/>').appendTo(tr);
-                td.append($('<input/>', {
-                    type: 'checkbox',
-                    name: that.name,
-                    value: value,
-                    'class': 'aci-attribute',
-                    change: function() {
-                        that.set_dirty(that.test_dirty());
-                    }
-                }));
-
-                td = $('<td/>').appendTo(tr);
-                td.append($('<label/>', {
-                    text: value
-                }));
-            }
+        if (unmatched.length > 0 && !that.skip_unmatched) {
+            that.create_options(unmatched);
         }
     };
 
@@ -379,6 +596,9 @@ IPA.attributes_widget = function(spec) {
 
     return that;
 };
+
+IPA.widget_factories['attributes'] = IPA.attributes_widget;
+IPA.field_factories['attributes'] = IPA.checkboxes_field;
 
 IPA.rights_widget = function(spec) {
 
@@ -393,314 +613,285 @@ IPA.rights_widget = function(spec) {
     return that;
 };
 
-IPA.target_section = function(spec) {
+IPA.widget_factories['rights'] = IPA.rights_widget;
+IPA.field_factories['rights'] = IPA.checkboxes_field;
+
+IPA.permission_target_widget = function(spec) {
 
     spec = spec || {};
 
-    var that = IPA.details_section(spec);
+    var factory = spec.container_factory || IPA.details_table_section_nc;
 
-    var target_types = [
-        {
-            name: 'filter',
-            label: IPA.messages.objects.permission.filter,
-            create: function(container) {
-                that.filter_text.create(container);
-            },
-            load: function(record) {
-                that.filter_text.load(record);
-            },
-            save: function(record) {
-                record.filter = that.filter_text.save();
-            }
-        },
-        {
-            name: 'subtree',
-            label: IPA.messages.objects.permission.subtree,
-            create: function(container) {
-                that.subtree_textarea.create(container);
-            },
-            load: function(record) {
-                that.subtree_textarea.load(record);
-            },
-            save: function(record) {
-                record.subtree = that.subtree_textarea.save();
-            }
-        },
-        {
-            name: 'targetgroup',
-            label: IPA.messages.objects.permission.targetgroup,
-            create: function(container) {
-                that.group_select.create(container);
-            },
-            load: function(record) {
-                that.group_select.list.val(record.targetgroup);
-            },
-            save: function(record) {
-                record.targetgroup = that.group_select.save();
-            }
-        },
-        {
-            name: 'type',
-            label: IPA.messages.objects.permission.type,
-            create: function(container) {
+    var that = factory(spec);
 
-                var span = $('<span/>', {
-                    name: 'type'
-                }).appendTo(container);
+    that.group_entity = IPA.get_entity(spec.group_entity || 'group');
 
-                that.type_select.create(span);
-
-                span = $('<span/>', {
-                    name: 'attrs'
-                }).appendTo(container);
-
-                that.attribute_table.create(span);
-
-                var select = that.type_select.select;
-
-                select.change(function() {
-                    that.attribute_table.object_type =
-                        that.type_select.save()[0];
-                    that.attribute_table.reset();
-                });
-
-                select.append($('<option/>', {
-                    value: '',
-                    text: ''
-                }));
-
-                var type_params = IPA.get_entity_param('permission', 'type');
-
-                for (var i=0; i<type_params.values.length; i++) {
-                    select.append($('<option/>', {
-                        value: type_params.values[i],
-                        text: type_params.values[i]
-                    }));
-                }
-
-                that.type_select.update = function() {
-                    that.type_select.select_update();
-                    that.attribute_table.object_type =
-                        that.type_select.save()[0];
-                    that.attribute_table.reset();
-                };
-            },
-            load: function(record) {
-                that.type_select.load(record);
-                that.attribute_table.object_type = record.type;
-                that.attribute_table.reset();
-            },
-            save: function(record) {
-                record.type = that.type_select.save();
-                record.attrs = that.attribute_table.save();
-            }
-        }] ;
-
-    var target_type = target_types[0];
+    that.targets = [ 'filter', 'subtree', 'targetgroup', 'type' ];
+    that.target = that.targets[0];
+    that.show_target = spec.show_target;
 
     var init = function() {
+
+        that.target_select = IPA.select_widget({
+            entity: that.entity,
+            name: 'target',
+            label: IPA.messages.objects.permission.target,
+            hidden: !that.show_target
+        });
+
+        for (var i=0; i<that.targets.length; i++) {
+            var target = that.targets[i];
+            var target_param = IPA.get_entity_param('permission', target);
+
+            that.target_select.options.push({
+                label: target_param.label,
+                value: target
+            });
+        }
+
+        that.widgets.add_widget(that.target_select);
+
+
+        that.memberof_select = IPA.entity_select_widget({
+            entity: that.entity,
+            name: 'memberof',
+            other_entity: that.group_entity,
+            other_field: 'cn',
+            hidden: true
+        });
+
+        that.widgets.add_widget(that.memberof_select);
+
         that.filter_text = IPA.text_widget({
+            entity: that.entity,
             name: 'filter',
-            entity: spec.entity
+            hidden: true
         });
+
+        that.widgets.add_widget(that.filter_text);
+
         that.subtree_textarea = IPA.textarea_widget({
-            entity: spec.entity,
+            entity: that.entity,
             name: 'subtree',
-            cols: 30, rows: 1
+            hidden: true
         });
+
+        that.widgets.add_widget(that.subtree_textarea);
+
         that.group_select = IPA.entity_select_widget({
-            entity: spec.entity,
+            entity: that.entity,
             name: 'targetgroup',
-            other_entity: 'group',
-            other_field: 'cn'
+            other_entity: that.group_entity,
+            other_field: 'cn',
+            hidden: true
         });
+
+        that.widgets.add_widget(that.group_select);
+
         that.type_select = IPA.select_widget({
-            entity: spec.entity,
-            name: 'type'
+            entity: that.entity,
+            name: 'type',
+            hidden: true
         });
+
+        var type_param = IPA.get_entity_param('permission', 'type');
+
+        for (var j=0; j<type_param.values.length; j++) {
+            var type_name = type_param.values[j];
+            var type_label = IPA.metadata.objects[type_name].label_singular;
+
+            that.type_select.options.push({
+                label: type_label,
+                value: type_name
+            });
+        }
+
+        that.widgets.add_widget(that.type_select);
+
         that.attribute_table = IPA.attributes_widget({
-            entity: spec.entity,
-            name: 'attrs'
+            entity: that.entity,
+            name: 'attrs',
+            object_type: type_param.values[0],
+            hidden: true
         });
 
-        that.add_field(that.filter_text);
-        that.add_field(that.subtree_textarea);
-        that.add_field(that.group_select );
-        that.add_field(that.type_select);
-        that.add_field(that.attribute_table);
+        that.widgets.add_widget(that.attribute_table);
 
-        /*TODO these next two functions are work arounds for missing attribute
-          permissions for the filter text.  Remove them once that has been fixed */
-        that.filter_text.update = function() {
-            var value = that.filter_text.values && that.filter_text.values.length ?
-                that.filter_text.values[0] : '';
-            $('input[name="'+that.filter_text.name+'"]',
-              that.filter_text.container).val(value);
+        that.attribute_multivalued = IPA.multivalued_widget({
+            entity: that.entity,
+            name: 'attrs_multi',
+            hidden: true
+        });
 
-            var label = $('label[name="'+that.filter_text.name+'"]',
-                          that.filter_text.container);
-            var input = $('input[name="'+that.filter_text.name+'"]',
-                          that.filter_text.container);
-            label.css('display', 'none');
-            input.css('display', 'inline');
-        };
-
-        that.filter_text.save = function(){
-            var input = $('input[name="'+that.filter_text.name+'"]',
-                          that.filter_text.container);
-            var value = input.val();
-            return value === '' ? [] : [value];
-        };
-    };
-
-    function show_target_type(type_to_show) {
-        for (var i=0; i<target_types.length; i++) {
-            if (target_types[i].name === type_to_show) {
-                target_type = target_types[i];
-                target_type.container.css('display', '');
-            } else {
-                target_types[i].container.css('display', 'none');
-            }
-        }
-    }
-
-    that.create = function(container) {
-        that.container = container;
-
-        var table = $('<table/>', {
-            'class': 'section-table'
-        }).appendTo(that.container);
-
-        var tr = $('<tr/>').appendTo(table);
-
-        var td = $('<td/>', {
-            'class': 'section-cell-label'
-        }).appendTo(tr);
-
-        $('<label/>', {
-            name: 'target',
-            title: IPA.messages.objects.permission.target,
-            'class': 'field-label',
-            text: IPA.messages.objects.permission.target+':'
-        }).appendTo(td);
-
-        if (that.undo) {
-            tr.css('display', 'none');
-        }
-
-        td = $('<td/>', {
-            'class': 'section-cell-field'
-        }).appendTo(tr);
-
-        var field_container = $('<div/>', {
-            name: 'target',
-            'class': 'field'
-        }).appendTo(td);
-
-        that.target_type_select = $('<select/>', {
-            change: function() {
-                show_target_type(this.value);
-            }
-        }).appendTo(field_container);
-
-        for (var i=0 ; i<target_types.length; i++) {
-            target_type = target_types[i];
-
-            $('<option/>', {
-                text: target_type.name,
-                value : target_type.name
-            }).appendTo(that.target_type_select);
-
-            tr = $('<tr/>', {
-                style: 'display: none'
-            }).appendTo(table);
-
-            td = $('<td/>', {
-                'class': 'section-cell-label'
-            }).appendTo(tr);
-
-            $('<label/>', {
-                name: target_type.name,
-                title: target_type.label,
-                'class': 'field-label',
-                text: target_type.label+':'
-            }).appendTo(td);
-
-            td = $('<td/>', {
-                'class': 'section-cell-field'
-            }).appendTo(tr);
-
-            field_container = $('<div/>', {
-                name: target_type.name,
-                title: target_type.label,
-                'class': 'field'
-            }).appendTo(td);
-
-            target_type.create(field_container);
-            target_type.container = tr;
-        }
-    };
-
-    function reset_target_widgets() {
-        that.filter_text.record = null;
-        that.subtree_textarea.record = null;
-        that.group_select.record = null;
-        that.type_select.record = null;
-        that.attribute_table.record = null;
-
-        that.filter_text.reset();
-        that.subtree_textarea.reset();
-        that.group_select.reset();
-        that.type_select.reset();
-        that.attribute_table.reset();
-    }
-
-    function set_target_type(record) {
-
-        reset_target_widgets();
-
-        var target_type_name ;
-        for (var i=0; i<target_types.length; i++) {
-            target_type = target_types[i];
-            if (record[target_type.name]) {
-                target_type_name = target_type.name;
-                break;
-            }
-        }
-        if (!target_type_name) {
-            alert(IPA.messages.objects.permission.invalid_target);
-            return;
-        }
-
-        that.target_type_select.val(target_type_name);
-        show_target_type(target_type_name);
-        target_type.load(record);
-    }
-
-    that.load = function(record){
-        that.section_load(record);
-        that.reset();
-    };
-
-    that.reset = function() {
-        that.section_reset();
-
-        if (that.record) {
-            set_target_type(that.record);
-            that.attribute_table.object_type = that.record.type;
-
-        } else {
-            reset_target_widgets();
-            that.target_type_select.val(target_types[0].name);
-            show_target_type(target_types[0].name);
-        }
-    };
-
-    that.save = function(record) {
-        target_type.save(record);
+        that.widgets.add_widget(that.attribute_multivalued);
     };
 
     init();
 
     return that;
 };
+
+IPA.permission_target_policy = function (widget_name) {
+
+    var that = IPA.facet_policy();
+
+    that.init = function() {
+
+        that.permission_target = that.container.widgets.get_widget(widget_name);
+        var widgets = that.permission_target.widgets;
+
+        var target_select = widgets.get_widget('target');
+        target_select.value_changed.attach(function() {
+            var target = target_select.save()[0];
+            that.select_target(target);
+        });
+
+        var type_select = widgets.get_widget('type');
+
+        type_select.value_changed.attach(function() {
+            var type = type_select.save()[0];
+            that.set_attrs_type(type, true);
+        });
+
+        type_select.undo_clicked.attach(function() {
+            var type = type_select.save()[0];
+            that.set_attrs_type(type, true);
+        });
+    };
+
+    that.set_attrs_type = function(type, skip_unmatched) {
+        var attribute_field = that.container.fields.get_field('attrs');
+        var attribute_table = that.permission_target.widgets.get_widget('attrs');
+        var skip_unmatched_org = attribute_table.skip_unmatched;
+        attribute_table.object_type = type;
+        // skip values which don't belong to new type. Bug #2617
+        attribute_table.skip_unmatched =  skip_unmatched || skip_unmatched_org;
+        attribute_field.reset();
+        // force value_change to update dirty status if some unmatched values were skipped
+        attribute_table.value_changed.notify([], attribute_table);
+        attribute_table.skip_unmatched = skip_unmatched_org;
+    };
+
+    that.update_attrs = function() {
+
+        var type_select = that.permission_target.widgets.get_widget('type');
+        var type = type_select.save()[0];
+        that.set_attrs_type(type, false);
+    };
+
+    that.post_create = function() {
+        that.select_target(that.permission_target.targets[0]);
+    };
+
+    that.post_load = function(data) {
+
+        var displayed_target;
+
+        for (var target in that.target_mapping) {
+
+            if (data.result.result[target]) {
+                displayed_target = target;
+            } else {
+                that.set_target_visible(target, false);
+            }
+        }
+
+        if (displayed_target) {
+            that.permission_target.target = displayed_target;
+            that.set_target_visible(displayed_target, true);
+        }
+    };
+
+    that.select_target = function(target) {
+        that.set_target_visible(that.permission_target.target, false);
+        that.permission_target.target = target;
+        that.set_target_visible(that.permission_target.target, true);
+    };
+
+    that.set_target_visible = function(target, visible) {
+
+        var target_info = that.target_mapping[target];
+        that.set_target_visible_core(target_info, visible);
+    };
+
+    that.set_target_visible_core = function(target_info, visible) {
+        var widget = that.permission_target.widgets.get_widget(target_info.name);
+        var field = that.container.fields.get_field(target_info.name);
+        that.permission_target.set_row_visible(target_info.name, visible);
+        field.enabled = visible;
+        field.set_required(visible && target_info.required);
+        widget.hidden = !visible;
+
+        if (target_info.additional) {
+            for (var i=0; i<target_info.additional.length; i++) {
+                var nested_info = target_info.additional[i];
+                that.set_target_visible_core(nested_info, visible);
+            }
+        }
+
+        if (target_info.action) target_info.action();
+    };
+
+
+    that.target_mapping = {
+        filter: {
+            name: 'filter',
+            required: true,
+            additional: [
+                {
+                    name: 'attrs_multi'
+                }
+            ]
+        },
+        subtree: {
+            name: 'subtree',
+            required: true,
+            additional: [
+                {
+                    name: 'memberof'
+                },
+                {
+                    name: 'attrs_multi'
+                }
+            ]
+        },
+        targetgroup: {
+            name: 'targetgroup',
+            required: true,
+            additional: [
+                {
+                    name: 'attrs'
+                }
+            ],
+            action: function() {
+                that.set_attrs_type('group', false);
+            }
+        },
+        type: {
+            name: 'type',
+            additional: [
+                {
+                    name: 'memberof'
+                },
+                {
+                    name: 'attrs'
+                }
+            ],
+            action: function() {
+                that.update_attrs();
+            }
+        }
+    };
+
+
+    return that;
+};
+
+IPA.widget_factories['permission_target'] = IPA.permission_target_widget;
+
+
+IPA.register('permission', IPA.aci.permission_entity);
+IPA.register('privilege', IPA.aci.privilege_entity);
+IPA.register('role', IPA.aci.role_entity);
+IPA.register('selfservice', IPA.aci.selfservice_entity);
+IPA.register('delegation', IPA.aci.delegation_entity);

@@ -23,7 +23,7 @@ import base64
 import os
 
 from ipalib import api, errors, util
-from ipalib import Str, Flag, Bytes
+from ipalib import Str, Flag, Bytes, StrEnum
 from ipalib.plugins.baseldap import *
 from ipalib import x509
 from ipalib import _, ngettext
@@ -60,8 +60,11 @@ EXAMPLES:
    ipa service-add HTTP/web.example.com
 
  Allow a host to manage an IPA service certificate:
-  ipa service-add-host --hosts=web.example.com HTTP/web.example.com
-  ipa role-add-member --hosts=web.example.com certadmin
+   ipa service-add-host --hosts=web.example.com HTTP/web.example.com
+   ipa role-add-member --hosts=web.example.com certadmin
+
+ Override a default list of supported PAC types for the service:
+   ipa service-mod HTTP/web.example.com --pac-type=MS-PAC
 
  Delete an IPA service:
    ipa service-del HTTP/web.example.com
@@ -84,6 +87,9 @@ EXAMPLES:
 """)
 
 output_params = (
+    Flag('has_keytab',
+        label=_('Keytab'),
+    ),
     Str('managedby_host',
         label='Managed by',
     ),
@@ -92,6 +98,9 @@ output_params = (
     ),
     Str('serial_number',
         label=_('Serial Number'),
+    ),
+    Str('serial_number_hex',
+        label=_('Serial Number (hex)'),
     ),
     Str('issuer',
         label=_('Issuer'),
@@ -120,18 +129,15 @@ def split_principal(principal):
     # may not include the realm.
     sp = principal.split('/')
     if len(sp) != 2:
-        raise errors.MalformedServicePrincipal(reason='missing service')
+        raise errors.MalformedServicePrincipal(reason=_('missing service'))
 
     service = sp[0]
     if len(service) == 0:
-        raise errors.MalformedServicePrincipal(
-            reason='blank service'
-        )
+        raise errors.MalformedServicePrincipal(reason=_('blank service'))
     sr = sp[1].split('@')
     if len(sr) > 2:
         raise errors.MalformedServicePrincipal(
-            reason='unable to determine realm'
-        )
+            reason=_('unable to determine realm'))
 
     hostname = sr[0].lower()
     if len(sr) == 2:
@@ -187,11 +193,24 @@ def set_certificate_attrs(entry_attrs):
     cert = x509.load_certificate(cert, datatype=x509.DER)
     entry_attrs['subject'] = unicode(cert.subject)
     entry_attrs['serial_number'] = unicode(cert.serial_number)
+    entry_attrs['serial_number_hex'] = u'0x%X' % cert.serial_number
     entry_attrs['issuer'] = unicode(cert.issuer)
     entry_attrs['valid_not_before'] = unicode(cert.valid_not_before_str)
     entry_attrs['valid_not_after'] = unicode(cert.valid_not_after_str)
     entry_attrs['md5_fingerprint'] = unicode(nss.data_to_hex(nss.md5_digest(cert.der_data), 64)[0])
     entry_attrs['sha1_fingerprint'] = unicode(nss.data_to_hex(nss.sha1_digest(cert.der_data), 64)[0])
+
+def check_required_principal(ldap, hostname, service):
+    """
+    Raise an error if the host of this prinicipal is an IPA master and one
+    of the principals required for proper execution.
+    """
+    try:
+        host_is_master(ldap, hostname)
+    except errors.ValidationError, e:
+        service_types = ['HTTP', 'ldap', 'DNS', 'dogtagldap']
+        if service in service_types:
+            raise errors.ValidationError(name='principal', error=_('This principal is required by the IPA master'))
 
 class service(LDAPObject):
     """
@@ -204,8 +223,10 @@ class service(LDAPObject):
         'krbprincipal', 'krbprincipalaux', 'krbticketpolicyaux', 'ipaobject',
         'ipaservice', 'pkiuser'
     ]
-    search_attributes = ['krbprincipalname', 'managedby']
-    default_attributes = ['krbprincipalname', 'usercertificate', 'managedby']
+    possible_objectclasses = ['ipakrbprincipal']
+    search_attributes = ['krbprincipalname', 'managedby', 'ipakrbauthzdata']
+    default_attributes = ['krbprincipalname', 'usercertificate', 'managedby',
+        'ipakrbauthzdata',]
     uuid_attribute = 'ipauniqueid'
     attribute_members = {
         'managedby': ['host'],
@@ -232,8 +253,31 @@ class service(LDAPObject):
             label=_('Certificate'),
             doc=_('Base-64 encoded server certificate'),
             flags=['no_search',],
-        )
+        ),
+        StrEnum('ipakrbauthzdata*',
+            cli_name='pac_type',
+            label=_('PAC type'),
+            doc=_("Override default list of supported PAC types."
+                  " Use 'NONE' to disable PAC support for this service"),
+            values=(u'MS-PAC', u'PAD', u'NONE'),
+            csv=True,
+        ),
     )
+
+    def validate_ipakrbauthzdata(self, entry):
+        new_value = entry.get('ipakrbauthzdata', [])
+
+        if not new_value:
+            return
+
+        if not isinstance(new_value, (list, tuple)):
+            new_value = set([new_value])
+        else:
+            new_value = set(new_value)
+
+        if u'NONE' in new_value and len(new_value) > 1:
+            raise errors.ValidationError(name='ipakrbauthzdata',
+                error=_('NONE value cannot be combined with other PAC types'))
 
 api.register(service)
 
@@ -244,13 +288,14 @@ class service_add(LDAPCreate):
     msg_summary = _('Added service "%(value)s"')
     member_attributes = ['managedby']
     has_output_params = LDAPCreate.has_output_params + output_params
-    takes_options = (
+    takes_options = LDAPCreate.takes_options + (
         Flag('force',
             label=_('Force'),
             doc=_('force principal name even if not in DNS'),
         ),
     )
     def pre_callback(self, ldap, dn, entry_attrs, attrs_list, *keys, **options):
+        assert isinstance(dn, DN)
         (service, hostname, realm) = split_principal(keys[-1])
         if service.lower() == 'host' and not options['force']:
             raise errors.HostService()
@@ -258,7 +303,11 @@ class service_add(LDAPCreate):
         try:
             hostresult = api.Command['host_show'](hostname)['result']
         except errors.NotFound:
-            raise errors.NotFound(reason="The host '%s' does not exist to add a service to." % hostname)
+            raise errors.NotFound(
+                reason=_("The host '%s' does not exist to add a service to.") %
+                    hostname)
+
+        self.obj.validate_ipakrbauthzdata(entry_attrs)
 
         cert = options.get('usercertificate')
         if cert:
@@ -272,7 +321,16 @@ class service_add(LDAPCreate):
              # don't exist in DNS.
              util.validate_host_dns(self.log, hostname)
         if not 'managedby' in entry_attrs:
-             entry_attrs['managedby'] = hostresult['dn']
+            entry_attrs['managedby'] = hostresult['dn']
+
+        # Enforce ipaKrbPrincipalAlias to aid case-insensitive searches
+        # as krbPrincipalName/krbCanonicalName are case-sensitive in Kerberos
+        # schema
+        entry_attrs['ipakrbprincipalalias'] = keys[-1]
+
+        # Objectclass ipakrbprincipal providing ipakrbprincipalalias is not in
+        # in a list of default objectclasses, add it manually
+        entry_attrs['objectclass'].append('ipakrbprincipal')
 
         return dn
 
@@ -285,8 +343,17 @@ class service_del(LDAPDelete):
     msg_summary = _('Deleted service "%(value)s"')
     member_attributes = ['managedby']
     def pre_callback(self, ldap, dn, *keys, **options):
+        assert isinstance(dn, DN)
+        # In the case of services we don't want IPA master services to be
+        # deleted. This is a limited few though. If the user has their own
+        # custom services allow them to manage them.
+        (service, hostname, realm) = split_principal(keys[-1])
+        check_required_principal(ldap, hostname, service)
         if self.api.env.enable_ra:
-            (dn, entry_attrs) = ldap.get_entry(dn, ['usercertificate'])
+            try:
+                (dn, entry_attrs) = ldap.get_entry(dn, ['usercertificate'])
+            except errors.NotFound:
+                self.obj.handle_not_found(*keys)
             cert = entry_attrs.get('usercertificate')
             if cert:
                 cert = cert[0]
@@ -325,13 +392,21 @@ class service_mod(LDAPUpdate):
     member_attributes = ['managedby']
 
     def pre_callback(self, ldap, dn, entry_attrs, *keys, **options):
+        assert isinstance(dn, DN)
+
+        self.obj.validate_ipakrbauthzdata(entry_attrs)
+
         if 'usercertificate' in options:
             (service, hostname, realm) = split_principal(keys[-1])
             cert = options.get('usercertificate')
             if cert:
                 dercert = x509.normalize_certificate(cert)
                 x509.verify_cert_subject(ldap, hostname, dercert)
-                (dn, entry_attrs_old) = ldap.get_entry(dn, ['usercertificate'])
+                try:
+                    (dn, entry_attrs_old) = ldap.get_entry(
+                        dn, ['usercertificate'])
+                except errors.NotFound:
+                    self.obj.handle_not_found(*keys)
                 if 'usercertificate' in entry_attrs_old:
                     # FIXME: what to do here? do we revoke the old cert?
                     fmt = 'entry already has a certificate, serial number: %s' % (
@@ -344,7 +419,9 @@ class service_mod(LDAPUpdate):
         return dn
 
     def post_callback(self, ldap, dn, entry_attrs, *keys, **options):
+        assert isinstance(dn, DN)
         set_certificate_attrs(entry_attrs)
+        return dn
 
 api.register(service_mod)
 
@@ -358,7 +435,9 @@ class service_find(LDAPSearch):
     member_attributes = ['managedby']
     takes_options = LDAPSearch.takes_options
     has_output_params = LDAPSearch.has_output_params + output_params
+
     def pre_callback(self, ldap, filter, attrs_list, base_dn, scope, *args, **options):
+        assert isinstance(base_dn, DN)
         # lisp style!
         custom_filter = '(&(objectclass=ipaService)' \
                           '(!(objectClass=posixAccount))' \
@@ -373,10 +452,13 @@ class service_find(LDAPSearch):
         )
 
     def post_callback(self, ldap, entries, truncated, *args, **options):
+        if options.get('pkey_only', False):
+            return truncated
         for entry in entries:
             (dn, entry_attrs) = entry
             self.obj.get_password_attributes(ldap, dn, entry_attrs)
             set_certificate_attrs(entry_attrs)
+        return truncated
 
 api.register(service_find)
 
@@ -390,8 +472,10 @@ class service_show(LDAPRetrieve):
             doc=_('file to store certificate in'),
         ),
     )
+    has_output_params = LDAPRetrieve.has_output_params + output_params
 
     def post_callback(self, ldap, dn, entry_attrs, *keys, **options):
+        assert isinstance(dn, DN)
         self.obj.get_password_attributes(ldap, dn, entry_attrs)
 
         set_certificate_attrs(entry_attrs)
@@ -443,6 +527,9 @@ class service_disable(LDAPQuery):
 
         dn = self.obj.get_dn(*keys, **options)
         (dn, entry_attrs) = ldap.get_entry(dn, ['usercertificate'])
+
+        (service, hostname, realm) = split_principal(keys[-1])
+        check_required_principal(ldap, hostname, service)
 
         # See if we do any work at all here and if not raise an exception
         done_work = False

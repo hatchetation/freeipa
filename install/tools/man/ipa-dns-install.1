@@ -16,7 +16,7 @@
 .\"
 .\" Author: Rob Crittenden <rcritten@redhat.com>
 .\"
-.TH "ipa-dns-install" "1" "Sep 9, 2010" "FreeIPA" "FreeIPA Manual Pages"
+.TH "ipa-dns-install" "1" "Jun 28, 2012" "FreeIPA" "FreeIPA Manual Pages"
 .SH "NAME"
 ipa\-dns\-install \- Add DNS as a service to an IPA server
 .SH "SYNOPSIS"
@@ -44,16 +44,19 @@ Do not add any DNS forwarders, send non\-resolvable addresses to the DNS root se
 The reverse DNS zone to use
 .TP
 \fB\-\-no\-reverse\fR
-Do not create reverse DNS zone
+Do not create new reverse DNS zone. If used on a replica and a reverse DNS zone already exists for the subnet, it will be used.
 .TP
 \fB\-\-zonemgr\fR
-The e\-mail address of the DNS zone manager. Defaults too root@host.domain
+The e\-mail address of the DNS zone manager. Defaults to hostmaster@DOMAIN
 .TP
-\fB\-\-zone\-notif\fR
-Let name server receive notifications when a new zone is added. New zone is then immediately loaded by the name server. This feature uses an LDAP Persistent Search mechanism to receive the data. Zone refresh is turned off when zone notifications are enabled.
+\fB\-\-no\-persistent\-search\fR
+Do not enable persistent search mechanism for updating the list of DNS zones in the name server. When persistent search is disabled and \fB\-\-zone\-refresh\fR option is not set to non-zero value, new zones won't be resolvable until the name server is reloaded.
 .TP
 \fB\-\-zone\-refresh=\fIZONE_REFRESH\fR
-Number of seconds between regular checks for new DNS zones. When set to 0 the name server does not check for new zones and it needs to be reloaded when a new DNS zone is added.
+When set to non-zero value, persistent search zone update mechanism will be disabled and the name server will use a polling mechanism to load new DNS zones every \fIZONE_REFRESH\fR seconds.
+.TP
+\fB\-\-no\-serial\-autoincrement\fR
+Do not enable SOA serial autoincrement feature. SOA serial will have to be updated automatically or other DNS features like zone transfer od DNSSEC will not function properly. This feature requires persistent search zone update mechanism.
 .TP
 \fB\-U\fR, \fB\-\-unattended\fR
 An unattended installation that will never prompt for user input

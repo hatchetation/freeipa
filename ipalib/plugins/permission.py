@@ -17,12 +17,12 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import copy
 from ipalib.plugins.baseldap import *
 from ipalib import api, _, ngettext
 from ipalib import Flag, Str, StrEnum
 from ipalib.request import context
 from ipalib import errors
+from ipapython.dn import DN, EditableDN
 
 __doc__ = _("""
 Permissions
@@ -84,7 +84,20 @@ output_params = (
     Str('ipapermissiontype',
         label=_('Permission Type'),
     ),
+    Str('aci',
+        label=_('ACI'),
+    ),
 )
+
+def filter_options(options, keys):
+    """Return a dict that includes entries from `options` that are in `keys`
+
+    example:
+    >>> filtered = filter_options({'a': 1, 'b': 2, 'c': 3}, ['a', 'c'])
+    >>> filtered == {'a': 1, 'c': 3}
+    True
+    """
+    return dict((k, options[k]) for k in keys if k in options)
 
 class permission(LDAPObject):
     """
@@ -97,13 +110,14 @@ class permission(LDAPObject):
     default_attributes = ['cn', 'member', 'memberof',
         'memberindirect', 'ipapermissiontype',
     ]
-    aci_attributes = ['group', 'permissions', 'attrs', 'type',
-        'filter', 'subtree', 'targetgroup',
+    aci_attributes = ['aci', 'group', 'permissions', 'attrs', 'type',
+        'filter', 'subtree', 'targetgroup', 'memberof',
     ]
     attribute_members = {
         'member': ['privilege'],
+        'memberindirect': ['role'],
     }
-    rdnattr='cn'
+    rdn_is_primary_key = True
 
     label = _('Permissions')
     label_singular = _('Permission')
@@ -113,50 +127,54 @@ class permission(LDAPObject):
             cli_name='name',
             label=_('Permission name'),
             primary_key=True,
+            pattern='^[-_ a-zA-Z0-9]+$',
+            pattern_errmsg="May only contain letters, numbers, -, _, and space",
         ),
-        List('permissions',
+        Str('permissions+',
             cli_name='permissions',
             label=_('Permissions'),
             doc=_('Comma-separated list of permissions to grant ' \
                 '(read, write, add, delete, all)'),
+            csv=True,
         ),
-        List('attrs?',
+        Str('attrs*',
             cli_name='attrs',
             label=_('Attributes'),
             doc=_('Comma-separated list of attributes'),
+            csv=True,
             normalizer=lambda value: value.lower(),
-            flags=('ask_create', 'ask_update'),
+            flags=('ask_create'),
         ),
         StrEnum('type?',
             cli_name='type',
             label=_('Type'),
             doc=_('Type of IPA object (user, group, host, hostgroup, service, netgroup, dns)'),
             values=(u'user', u'group', u'host', u'service', u'hostgroup', u'netgroup', u'dnsrecord',),
-            flags=('ask_create', 'ask_update'),
+            flags=('ask_create'),
         ),
         Str('memberof?',
             cli_name='memberof',
             label=_('Member of group'),  # FIXME: Does this label make sense?
             doc=_('Target members of a group'),
-            flags=('ask_create', 'ask_update'),
+            flags=('ask_create'),
         ),
         Str('filter?',
             cli_name='filter',
             label=_('Filter'),
             doc=_('Legal LDAP filter (e.g. ou=Engineering)'),
-            flags=('ask_create', 'ask_update'),
+            flags=('ask_create'),
         ),
         Str('subtree?',
             cli_name='subtree',
             label=_('Subtree'),
             doc=_('Subtree to apply permissions to'),
-            flags=('ask_create', 'ask_update'),
+            flags=('ask_create'),
         ),
         Str('targetgroup?',
             cli_name='targetgroup',
             label=_('Target group'),
             doc=_('User group to apply permissions to'),
-            flags=('ask_create', 'ask_update'),
+            flags=('ask_create'),
         ),
     )
 
@@ -171,6 +189,11 @@ class permission(LDAPObject):
                 return False
         return True
 
+    def filter_aci_attributes(self, options):
+        """Return option dictionary that only includes ACI attributes"""
+        return dict((k, v) for k, v in options.items() if
+            k in self.aci_attributes)
+
 api.register(permission)
 
 
@@ -178,17 +201,16 @@ class permission_add(LDAPCreate):
     __doc__ = _('Add a new permission.')
 
     msg_summary = _('Added permission "%(value)s"')
+    has_output_params = LDAPCreate.has_output_params + output_params
 
     def pre_callback(self, ldap, dn, entry_attrs, attrs_list, *keys, **options):
+        assert isinstance(dn, DN)
         # Test the ACI before going any further
-        opts = copy.copy(options)
+        opts = self.obj.filter_aci_attributes(options)
         opts['test'] = True
         opts['permission'] = keys[-1]
         opts['aciprefix'] = ACI_PREFIX
-        try:
-            self.api.Command.aci_add(keys[-1], **opts)
-        except Exception, e:
-            raise e
+        self.api.Command.aci_add(keys[-1], **opts)
 
         # Clear the aci attributes out of the permission entry
         for o in options:
@@ -200,8 +222,9 @@ class permission_add(LDAPCreate):
         return dn
 
     def post_callback(self, ldap, dn, entry_attrs, *keys, **options):
+        assert isinstance(dn, DN)
         # Now actually add the aci.
-        opts = copy.copy(options)
+        opts = self.obj.filter_aci_attributes(options)
         opts['test'] = False
         opts['permission'] = keys[-1]
         opts['aciprefix'] = ACI_PREFIX
@@ -230,15 +253,59 @@ class permission_add(LDAPCreate):
 
 api.register(permission_add)
 
+class permission_add_noaci(LDAPCreate):
+    __doc__ = _('Add a system permission without an ACI')
+
+    msg_summary = _('Added permission "%(value)s"')
+    has_output_params = LDAPCreate.has_output_params + output_params
+    NO_CLI = True
+
+    takes_options = (
+        StrEnum('permissiontype?',
+            label=_('Permission type'),
+            values=(u'SYSTEM',),
+        ),
+    )
+
+    def get_args(self):
+        # do not validate system permission names
+        yield self.obj.primary_key.clone(pattern=None, pattern_errmsg=None)
+
+    def get_options(self):
+        for option in super(permission_add_noaci, self).get_options():
+            # filter out ACI options
+            if option.name in self.obj.aci_attributes:
+                continue
+            yield option
+
+    def pre_callback(self, ldap, dn, entry_attrs, attrs_list, *keys, **options):
+        assert isinstance(dn, DN)
+        permission_type = options.get('permissiontype')
+        if permission_type:
+            entry_attrs['ipapermissiontype'] = [ permission_type ]
+        return dn
+
+api.register(permission_add_noaci)
+
 
 class permission_del(LDAPDelete):
     __doc__ = _('Delete a permission.')
 
     msg_summary = _('Deleted permission "%(value)s"')
 
+    takes_options = LDAPDelete.takes_options + (
+        Flag('force',
+             label=_('Force'),
+             flags=['no_option', 'no_output'],
+             doc=_('force delete of SYSTEM permissions'),
+        ),
+    )
+
     def pre_callback(self, ldap, dn, *keys, **options):
-        if not self.obj.check_system(ldap, dn, *keys):
-            raise errors.ACIError(info='A SYSTEM permission may not be removed')
+        assert isinstance(dn, DN)
+        if not options.get('force') and not self.obj.check_system(ldap, dn, *keys):
+            raise errors.ACIError(
+                info=_('A SYSTEM permission may not be removed'))
         # remove permission even when the underlying ACI is missing
         try:
             self.api.Command.aci_del(keys[-1], aciprefix=ACI_PREFIX)
@@ -256,8 +323,10 @@ class permission_mod(LDAPUpdate):
     has_output_params = LDAPUpdate.has_output_params + output_params
 
     def pre_callback(self, ldap, dn, entry_attrs, attrs_list, *keys, **options):
+        assert isinstance(dn, DN)
         if not self.obj.check_system(ldap, dn, *keys):
-            raise errors.ACIError(info='A SYSTEM permission may not be modified')
+            raise errors.ACIError(
+                info=_('A SYSTEM permission may not be modified'))
 
         # check if permission is in LDAP
         try:
@@ -270,31 +339,31 @@ class permission_mod(LDAPUpdate):
         # when renaming permission, check if the target permission does not
         # exists already. Then, make changes to underlying ACI
         if 'rename' in options:
-            try:
-                new_dn = dn.replace(keys[-1], options['rename'], 1)
-                (new_dn, attrs) = ldap.get_entry(
-                    new_dn, attrs_list, normalize=self.obj.normalize_dn
-                )
-                raise errors.DuplicateEntry()
-            except errors.NotFound:
-                pass    # permission may be renamed, continue
+            if options['rename']:
+                try:
+                    try:
+                        new_dn = EditableDN(dn)
+                        new_dn[0]['cn'] # assure the first RDN has cn as it's type
+                    except (IndexError, KeyError), e:
+                        raise ValueError("expected dn starting with 'cn=' but got '%s'" % dn)
+                    new_dn[0].value = options['rename']
+                    (new_dn, attrs) = ldap.get_entry(new_dn, attrs_list, normalize=self.obj.normalize_dn)
+                    raise errors.DuplicateEntry()
+                except errors.NotFound:
+                    pass    # permission may be renamed, continue
+            else:
+                raise errors.ValidationError(
+                    name='rename', error=_('New name can not be empty'))
 
-        opts = copy.copy(options)
-        for o in ['all', 'raw', 'rights', 'rename']:
-            if o in opts:
-                del opts[o]
+        opts = self.obj.filter_aci_attributes(options)
         setattr(context, 'aciupdate', False)
         # If there are no options left we don't need to do anything to the
         # underlying ACI.
         if len(opts) > 0:
-            opts['test'] = False
             opts['permission'] = keys[-1]
             opts['aciprefix'] = ACI_PREFIX
-            try:
-                self.api.Command.aci_mod(keys[-1], **opts)
-                setattr(context, 'aciupdate', True)
-            except Exception, e:
-                raise e
+            self.api.Command.aci_mod(keys[-1], **opts)
+            setattr(context, 'aciupdate', True)
 
         # Clear the aci attributes out of the permission entry
         for o in self.obj.aci_attributes:
@@ -306,22 +375,15 @@ class permission_mod(LDAPUpdate):
         return dn
 
     def exc_callback(self, keys, options, exc, call_func, *call_args, **call_kwargs):
-        if isinstance(exc, errors.EmptyModlist):
-            aciupdate = getattr(context, 'aciupdate')
-            opts = copy.copy(options)
-            # Clear the aci attributes out of the permission entry
-            for o in self.obj.aci_attributes + ['all', 'raw', 'rights']:
-                try:
-                    del opts[o]
-                except:
-                    pass
-
-            if len(opts) > 0 and not aciupdate:
-                raise exc
-        else:
-            raise exc
+        if call_func.func_name == 'update_entry':
+            if isinstance(exc, errors.EmptyModlist):
+                aciupdate = getattr(context, 'aciupdate')
+                if aciupdate:
+                    return
+        raise exc
 
     def post_callback(self, ldap, dn, entry_attrs, *keys, **options):
+        assert isinstance(dn, DN)
         # rename the underlying ACI after the change to permission
         cn = keys[-1]
 
@@ -330,13 +392,16 @@ class permission_mod(LDAPUpdate):
                         permission=options['rename'])
 
             self.api.Command.aci_rename(cn, aciprefix=ACI_PREFIX,
-                        newname=options['rename'], newprefix=ACI_PREFIX)
+                        newname=options['rename'])
 
             cn = options['rename']     # rename finished
 
-        result = self.api.Command.permission_show(cn, **options)['result']
+        # all common options to permission-mod and show need to be listed here
+        common_options = filter_options(options, ['all', 'raw', 'rights'])
+        result = self.api.Command.permission_show(cn, **common_options)['result']
+
         for r in result:
-            if not r.startswith('member'):
+            if not r.startswith('member_'):
                 entry_attrs[r] = result[r]
         return dn
 
@@ -352,23 +417,45 @@ class permission_find(LDAPSearch):
     has_output_params = LDAPSearch.has_output_params + output_params
 
     def post_callback(self, ldap, entries, truncated, *args, **options):
-        for entry in entries:
-            (dn, attrs) = entry
-            try:
-                aci = self.api.Command.aci_show(attrs['cn'][0], aciprefix=ACI_PREFIX)['result']
 
-                # copy information from respective ACI to permission entry
-                for attr in self.obj.aci_attributes:
-                    if attr in aci:
-                        attrs[attr] = aci[attr]
-            except errors.NotFound:
-                self.debug('ACI not found for %s' % attrs['cn'][0])
+        # There is an option/param overlap: "cn" must be passed as "aciname"
+        # to aci-find. Besides that we don't need cn anymore so pop it
+        aciname = options.pop('cn', None)
+
+        pkey_only = options.pop('pkey_only', False)
+        if not pkey_only:
+            for entry in entries:
+                (dn, attrs) = entry
+                try:
+                    common_options = filter_options(options, ['all', 'raw'])
+                    aci = self.api.Command.aci_show(attrs['cn'][0],
+                        aciprefix=ACI_PREFIX, **common_options)['result']
+
+                    # copy information from respective ACI to permission entry
+                    for attr in self.obj.aci_attributes:
+                        if attr in aci:
+                            attrs[attr] = aci[attr]
+                except errors.NotFound:
+                    self.debug('ACI not found for %s' % attrs['cn'][0])
+        if truncated:
+            # size/time limit met, no need to search acis
+            return truncated
+
+        if 'sizelimit' in options:
+            max_entries = options['sizelimit']
+        else:
+            config = ldap.get_ipa_config()[1]
+            max_entries = config['ipasearchrecordslimit']
 
         # Now find all the ACIs that match. Once we find them, add any that
         # aren't already in the list along with their permission info.
-        options['aciprefix'] = ACI_PREFIX
 
-        aciresults = self.api.Command.aci_find(*args, **options)
+        opts = self.obj.filter_aci_attributes(options)
+        if aciname:
+            opts['aciname'] = aciname
+        opts['aciprefix'] = ACI_PREFIX
+        # permission ACI attribute is needed
+        aciresults = self.api.Command.aci_find(*args, **opts)
         truncated = truncated or aciresults['truncated']
         results = aciresults['result']
 
@@ -381,15 +468,24 @@ class permission_find(LDAPSearch):
                         found = True
                         break
                 if not found:
-                    permission = self.api.Command.permission_show(aci['permission'])
-                    attrs = permission['result']
-                    for attr in self.obj.aci_attributes:
-                        if attr in aci:
-                            attrs[attr] = aci[attr]
-                    dn = attrs['dn']
-                    del attrs['dn']
-                    if (dn, attrs) not in entries:
-                        entries.append((dn, attrs))
+                    common_options = filter_options(options, ['all', 'raw'])
+                    permission = self.api.Command.permission_show(
+                        aci['permission'], **common_options)['result']
+                    dn = permission['dn']
+                    del permission['dn']
+                    if pkey_only:
+                        new_entry = (dn, {self.obj.primary_key.name: \
+                                          permission[self.obj.primary_key.name]})
+                    else:
+                        new_entry = (dn, permission)
+
+                    if (dn, permission) not in entries:
+                       if len(entries) < max_entries:
+                           entries.append(new_entry)
+                       else:
+                           truncated = True
+                           break
+        return truncated
 
 api.register(permission_find)
 
@@ -399,8 +495,11 @@ class permission_show(LDAPRetrieve):
 
     has_output_params = LDAPRetrieve.has_output_params + output_params
     def post_callback(self, ldap, dn, entry_attrs, *keys, **options):
+        assert isinstance(dn, DN)
         try:
-            aci = self.api.Command.aci_show(keys[-1], aciprefix=ACI_PREFIX)['result']
+            common_options = filter_options(options, ['all', 'raw'])
+            aci = self.api.Command.aci_show(keys[-1], aciprefix=ACI_PREFIX,
+                **common_options)['result']
             for attr in self.obj.aci_attributes:
                 if attr in aci:
                     entry_attrs[attr] = aci[attr]

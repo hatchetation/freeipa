@@ -47,7 +47,7 @@ And then a nested response for each IPA command method sent in the request
 
 from ipalib import api, errors
 from ipalib import Command
-from ipalib import Str, List
+from ipalib.parameters import Str, Any
 from ipalib.output import Output
 from ipalib import output
 from ipalib.text import _
@@ -58,10 +58,10 @@ class batch(Command):
     NO_CLI = True
 
     takes_args = (
-        List('methods?',
-             doc=_('Nested Methods to execute'),
-             ),
-        )
+        Any('methods*',
+            doc=_('Nested Methods to execute'),
+        ),
+    )
 
     take_options = (
         Str('version',
@@ -71,16 +71,16 @@ class batch(Command):
             flags=['no_option', 'no_output'],
             default=API_VERSION,
             autofill=True,
-            )
+        ),
     )
 
     has_output = (
         Output('count', int, doc=''),
-        Output('results', list, doc='')
+        Output('results', (list, tuple), doc='')
     )
 
     def execute(self, *args, **options):
-        results=[]
+        results = []
         for arg in args[0]:
             params = dict()
             name = None
@@ -92,11 +92,8 @@ class batch(Command):
                 name = arg['method']
                 if name not in self.Command:
                     raise errors.CommandError(name=name)
-                a = arg['params'][0]
-                kw = arg['params'][1]
-                newkw = {}
-                for k in kw:
-                    newkw[str(k)] = kw[k]
+                a, kw = arg['params']
+                newkw = dict((str(k), v) for k, v in kw.iteritems())
                 params = api.Command[name].args_options_2_params(*a, **newkw)
 
                 result = api.Command[name](*a, **newkw)
@@ -105,8 +102,6 @@ class batch(Command):
                 )
                 result['error']=None
             except Exception, e:
-                result = dict()
-                result['error'] = unicode(e)
                 if isinstance(e, errors.RequirementError) or \
                     isinstance(e, errors.CommandError):
                     self.info(
@@ -116,6 +111,15 @@ class batch(Command):
                     self.info(
                         '%s: batch: %s(%s): %s', context.principal, name, ', '.join(api.Command[name]._repr_iter(**params)),  e.__class__.__name__
                     )
+                if isinstance(e, errors.PublicError):
+                    reported_error = e
+                else:
+                    reported_error = errors.InternalError()
+                result = dict(
+                    error=reported_error.strerror,
+                    error_code=reported_error.errno,
+                    error_name=unicode(type(reported_error).__name__),
+                )
             results.append(result)
         return dict(count=len(results) , results=results)
 

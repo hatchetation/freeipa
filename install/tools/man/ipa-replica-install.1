@@ -1,5 +1,5 @@
 .\" A man page for ipa-replica-install
-.\" Copyright (C) 2008 Red Hat, Inc.
+.\" Copyright (C) 2008-2012 Red Hat, Inc.
 .\"
 .\" This program is free software; you can redistribute it and/or modify
 .\" it under the terms of the GNU General Public License as published by
@@ -16,7 +16,7 @@
 .\"
 .\" Author: Rob Crittenden <rcritten@redhat.com>
 .\"
-.TH "ipa-replica-install" "1" "Sep 5 2011" "FreeIPA" "FreeIPA Manual Pages"
+.TH "ipa-replica-install" "1" "May 16 2012" "FreeIPA" "FreeIPA Manual Pages"
 .SH "NAME"
 ipa\-replica\-install \- Create an IPA replica
 .SH "SYNOPSIS"
@@ -25,12 +25,21 @@ ipa\-replica\-install [\fIOPTION\fR]... replica_file
 Configures a new IPA server that is a replica of the server that generated it. Once it has been created it is an exact copy of the original IPA server and is an equal master. Changes made to any master are automatically replicated to other masters.
 
 The replica_file is created using the ipa\-replica\-prepare utility.
+
+If the installation fails you may need to run ipa\-server\-install \-\-uninstall before running ipa\-replica\-install again.
+
+The installation will fail if the host you are installing the replica on exists as a host in IPA or an existing replication agreement exists (for example, from a previously failed installation).
+
+A replica should only be installed on the same or higher version of IPA on the remote system.
 .SH "OPTIONS"
 .SS "BASIC OPTIONS"
 .TP
 \fB\-\-setup\-ca\fR
 Install and configure a CA on this replica. If a CA is not configured then
 certificate operations will be forwarded to a master with a CA installed.
+.TP
+\fB\-\-ip\-address\fR=\fIIP_ADDRESS\fR
+The IP address of this server. If this address does not match the address the host resolves to and \-\-setup\-dns is not selected the installation will fail. If the server hostname is not resolvable, a record for the hostname and IP_ADDRESS is added to /etc/hosts.
 .TP
 \fB\-p\fR \fIDM_PASSWORD\fR, \fB\-\-password\fR=\fIDM_PASSWORD\fR
 Directory Manager (existing master) password
@@ -43,6 +52,15 @@ Do not configure NTP
 .TP
 \fB\-\-no\-ui\-redirect\fR
 Do not automatically redirect to the Web UI.
+.TP
+\fB\-\-ssh\-trust\-dns\fR
+Configure OpenSSH client to trust DNS SSHFP records.
+.TP
+\fB\-\-no\-ssh\fR
+Do not configure OpenSSH client.
+.TP
+\fB\-\-no\-sshd\fR
+Do not configure OpenSSH server.
 .TP
 \fB\-\-skip\-conncheck\fR
 Skip connection check to remote master
@@ -57,6 +75,9 @@ An unattended installation that will never prompt for user input
 .TP
 \fB\-\-no\-pkinit\fR
 Disables pkinit setup steps
+.TP
+\fB\-\-skip\-schema\-check\fR
+Skip check for updated CA DS schema on the remote master
 
 .SS "DNS OPTIONS"
 .TP
@@ -77,12 +98,17 @@ Do not add any DNS forwarders. Root DNS servers will be used instead.
 The reverse DNS zone to use
 .TP
 \fB\-\-no\-reverse\fR
-Do not create reverse DNS zone
+Do not create new reverse DNS zone. If a reverse DNS zone already exists for the subnet, it will be used.
 .TP
 \fB\-\-no\-host\-dns\fR
 Do not use DNS for hostname lookup during installation
+.TP
+\fB\-\-no\-dns\-sshfp\fR
+Do not automatically create DNS SSHFP records.
 
 .SH "EXIT STATUS"
 0 if the command was successful
 
 1 if an error occurred
+
+3 if the host exists in the IPA server or a replication agreement to the remote master already exists

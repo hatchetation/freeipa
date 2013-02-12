@@ -20,20 +20,23 @@
 
 import sys
 
-import logging, tempfile, shutil, os, pwd
+import tempfile, shutil, os, pwd
+from ipapython.ipa_log_manager import *
 import traceback
 from ConfigParser import SafeConfigParser
 import krbV
 
 from ipapython import ipautil
 from ipaserver.install import bindinstance, dsinstance, installutils, certs
-from ipaserver.install.bindinstance import add_zone, add_reverse_zone, add_fwd_rr, add_ptr_rr, dns_container_exists
+from ipaserver.install.bindinstance import add_zone, add_fwd_rr, add_ptr_rr, dns_container_exists
 from ipaserver.install.replication import enable_replication_version_checking
 from ipaserver.install.installutils import resolve_host, BadHostError, HostLookupError
 from ipaserver.plugins.ldap2 import ldap2
 from ipapython import version
+from ipapython import dogtag
 from ipapython.config import IPAOptionParser
 from ipalib import api, errors, util
+from ipapython.dn import DN
 
 def parse_options():
     usage = "%prog [options] FQDN (e.g. replica.example.com)"
@@ -51,7 +54,7 @@ def parse_options():
                       help="PIN for the Apache Server PKCS#12 file")
     parser.add_option("--pkinit_pin", dest="pkinit_pin",
                       help="PIN for the KDC pkinit PKCS#12 file")
-    parser.add_option("-p", "--password", dest="password", 
+    parser.add_option("-p", "--password", dest="password",
                       help="Directory Manager (existing master) password")
     parser.add_option("--ip-address", dest="ip_address",
                       type="ip", help="Add A and PTR records of the future replica")
@@ -63,6 +66,8 @@ def parse_options():
                       help="Location of CA PKCS#12 file, default /root/cacert.p12")
     parser.add_option("--no-pkinit", dest="setup_pkinit", action="store_false",
                       default=True, help="disables pkinit setup steps")
+    parser.add_option("--debug", dest="debug", action="store_true",
+                      default=False, help="enable debugging")
 
     options, args = parser.parse_args()
 
@@ -98,18 +103,21 @@ def parse_options():
 def get_subject_base(host_name, dm_password, suffix):
     try:
         conn = ldap2(shared_instance=False, base_dn=suffix)
-        conn.connect(bind_dn='cn=directory manager', bind_pw=dm_password)
+        conn.connect(bind_dn=DN(('cn', 'directory manager')), bind_pw=dm_password)
     except errors.ExecutionError, e:
-        logging.critical("Could not connect to the Directory Server on %s" % host_name)
+        root_logger.critical("Could not connect to the Directory Server on %s" % host_name)
         raise e
     (dn, entry_attrs) = conn.get_ipa_config()
     conn.disconnect()
-    return entry_attrs.get('ipacertificatesubjectbase', [None])[0]
+    subject_base = entry_attrs.get('ipacertificatesubjectbase', [None])[0]
+    if subject_base is not None:
+        subject_base = DN(subject_base)
+    return subject_base
 
 def check_ipa_configuration(realm_name):
     config_dir = dsinstance.config_dirname(dsinstance.realm_to_serverid(realm_name))
     if not ipautil.dir_exists(config_dir):
-        logging.error("could not find directory instance: %s" % config_dir)
+        root_logger.error("could not find directory instance: %s" % config_dir)
         sys.exit(1)
 
 def export_certdb(realm_name, ds_dir, dir, passwd_fname, fname, hostname, subject_base=None, is_kdc=False):
@@ -199,9 +207,10 @@ def save_config(dir, realm_name, host_name,
     config.set("realm", "master_host_name", host_name)
     config.set("realm", "domain_name", domain_name)
     config.set("realm", "destination_host", dest_host)
-    config.set("realm", "subject_base", subject_base)
-    fd = open(dir + "/realm_info", "w")
-    config.write(fd)
+    config.set("realm", "subject_base", str(subject_base))
+    config.set("realm", "version", str(version.NUM_VERSION))
+    with open(dir + "/realm_info", "w") as fd:
+        config.write(fd)
 
 def remove_file(fname, ignore_errors=True):
     try:
@@ -214,10 +223,10 @@ def copy_files(realm_name, dir):
     config_dir = dsinstance.config_dirname(dsinstance.realm_to_serverid(realm_name))
 
     try:
-        shutil.copy("/var/kerberos/krb5kdc/ldappwd", dir + "/ldappwd")
-        shutil.copy("/var/kerberos/krb5kdc/kpasswd.keytab", dir + "/kpasswd.keytab")
         shutil.copy("/usr/share/ipa/html/ca.crt", dir + "/ca.crt")
         if ipautil.file_exists("/usr/share/ipa/html/preferences.html"):
+            shutil.copy("/usr/share/ipa/html/krb.js", dir + "/krb.js")
+            shutil.copy("/usr/share/ipa/html/kerberosauth.xpi", dir + "/kerberosauth.xpi")
             shutil.copy("/usr/share/ipa/html/preferences.html", dir + "/preferences.html")
             shutil.copy("/usr/share/ipa/html/configure.jar", dir + "/configure.jar")
         if ipautil.file_exists("/var/kerberos/krb5kdc/cacert.pem"):
@@ -235,9 +244,11 @@ def main():
 
     replica_fqdn = args[0]
 
+    standard_logging_setup(None, debug=options.debug)
+
     # Just initialize the environment. This is so the installer can have
     # access to the plugin environment
-    api.bootstrap(in_server=True)
+    api.bootstrap(in_server=True, debug=options.debug)
     api.finalize()
 
     #Automatically disable pkinit w/ dogtag until that is supported
@@ -261,12 +272,14 @@ def main():
     # Try out the password
     try:
         conn = ldap2(shared_instance=False)
-        conn.connect(bind_dn='cn=directory manager', bind_pw=dirman_password)
+        conn.connect(bind_dn=DN(('cn', 'directory manager')), bind_pw=dirman_password)
         conn.disconnect()
     except errors.ACIError:
         sys.exit("\nThe password provided is incorrect for LDAP server %s" % api.env.host)
     except errors.LDAPError:
         sys.exit("\nUnable to connect to LDAP server %s" % api.env.host)
+    except errors.DatabaseError, e:
+        sys.exit("\n"+e.desc)
 
     try:
         installutils.verify_fqdn(replica_fqdn, local_hostname=False)
@@ -294,16 +307,12 @@ def main():
         if options.reverse_zone and not bindinstance.verify_reverse_zone(options.reverse_zone, options.ip_address):
             sys.exit(1)
 
-    if not certs.ipa_self_signed() and not ipautil.file_exists("/var/lib/pki-ca/conf/CS.cfg") and not options.dirsrv_pin:
+    if (not certs.ipa_self_signed() and
+            not ipautil.file_exists(dogtag.configured_constants().CS_CFG_PATH) and
+            not options.dirsrv_pin):
         sys.exit("The replica must be created on the primary IPA server.\nIf you installed IPA with your own certificates using PKCS#12 files you must provide PKCS#12 files for any replicas you create as well.")
 
     check_ipa_configuration(api.env.realm)
-
-    if not options.ip_address:
-        try:
-            api.Command['dns_resolve'](replica_fqdn.decode('utf-8'))
-        except errors.NotFound:
-            sys.exit("Neither an A nor AAAA record for host '%s' does not exist in DNS.\nUse the --ip-address option to add DNS entries for the replica." % replica_fqdn)
 
     if api.env.host == replica_fqdn:
         print "You can't create a replica on itself"
@@ -314,7 +323,7 @@ def main():
     enable_replication_version_checking(api.env.host, api.env.realm,
         dirman_password)
 
-    subject_base = get_subject_base(api.env.host, dirman_password, util.realm_to_suffix(api.env.realm))
+    subject_base = get_subject_base(api.env.host, dirman_password, ipautil.realm_to_suffix(api.env.realm))
 
     top_dir = tempfile.mkdtemp("ipa")
     dir = top_dir + "/realm_info"
@@ -362,6 +371,10 @@ def main():
         except errors.CertificateOperationError, e:
             print "%s" % e
             sys.exit(1)
+        print "Saving dogtag Directory Server port"
+        port_fname = dir + "/dogtag_directory_port.txt"
+        with open(port_fname, "w") as fd:
+            fd.write("%s\n" % str(dogtag.configured_constants().DS_PORT))
 
     if options.http_pin:
         passwd = options.http_pin
@@ -429,14 +442,16 @@ def main():
 
     print "Packaging replica information into %s" % encfile
     ipautil.run(["/bin/tar", "cf", replicafile, "-C", top_dir, "realm_info"])
-    ipautil.encrypt_file(replicafile, encfile, dirman_password, top_dir);
+    ipautil.encrypt_file(replicafile, encfile, dirman_password, top_dir)
+
+    os.chmod(encfile, 0600)
 
     remove_file(replicafile)
     shutil.rmtree(dir)
 
     if options.ip_address:
         print "Adding DNS records for %s" % replica_fqdn
-        api.Backend.ldap2.connect(bind_dn="cn=Directory Manager", bind_pw=dirman_password)
+        api.Backend.ldap2.connect(bind_dn=DN(('cn', 'Directory Manager')), bind_pw=dirman_password)
 
         domain = replica_fqdn.split(".")
         name = domain.pop(0)
@@ -452,13 +467,26 @@ def main():
             if reverse_zone is None and not options.no_reverse:
                 reverse_zone = bindinstance.get_reverse_zone_default(ip)
 
-        add_zone(domain)
-        add_fwd_rr(domain, name, ip_address)
+        try:
+            add_zone(domain)
+        except errors.PublicError, e:
+            sys.exit("Could not create forward DNS zone for the replica: %s" % e)
+
+        try:
+            add_fwd_rr(domain, name, ip_address)
+        except errors.PublicError, e:
+            sys.exit("Could not add forward DNS record for the replica: %s" % e)
 
         if reverse_zone is not None:
             print "Using reverse zone %s" % reverse_zone
-            add_reverse_zone(reverse_zone)
-            add_ptr_rr(reverse_zone, ip_address, replica_fqdn)
+            try:
+                add_zone(reverse_zone)
+            except errors.PublicError, e:
+                sys.exit("Could not create reverse DNS zone for the replica: %s" % e)
+            try:
+                add_ptr_rr(reverse_zone, ip_address, replica_fqdn)
+            except errors.PublicError, e:
+                sys.exit("Could not add reverse DNS record for the replica: %s" % e)
 
 try:
     if not os.geteuid()==0:
@@ -474,6 +502,6 @@ except Exception, e:
     message = str(e)
     for str in traceback.format_tb(sys.exc_info()[2]):
         message = message + "\n" + str
-    logging.debug(message)
+    root_logger.debug(message)
     print message
     sys.exit(1)

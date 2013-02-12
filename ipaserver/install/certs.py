@@ -18,10 +18,11 @@
 #
 
 import os, stat, subprocess, re
+import sys
 import errno
 import tempfile
 import shutil
-import logging
+from ipapython.ipa_log_manager import *
 import urllib
 import xml.dom.minidom
 import pwd
@@ -38,15 +39,16 @@ from ipalib import pkcs10
 from ConfigParser import RawConfigParser, MissingSectionHeaderError
 from ipapython import services as ipaservices
 from ipalib import x509
-from ipalib.dn import DN
+from ipapython.dn import DN
 from ipalib.errors import CertificateOperationError
+from ipalib.text import _
 
 from nss.error import NSPRError
 import nss.nss as nss
 
 from ipalib import api
 
-from ipalib.compat import sha1
+from ipapython.compat import sha1
 
 # Apache needs access to this database so we need to create it
 # where apache can reach
@@ -223,10 +225,12 @@ class CertDB(object):
         self.self_signed_ca = ipa_self_signed()
 
         if not subject_base:
-            self.subject_base = "O=IPA"
-        self.subject_format = "CN=%%s,%s" % self.subject_base
+            self.subject_base = DN(('O', 'IPA'))
 
-        self.cacert_name = get_ca_nickname(self.realm)
+        if self.self_signed_ca:
+            self.cacert_name = get_ca_nickname(self.realm, 'CN=%s Certificate Authority')
+        else:
+            self.cacert_name = get_ca_nickname(self.realm)
         self.valid_months = "120"
         self.keysize = "1024"
 
@@ -243,6 +247,8 @@ class CertDB(object):
             self.fstore = fstore
         else:
             self.fstore = sysrestore.FileStore('/var/lib/ipa/sysrestore')
+
+    subject_base = ipautil.dn_attribute_property('_subject_base')
 
     def __del__(self):
         if self.reqdir is not None:
@@ -380,11 +386,11 @@ class CertDB(object):
 
     def create_ca_cert(self):
         os.chdir(self.secdir)
-        subject = "cn=%s Certificate Authority" % self.realm
+        subject = DN(('cn', '%s Certificate Authority' % self.realm))
         p = subprocess.Popen(["/usr/bin/certutil",
                               "-d", self.secdir,
                               "-S", "-n", self.cacert_name,
-                              "-s", subject,
+                              "-s", str(subject),
                               "-x",
                               "-t", "CT,,C",
                               "-1",
@@ -492,18 +498,27 @@ class CertDB(object):
 
         raise RuntimeError("Unable to find serial number")
 
-    def track_server_cert(self, nickname, principal, password_file=None):
+    def track_server_cert(self, nickname, principal, password_file=None, command=None):
         """
         Tell certmonger to track the given certificate nickname.
+
+        If command is not a full path then it is prefixed with
+        /usr/lib[64]/ipa/certmonger.
         """
+        if command is not None and not os.path.isabs(command):
+            if sys.maxsize > 2**32:
+                libpath = 'lib64'
+            else:
+                libpath = 'lib'
+            command = '/usr/%s/ipa/certmonger/%s' % (libpath, command)
         cmonger = ipaservices.knownservices.certmonger
         cmonger.enable()
         ipaservices.knownservices.messagebus.start()
         cmonger.start()
         try:
-            (stdout, stderr, rc) = certmonger.start_tracking(nickname, self.secdir, password_file)
+            (stdout, stderr, rc) = certmonger.start_tracking(nickname, self.secdir, password_file, command)
         except (ipautil.CalledProcessError, RuntimeError), e:
-            logging.error("certmonger failed starting to track certificate: %s" % str(e))
+            root_logger.error("certmonger failed starting to track certificate: %s" % str(e))
             return
 
         cmonger.stop()
@@ -512,7 +527,7 @@ class CertDB(object):
         subject = str(nsscert.subject)
         m = re.match('New tracking request "(\d+)" added', stdout)
         if not m:
-            logging.error('Didn\'t get new %s request, got %s' % (cmonger.service_name, stdout))
+            root_logger.error('Didn\'t get new %s request, got %s' % (cmonger.service_name, stdout))
             raise RuntimeError('%s did not issue new tracking request for \'%s\' in \'%s\'. Use \'ipa-getcert list\' to list existing certificates.' % (cmonger.service_name, nickname, self.secdir))
         request_id = m.group(1)
 
@@ -534,7 +549,7 @@ class CertDB(object):
         try:
             certmonger.stop_tracking(self.secdir, nickname=nickname)
         except (ipautil.CalledProcessError, RuntimeError), e:
-            logging.error("certmonger failed to stop tracking certificate: %s" % str(e))
+            root_logger.error("certmonger failed to stop tracking certificate: %s" % str(e))
         cmonger.stop()
 
     def create_server_cert(self, nickname, hostname, other_certdb=None, subject=None):
@@ -555,7 +570,7 @@ class CertDB(object):
         if not cdb:
             cdb = self
         if subject is None:
-            subject=self.subject_format % hostname
+            subject=DN(('CN', hostname), self.subject_base)
         self.request_cert(subject)
         cdb.issue_server_cert(self.certreq_fname, self.certder_fname)
         self.add_cert(self.certder_fname, nickname)
@@ -573,7 +588,7 @@ class CertDB(object):
         if not cdb:
             cdb = self
         if subject is None:
-            subject=self.subject_format % hostname
+            subject=DN(('CN', hostname), self.subject_base)
         self.request_cert(subject)
         cdb.issue_signing_cert(self.certreq_fname, self.certder_fname)
         self.add_cert(self.certder_fname, nickname)
@@ -581,9 +596,10 @@ class CertDB(object):
         os.unlink(self.certder_fname)
 
     def request_cert(self, subject, certtype="rsa", keysize="2048"):
+        assert isinstance(subject, DN)
         self.create_noise_file()
         self.setup_cert_request()
-        args = ["-R", "-s", subject,
+        args = ["-R", "-s", str(subject),
                 "-o", self.certreq_fname,
                 "-k", certtype,
                 "-g", keysize,
@@ -647,12 +663,18 @@ class CertDB(object):
             f = open(self.passwd_fname, "r")
             password = f.readline()
             f.close()
-            http_status, http_reason_phrase, http_headers, http_body = \
-                dogtag.https_request(self.host_name, api.env.ca_ee_install_port, "/ca/ee/ca/profileSubmitSSLClient", self.secdir, password, "ipaCert", **params)
+            result = dogtag.https_request(
+                self.host_name,
+                api.env.ca_ee_install_port or
+                    dogtag.configured_constants().EE_SECURE_PORT,
+                "/ca/ee/ca/profileSubmitSSLClient",
+                self.secdir, password, "ipaCert", **params)
+            http_status, http_reason_phrase, http_headers, http_body = result
 
             if http_status != 200:
-                raise CertificateOperationError(error='Unable to communicate with CMS (%s)' % \
-                      http_reason_phrase)
+                raise CertificateOperationError(
+                    error=_('Unable to communicate with CMS (%s)') %
+                        http_reason_phrase)
 
             # The result is an XML blob. Pull the certificate out of that
             doc = xml.dom.minidom.parseString(http_body)
@@ -729,8 +751,13 @@ class CertDB(object):
             f = open(self.passwd_fname, "r")
             password = f.readline()
             f.close()
-            http_status, http_reason_phrase, http_headers, http_body = \
-                dogtag.https_request(self.host_name, api.env.ca_ee_install_port, "/ca/ee/ca/profileSubmitSSLClient", self.secdir, password, "ipaCert", **params)
+            result = dogtag.https_request(
+                self.host_name,
+                api.env.ca_ee_install_port or
+                    dogtag.configured_constants().EE_SECURE_PORT,
+                "/ca/ee/ca/profileSubmitSSLClient",
+                self.secdir, password, "ipaCert", **params)
+            http_status, http_reason_phrase, http_headers, http_body = result
             if http_status != 200:
                 raise RuntimeError("Unable to submit cert request")
 
@@ -859,17 +886,17 @@ class CertDB(object):
 
     def trust_root_cert(self, root_nickname):
         if root_nickname is None:
-            logging.debug("Unable to identify root certificate to trust. Continueing but things are likely to fail.")
+            root_logger.debug("Unable to identify root certificate to trust. Continueing but things are likely to fail.")
             return
 
         if root_nickname[:7] == "Builtin":
-            logging.debug("No need to add trust for built-in root CA's, skipping %s" % root_nickname)
+            root_logger.debug("No need to add trust for built-in root CA's, skipping %s" % root_nickname)
         else:
             try:
                 self.run_certutil(["-M", "-n", root_nickname,
                                    "-t", "CT,CT,"])
             except ipautil.CalledProcessError, e:
-                logging.error("Setting trust on %s failed" % root_nickname)
+                root_logger.error("Setting trust on %s failed" % root_nickname)
 
     def find_server_certs(self):
         p = subprocess.Popen(["/usr/bin/certutil", "-d", self.secdir,
@@ -1036,19 +1063,19 @@ class CertDB(object):
         # Prepare a simple cert request
         req_dict = dict(PASSWORD=self.gen_password(),
                         SUBJBASE=self.subject_base,
-                        CERTNAME="CN="+nickname)
+                        CERTNAME=DN(('CN', nickname)))
         req_template = ipautil.SHARE_DIR + reqcfg + ".template"
         conf = ipautil.template_file(req_template, req_dict)
         fd = open(reqcfg, "w+")
         fd.write(conf)
         fd.close()
 
-        base = self.subject_base.replace(",", "/")
-        esc_subject = "CN=%s/%s" % (nickname, base)
+        base = str(self.subject_base).replace(",", "/")
+        esc_subject = DN(('CN', '%s/%s' % (nickname, base)))
 
         ipautil.run(["/usr/bin/openssl", "req", "-new",
                      "-config", reqcfg,
-                     "-subj", esc_subject,
+                     "-subj", str(esc_subject),
                      "-key", key_fname,
                      "-out", "kdc.req"])
 

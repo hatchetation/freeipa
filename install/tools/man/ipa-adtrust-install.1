@@ -1,0 +1,112 @@
+.\" A man page for ipa-adtrust-install
+.\" Copyright (C) 2011 Red Hat, Inc.
+.\"
+.\" This program is free software; you can redistribute it and/or modify
+.\" it under the terms of the GNU General Public License as published by
+.\" the Free Software Foundation, either version 3 of the License, or
+.\" (at your option) any later version.
+.\"
+.\" This program is distributed in the hope that it will be useful, but
+.\" WITHOUT ANY WARRANTY; without even the implied warranty of
+.\" MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+.\" General Public License for more details.
+.\"
+.\" You should have received a copy of the GNU General Public License
+.\" along with this program.  If not, see <http://www.gnu.org/licenses/>.
+.\"
+.\" Author: Sumit Bose <sbose@redhat.com>
+.\"
+.TH "ipa-adtrust-install" "1" "Aug 23 2011" "FreeIPA" "FreeIPA Manual Pages"
+.SH "NAME"
+ipa\-adtrust\-install \- Prepare an IPA server to be able to establish trust relationships with AD domains
+.SH "SYNOPSIS"
+ipa\-adtrust\-install [\fIOPTION\fR]...
+.SH "DESCRIPTION"
+Adds all necessary objects and configuration to allow an IPA server to create a
+trust to an Active Directory domain. This requires that the IPA server is
+already installed and configured.
+
+ipa\-adtrust\-install can be run multiple times to reinstall deleted objects or
+broken configuration files. E.g. a fresh samba configuration (smb.conf file and
+registry based configuration can be created. Other items like e.g. the
+configuration of the local range cannot be changed by running
+ipa\-adtrust\-install a second time because with changes here other objects
+might be affected as well.
+
+.SH "OPTIONS"
+.TP
+\fB\-d\fR, \fB\-\-debug\fR
+Enable debug logging when more verbose output is needed
+.TP
+\fB\-\-ip\-address\fR=\fIIP_ADDRESS\fR
+The IP address of the IPA server. If not provided then this is determined based on the hostname of the server.
+.TP
+\fB\-\-netbios\-name\fR=\fINETBIOS_NAME\fR
+The NetBIOS name for the IPA domain. If not provided then this is determined
+based on the leading component of the DNS domain name. Running
+ipa\-adtrust\-install for a second time with a different NetBIOS name will
+change the name. Please note that changing the NetBIOS name might break
+existing trust relationships to other domains.
+.TP
+\fB\-\-no\-msdcs\fR
+Do not create DNS service records for Windows in managed DNS server. Since those
+DNS service records are the only way to discover domain controllers of other
+domains they must be added manually to a different DNS server to allow trust
+realationships work properly. All needed service records are listed when
+ipa\-adtrust\-install finishes and either \-\-no\-msdcs was given or no IPA DNS
+service is configured. Typically service records for the following service names
+are needed for the IPA domain which should point to all IPA servers:
+.IP
+\(bu _ldap._tcp
+.IP
+\(bu _kerberos._tcp
+.IP
+\(bu _kerberos._udp
+.IP
+\(bu _ldap._tcp.dc._msdcs
+.IP
+\(bu _kerberos._tcp.dc._msdcs
+.IP
+\(bu _kerberos._udp.dc._msdcs
+.IP
+\(bu _ldap._tcp.Default-First-Site-Name._sites.dc._msdcs
+.IP
+\(bu _kerberos._tcp.Default-First-Site-Name._sites.dc._msdcs
+.IP
+\(bu _kerberos._udp.Default-First-Site-Name._sites.dc._msdcs
+.TP
+\fB\-\-add\-sids\fR
+Add SIDs to existing users and groups as a final step of the
+ipa\-adtrust\-install run. If there a many existing users and groups and a
+couple of replicas in the environment this operation might lead to a high
+replication traffic and a performance degradation of all IPA servers in the
+environment. To avoid this the SID generation can be run after
+ipa\-adtrust\-install is run and scheduled independently. To start this task
+you have to load an edited version of ipa-sidgen-task-run.ldif with the
+ldapmodify command info the directory server.
+.TP
+\fB\-U\fR, \fB\-\-unattended\fR
+An unattended installation that will never prompt for user input
+.TP
+\fB\-U\fR, \fB\-\-rid-base\fR=\fIRID_BASE\fR
+First RID value of the local domain. The first Posix ID of the local domain will
+be assigned to this RID, the second to RID+1 etc. See the online help of the
+idrange CLI for details.
+.TP
+\fB\-U\fR, \fB\-\-secondary-rid-base\fR=\fISECONDARY_RID_BASE\fR
+Start value of the secondary RID range, which is only used in the case a user
+and a group share numerically the same Posix ID. See the online help of the
+idrange CLI for details.
+.TP
+\fB\-A\fR, \fB\-\-admin\-name\fR=\fIADMIN_NAME\fR
+The name of the user with administrative privileges for this IPA server. Defaults to 'admin'.
+.TP
+\fB\-a\fR, \fB\-\-admin\-password\fR=\fIpassword\fR
+The password of the user with administrative privileges for this IPA server. Will be asked interactively if \fB\-U\fR is not specified.
+.TP
+The credentials of the admin user will be used to obtain Kerberos ticket before configuring cross-realm trusts support and afterwards, to ensure that the ticket contains MS-PAC information required to actually add a trust with Active Directory domain via 'ipa trust-add --type=ad' command.
+.TP
+.SH "EXIT STATUS"
+0 if the installation was successful
+
+1 if an error occurred

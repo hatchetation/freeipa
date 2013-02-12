@@ -49,8 +49,8 @@ class Output(ReadOnly):
     If you have values that you don't want to be printed then add
     ``'no_display'`` to flags.
 
-    The difference between ``'no_dipslay`` and ``'no_output'`` is
-    that ``'no_output`` will prevent a Param value from being returned
+    The difference between ``'no_display'`` and ``'no_output'`` is
+    that ``'no_output'`` will prevent a Param value from being returned
     at all. ``'no_display'`` will cause the API to return a value, it
     simply won't be displayed to the user. This is so some things may
     be returned that while not interesting to us, but may be to others.
@@ -111,11 +111,11 @@ class ListOfEntries(Output):
 result = Output('result', doc=_('All commands should at least have a result'))
 
 summary = Output('summary', (unicode, NoneType),
-    'User-friendly description of action performed'
+    _('User-friendly description of action performed')
 )
 
 value = Output('value', unicode,
-    "The primary_key value of the entry, e.g. 'jdoe' for a user",
+    _("The primary_key value of the entry, e.g. 'jdoe' for a user"),
     flags=['no_display'],
 )
 
@@ -130,19 +130,19 @@ standard_entry = (
 standard_list_of_entries = (
     summary,
     ListOfEntries('result'),
-    Output('count', int, 'Number of entries returned'),
-    Output('truncated', bool, 'True if not all results were returned'),
+    Output('count', int, _('Number of entries returned')),
+    Output('truncated', bool, _('True if not all results were returned')),
 )
 
 standard_delete = (
     summary,
-    Output('result', dict, 'list of deletions that failed'),
+    Output('result', dict, _('List of deletions that failed')),
     value,
 )
 
 standard_boolean = (
     summary,
-    Output('result', bool, 'True means the operation was successful'),
+    Output('result', bool, _('True means the operation was successful')),
     value,
 )
 

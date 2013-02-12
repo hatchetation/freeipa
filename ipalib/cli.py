@@ -46,7 +46,9 @@ import frontend
 import backend
 import plugable
 import util
-from errors import PublicError, CommandError, HelpError, InternalError, NoSuchNamespaceError, ValidationError, NotFound, NotConfiguredError
+from errors import (PublicError, CommandError, HelpError, InternalError,
+        NoSuchNamespaceError, ValidationError, NotFound, NotConfiguredError,
+        PromptFailed, ConversionError)
 from constants import CLI_TAB
 from parameters import Password, Bytes, File, Str, StrEnum
 from text import _
@@ -121,7 +123,7 @@ class textui(backend.Backend):
 
     def __get_encoding(self, stream):
         assert stream in (sys.stdin, sys.stdout)
-        if stream.encoding is None:
+        if getattr(stream, 'encoding', None) is None:
             return 'UTF-8'
         return stream.encoding
 
@@ -375,9 +377,16 @@ class textui(backend.Backend):
                         indent=indent+1
                     )
                 else:
-                    self.print_attribute(
-                        label, value, format, indent, one_value_per_line
-                    )
+                    if isinstance(value, (list, tuple)) and \
+                       all(isinstance(val, dict) for val in value):
+                        # this is a list of entries (dicts), not values
+                        self.print_attribute(label, u'', format, indent)
+                        self.print_entries(value, order, labels, flags, print_all,
+                                format, indent+1)
+                    else:
+                        self.print_attribute(
+                            label, value, format, indent, one_value_per_line
+                        )
                 del entry[key]
         if print_all:
             for key in sorted(entry):
@@ -508,6 +517,21 @@ class textui(backend.Backend):
     def print_error(self, text):
         print '  ** %s **' % unicode(text)
 
+    def prompt_helper(self, prompt, label, prompt_func=raw_input):
+        """Prompt user for input
+
+        Handles encoding the prompt and decoding the input.
+        On end of stream or ctrl+c, raise PromptFailed.
+        """
+        try:
+            return self.decode(prompt_func(self.encode(prompt)))
+        except (KeyboardInterrupt, EOFError):
+            print
+            raise PromptFailed(name=label)
+
+    def print_prompt_attribute_error(self, attribute, error):
+        self.print_plain('>>> %s: %s' % (attribute, error))
+
     def prompt(self, label, default=None, get_values=None, optional=False):
         """
         Prompt user for input.
@@ -521,11 +545,7 @@ class textui(backend.Backend):
             prompt = u'%s: ' % prompt
         else:
             prompt = u'%s [%s]: ' % (prompt, default)
-        try:
-            data = raw_input(self.encode(prompt))
-        except EOFError:
-            return None
-        return self.decode(data)
+        return self.prompt_helper(prompt, label)
 
     def prompt_yesno(self, label, default=None):
         """
@@ -539,8 +559,6 @@ class textui(backend.Backend):
 
         If Default parameter is None, user is asked for Yes/No answer until
         a correct answer is provided. Answer is then returned.
-
-        In case of an error, a None value may returned
         """
 
         default_prompt = None
@@ -556,10 +574,7 @@ class textui(backend.Backend):
             prompt = u'%s Yes/No: ' % label
 
         while True:
-            try:
-                data = raw_input(self.encode(prompt)).lower()
-            except EOFError:
-                return None
+            data = self.prompt_helper(prompt, label).lower() #pylint: disable=E1103
 
             if data in (u'yes', u'y'):
                 return True
@@ -573,23 +588,19 @@ class textui(backend.Backend):
         Prompt user for a password or read it in via stdin depending
         on whether there is a tty or not.
         """
-        try:
-            if sys.stdin.isatty():
-                while True:
-                    pw1 = getpass.getpass(u'%s: ' % unicode(label))
-                    if not confirm:
-                        return self.decode(pw1)
-                    pw2 = getpass.getpass(
-                        unicode(_('Enter %(label)s again to verify: ') % dict(label=label))
-                    )
-                    if pw1 == pw2:
-                        return self.decode(pw1)
-                    self.print_error( _('Passwords do not match!'))
-            else:
-                return self.decode(sys.stdin.readline().strip())
-        except KeyboardInterrupt:
-            print ''
-            self.print_error(_('Cancelled.'))
+        if sys.stdin.isatty():
+            prompt = u'%s: ' % unicode(label)
+            repeat_prompt = unicode(_('Enter %(label)s again to verify: ') % dict(label=label))
+            while True:
+                pw1 = self.prompt_helper(prompt, label, prompt_func=getpass.getpass)
+                if not confirm:
+                    return pw1
+                pw2 = self.prompt_helper(repeat_prompt, label, prompt_func=getpass.getpass)
+                if pw1 == pw2:
+                    return pw1
+                self.print_error( _('Passwords do not match!'))
+        else:
+            return self.decode(sys.stdin.readline().strip())
 
     def select_entry(self, entries, format, attrs, display_count=True):
         """
@@ -610,7 +621,7 @@ class textui(backend.Backend):
 
         counter = len(entries)
         if counter == 0:
-            raise NotFound(reason="No matching entries found")
+            raise NotFound(reason=_("No matching entries found"))
 
         i = 1
         for e in entries:
@@ -684,7 +695,7 @@ class help(frontend.Local):
         mcl = max((self._topics[topic_name][1], len(mod_name)))
         self._topics[topic_name][1] = mcl
 
-    def finalize(self):
+    def _on_finalize(self):
         # {topic: ["description", mcl, {"subtopic": ["description", mcl, [commands]]}]}
         # {topic: ["description", mcl, [commands]]}
         self._topics = {}
@@ -736,7 +747,7 @@ class help(frontend.Local):
             len(s) for s in (self._topics.keys() + [c.name for c in self._builtins])
         )
 
-        super(help, self).finalize()
+        super(help, self)._on_finalize()
 
     def run(self, key):
         name = from_cli(key)
@@ -811,7 +822,7 @@ class help(frontend.Local):
                 raise HelpError(topic=topic)
 
             print doc
-            if len(commands) > 1:
+            if commands:
                 print ''
                 print unicode(_('Topic commands:'))
                 for c in commands:
@@ -935,13 +946,72 @@ class Collector(object):
     def __todict__(self):
         return dict(self.__options)
 
+class CLIOptionParserFormatter(optparse.IndentedHelpFormatter):
+    def format_argument(self, name, help_string):
+        result = []
+        opt_width = self.help_position - self.current_indent - 2
+        if len(name) > opt_width:
+            name = "%*s%s\n" % (self.current_indent, "", name)
+            indent_first = self.help_position
+        else:                       # start help on same line as name
+            name = "%*s%-*s  " % (self.current_indent, "", opt_width, name)
+            indent_first = 0
+        result.append(name)
+        if help_string:
+            help_lines = textwrap.wrap(help_string, self.help_width)
+            result.append("%*s%s\n" % (indent_first, "", help_lines[0]))
+            result.extend(["%*s%s\n" % (self.help_position, "", line)
+                           for line in help_lines[1:]])
+        elif name[-1] != "\n":
+            result.append("\n")
+        return "".join(result)
+
+class CLIOptionParser(optparse.OptionParser):
+    """
+    This OptionParser subclass adds an ability to print positional
+    arguments in CLI help. Custom formatter is used to format the argument
+    list in the same way as OptionParser formats options.
+    """
+    def __init__(self, *args, **kwargs):
+        self._arguments = []
+        if 'formatter' not in kwargs:
+            kwargs['formatter'] = CLIOptionParserFormatter()
+        optparse.OptionParser.__init__(self, *args, **kwargs)
+
+    def format_option_help(self, formatter=None):
+        """
+        Prepend argument help to standard OptionParser's option help
+        """
+        option_help = optparse.OptionParser.format_option_help(self, formatter)
+
+        if isinstance(formatter, CLIOptionParserFormatter):
+            heading = unicode(_("Positional arguments"))
+            arguments = [formatter.format_heading(heading)]
+            formatter.indent()
+            for (name, help_string) in self._arguments:
+                arguments.append(formatter.format_argument(name, help_string))
+            formatter.dedent()
+            if len(arguments) > 1:
+                # there is more than just the heading
+                arguments.append(u"\n")
+            else:
+                arguments = []
+            option_help = "".join(arguments) + option_help
+        return option_help
+
+    def add_argument(self, name, help_string):
+        self._arguments.append((name, help_string))
 
 class cli(backend.Executioner):
     """
     Backend plugin for executing from command line interface.
     """
 
-    def run(self, argv):
+    def get_command(self, argv):
+        """Given CLI arguments, return the Command to use
+
+        On incorrect invocation, prints out a help message and returns None
+        """
         if len(argv) == 0:
             self.Command.help()
             return
@@ -956,14 +1026,27 @@ class cli(backend.Executioner):
         if name not in self.Command or self.Command[name].NO_CLI:
             raise CommandError(name=key)
         cmd = self.Command[name]
-        if not isinstance(cmd, frontend.Local):
-            self.create_context()
+        return cmd
+
+    def argv_to_keyword_arguments(self, cmd, argv):
+        """Get the keyword arguments for a Command"""
         kw = self.parse(cmd, argv)
-        kw['version'] = API_VERSION
         if self.env.interactive:
             self.prompt_interactively(cmd, kw)
+        kw = cmd.split_csv(**kw)
+        kw['version'] = API_VERSION
         self.load_files(cmd, kw)
+        return kw
+
+    def run(self, argv):
+        cmd = self.get_command(argv)
+        if cmd is None:
+            return
+        name = cmd.name
+        if not isinstance(cmd, frontend.Local):
+            self.create_context()
         try:
+            kw = self.argv_to_keyword_arguments(cmd, argv[1:])
             result = self.execute(name, **kw)
             if callable(cmd.output_for_cli):
                 for param in cmd.params():
@@ -992,16 +1075,13 @@ class cli(backend.Executioner):
         Decode param values if appropriate.
         """
         for (key, value) in kw.iteritems():
-            param = cmd.params[key]
-            if isinstance(param, Bytes):
-                yield (key, value)
-            else:
-                yield (key, self.Backend.textui.decode(value))
+            yield (key, self.Backend.textui.decode(value))
 
     def build_parser(self, cmd):
-        parser = optparse.OptionParser(
+        parser = CLIOptionParser(
             usage=' '.join(self.usage_iter(cmd))
         )
+        option_groups = {}
         for option in cmd.options():
             kw = dict(
                 dest=option.name,
@@ -1025,21 +1105,49 @@ class cli(backend.Executioner):
                 o = optparse.make_option('-%s' % option.cli_short_name, '--%s' % to_cli(option.cli_name), **kw)
             else:
                 o = optparse.make_option('--%s' % to_cli(option.cli_name), **kw)
-            parser.add_option(o)
+
+            if option.option_group is not None:
+                option_group = option_groups.get(option.option_group)
+                if option_group is None:
+                    option_group = optparse.OptionGroup(parser,
+                                                        option.option_group)
+                    parser.add_option_group(option_group)
+                    option_groups[option.option_group] = option_group
+
+                option_group.add_option(o)
+            else:
+                parser.add_option(o)
+
+        for arg in cmd.args():
+            name = self.__get_arg_name(arg, format_name=False)
+            if name is None:
+                continue
+            doc = unicode(arg.doc)
+            parser.add_argument(name, doc)
+
         return parser
+
+    def __get_arg_name(self, arg, format_name=True):
+        if arg.password:
+            return
+
+        name = to_cli(arg.cli_name).upper()
+        if not format_name:
+            return name
+        if arg.multivalue:
+            name = '%s...' % name
+        if arg.required:
+            return name
+        else:
+            return '[%s]' % name
 
     def usage_iter(self, cmd):
         yield 'Usage: %%prog [global-options] %s' % to_cli(cmd.name)
         for arg in cmd.args():
-            if arg.password:
+            name = self.__get_arg_name(arg)
+            if name is None:
                 continue
-            name = to_cli(arg.cli_name).upper()
-            if arg.multivalue:
-                name = '%s...' % name
-            if arg.required:
-                yield name
-            else:
-                yield '[%s]' % name
+            yield name
         yield '[options]'
 
     def prompt_interactively(self, cmd, kw):
@@ -1060,7 +1168,7 @@ class cli(backend.Executioner):
             if (param.required and param.name not in kw) or \
                 (param.alwaysask and honor_alwaysask) or self.env.prompt_all:
                 if param.autofill:
-                    kw[param.name] = param.get_default(**kw)
+                    kw[param.name] = cmd.get_default_of(param.name, **kw)
                 if param.name in kw and kw[param.name] is not None:
                     continue
                 if param.password:
@@ -1068,26 +1176,32 @@ class cli(backend.Executioner):
                         param.label, param.confirm
                     )
                 else:
-                    default = param.get_default(**kw)
+                    default = cmd.get_default_of(param.name, **kw)
                     error = None
                     while True:
                         if error is not None:
-                            print '>>> %s: %s' % (unicode(param.label), unicode(error))
+                            self.Backend.textui.print_prompt_attribute_error(unicode(param.label),
+                                                                             unicode(error))
                         raw = self.Backend.textui.prompt(param.label, default, optional=param.alwaysask or not param.required)
                         try:
                             value = param(raw, **kw)
                             if value is not None:
                                 kw[param.name] = value
                             break
-                        except ValidationError, e:
+                        except (ValidationError, ConversionError), e:
                             error = e.error
             elif param.password and kw.get(param.name, False) is True:
                 kw[param.name] = self.Backend.textui.prompt_password(
                     param.label, param.confirm
                 )
 
-        for callback in getattr(cmd, 'INTERACTIVE_PROMPT_CALLBACKS', []):
-            callback(kw)
+        try:
+            callbacks = cmd.get_callbacks('interactive_prompt')
+        except AttributeError:
+            pass
+        else:
+            for callback in callbacks:
+                callback(cmd, kw)
 
     def load_files(self, cmd, kw):
         """

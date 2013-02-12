@@ -16,7 +16,7 @@
 .\"
 .\" Author: Pavel Zuna <pzuna@redhat.com>
 .\"
-.TH "IPA" "1" "02/22/2010" "IPA 2\&.0\&.0" "IPA CLI Manual"
+.TH "ipa" "1" "Jan 24 2012" "FreeIPA" "FreeIPA Manual Pages"
 .SH "NAME"
 ipa \- IPA command\-line interface
 .SH "SYNOPSIS"
@@ -36,6 +36,9 @@ Load configuration from \fIFILE\fR.
 .TP
 \fB\-d\fR, \fB\-\-debug\fR
 Produce full debugging output.
+.TP
+\fB\-\-\-delegate\fR
+Delegate the user's TGT to the IPA server
 .TP
 \fB\-e\fR \fIKEY=VAL\fR
 Set environmental variable \fIKEY\fR to the value \fIVAL\fR. This option overrides configuration files.
@@ -92,7 +95,7 @@ Search for existing objects.
 .LP
 The above types of commands except \fBfind\fR take the objects primary key (e.g. user name for users) as their only positional argument unless there can be only one object of the given type. They can also take a number of options (some of which might be required in the case of \fBadd\fR) that represent the objects attributes.
 
-\fBfind\fR commands take an optional criteria string as their only positional argument. If present, all objects with an attribute that contains the criteria string are displayed. If an option representing an attribute is set, only object with the attribute exactly matching the specified value are displayed. Without parameters all objects of the corresponding type are displayed.
+\fBfind\fR commands take an optional criteria string as their only positional argument. If present, all objects with an attribute that contains the criteria string are displayed. If an option representing an attribute is set, only object with the attribute exactly matching the specified value are displayed. Options with empty values are ignored. Without parameters all objects of the corresponding type are displayed.
 
 For IPA objects with attributes that can contain references to other objects (e.g. groups), the following action are usually available:
 .TP
@@ -136,7 +139,7 @@ Display a high\-level list of help topics
 Display documentation and list of commands in the "user" topic.
 .TP
 \fBipa env\fR
-List IPA enviromental variables and their values.
+List IPA environmental variables and their values.
 .TP
 \fBipa user\-add foo \-\-first foo \-\-last bar\fR
 Create a new user with username "foo", first name "foo" and last name "bar".
@@ -192,7 +195,7 @@ IPA default configuration file.
 2 If an entry is not found
 .SH "SEE ALSO"
 ipa\-client\-install(1), ipa\-compat\-manage(1), ipactl(1), ipa\-dns\-install(1),
-ipa\-getcert(1), ipa\-getkeytab(1), ipa\-join(1), ipa_kpasswd(1), ipa\-ldap\-updater(1),
+ipa\-getcert(1), ipa\-getkeytab(1), ipa\-join(1), ipa\-ldap\-updater(1),
 ipa\-nis\-manage(1), ipa\-replica\-install(1), ipa\-replica\-manage(1), ipa\-replica\-prepare(1),
 ipa\-rmkeytab(1), ipa\-server\-certinstall(2), ipa\-server\-install(1), ipa\-upgradeconfig(1),
 ipa\-host\-net\-manage(1)

@@ -22,30 +22,35 @@ from ipalib import Str, StrEnum
 from ipalib.plugins.baseldap import *
 from ipalib import _, ngettext
 from ipalib.request import context
-from ipalib.dn import *
 import ldap as _ldap
+from ipapython.dn import DN
 
 __doc__ = _("""
 Auto Membership Rule.
 
 Bring clarity to the membership of hosts and users by configuring inclusive
-or exclusive regex paterns, you can automatically assign a new entries into
+or exclusive regex patterns, you can automatically assign a new entries into
 a group or hostgroup based upon attribute information.
 
 A rule is directly associated with a group by name, so you cannot create
-a rule without an accompanying group or hostgroup
+a rule without an accompanying group or hostgroup.
 
 A condition is a regular expression used by 389-ds to match a new incoming
 entry with an automember rule. If it matches an inclusive rule then the
 entry is added to the appropriate group or hostgroup.
 
+A default group or hostgroup could be specified for entries that do not
+match any rule. In case of user entries this group will be a fallback group
+because all users are by default members of group specified in IPA config.
+
+
 EXAMPLES:
 
- Create the initial group or hostgroup:
+ Add the initial group or hostgroup:
    ipa hostgroup-add --desc="Web Servers" webservers
    ipa group-add --desc="Developers" devel
 
- Create the initial rule:
+ Add the initial rule:
    ipa automember-add --type=hostgroup webservers
    ipa automember-add --type=group devel
 
@@ -80,15 +85,15 @@ EXAMPLES:
  Modify the automember rule:
     ipa automember-mod
 
- Set the default target group:
+ Set the default (fallback) target group:
     ipa automember-default-group-set --default-group=webservers --type=hostgroup
     ipa automember-default-group-set --default-group=ipausers --type=group
 
- Set the default target group:
+ Remove the default (fallback) target group:
     ipa automember-default-group-remove --type=hostgroup
     ipa automember-default-group-remove --type=group
 
- Show the default target group:
+ Show the default (fallback) target group:
     ipa automember-default-group-show --type=hostgroup
     ipa automember-default-group-show --type=group
 
@@ -109,18 +114,18 @@ INCLUDE_RE = 'automemberinclusiveregex'
 EXCLUDE_RE = 'automemberexclusiveregex'
 
 regex_attrs = (
-    List('automemberinclusiveregex?',
+    Str('automemberinclusiveregex*',
         cli_name='inclusive_regex',
         label=_('Inclusive Regex'),
         doc=_('Inclusive Regex'),
-        multivalue=True,
+        csv=True,
         alwaysask=True,
     ),
-    List('automemberexclusiveregex?',
+    Str('automemberexclusiveregex*',
         cli_name='exclusive_regex',
         label=_('Exclusive Regex'),
         doc=_('Exclusive Regex'),
-        multivalue=True,
+        csv=True,
         alwaysask=True,
     ),
     Str('key',
@@ -173,8 +178,8 @@ class automember(LDAPObject):
         ),
         Str('automemberdefaultgroup?',
             cli_name='default_group',
-            label=_('Default Group'),
-            doc=_('Default group for entires to land'),
+            label=_('Default (fallback) Group'),
+            doc=_('Default group for entries to land'),
             flags=['no_create', 'no_update', 'no_search']
         ),
     )
@@ -185,7 +190,7 @@ class automember(LDAPObject):
         try:
             (gdn, entry_attrs) = ldap.get_entry(dn, [])
         except errors.NotFound:
-            raise errors.NotFound(reason=_(u'Group: %s not found!' % groupname))
+            raise errors.NotFound(reason=_(u'Group: %s not found!') % groupname)
         return gdn
 
     def get_dn(self, *keys, **options):
@@ -195,24 +200,21 @@ class automember(LDAPObject):
             parent_dn = self.container_dn
         grouptype = options['type']
         try:
-            ndn = DN(('cn', keys[-1]), ('cn', grouptype), DN(parent_dn))
+            ndn = DN(('cn', keys[-1]), ('cn', grouptype), parent_dn)
         except IndexError:
-            ndn = DN(('cn', grouptype), DN(parent_dn))
-        parent_dn = str(ndn)
-        return parent_dn
+            ndn = DN(('cn', grouptype), parent_dn)
+        return ndn
 
     def check_attr(self, attr):
         """
         Verify that the user supplied key is a valid attribute in the schema
         """
         ldap = self.api.Backend.ldap2
-        if not ldap.schema:
-            ldap.get_schema()
         obj = ldap.schema.get_obj(_ldap.schema.AttributeType, attr)
         if obj is not None:
             return obj
         else:
-            raise errors.NotFound(reason=_('%s is not a valid attribute.' % attr))
+            raise errors.NotFound(reason=_('%s is not a valid attribute.') % attr)
 
 api.register(automember)
 
@@ -228,11 +230,12 @@ class automember_add(LDAPCreate):
     __doc__ = _("""
     Add an automember rule.
     """)
-    takes_options = group_type
+    takes_options = LDAPCreate.takes_options + group_type
     takes_args = automember_rule
     msg_summary = _('Added automember rule "%(value)s"')
 
     def pre_callback(self, ldap, dn, entry_attrs, *keys, **options):
+        assert isinstance(dn, DN)
 
         entry_attrs['cn'] = keys[-1]
         if not automember_container_exists(self.api.Backend.ldap2):
@@ -279,11 +282,12 @@ class automember_add_condition(LDAPUpdate):
     )
 
     def pre_callback(self, ldap, dn, entry_attrs, attrs_list, *keys, **options):
+        assert isinstance(dn, DN)
         # Check to see if the automember rule exists
         try:
             (tdn, test_attrs) = ldap.get_entry(dn, [])
         except errors.NotFound:
-            raise errors.NotFound(reason=_(u'Auto member rule: %s not found!' % keys[0]))
+            raise errors.NotFound(reason=_(u'Auto member rule: %s not found!') % keys[0])
         # Define container key
         key = options['key']
         # Check to see if the attribute is valid
@@ -347,7 +351,7 @@ class automember_remove_condition(LDAPUpdate):
     """)
     takes_options = regex_attrs + group_type
     takes_args = automember_rule
-    msg_summary = _('Removed condition(s) to "%(value)s"')
+    msg_summary = _('Removed condition(s) from "%(value)s"')
 
     # Prepare the output to expect failed results
     has_output = (
@@ -365,11 +369,12 @@ class automember_remove_condition(LDAPUpdate):
     )
 
     def pre_callback(self, ldap, dn, entry_attrs, attrs_list, *keys, **options):
+        assert isinstance(dn, DN)
         # Check to see if the automember rule exists
         try:
             (tdn, test_attrs) = ldap.get_entry(dn, [])
         except errors.NotFound:
-            raise errors.NotFound(reason=_(u'Auto member rule: %s not found!' % keys[0]))
+            raise errors.NotFound(reason=_(u'Auto member rule: %s not found!') % keys[0])
 
         # Define container key
         type_attr_default = {'group': 'manager', 'hostgroup': 'fqdn'}
@@ -435,7 +440,7 @@ class automember_mod(LDAPUpdate):
     Modify an automember rule.
     """)
     takes_args = automember_rule
-    takes_options = group_type
+    takes_options = LDAPUpdate.takes_options + group_type
     msg_summary = _('Modified automember rule "%(value)s"')
 
     def execute(self, *keys, **options):
@@ -474,10 +479,10 @@ class automember_find(LDAPSearch):
     )
 
     def pre_callback(self, ldap, filters, attrs_list, base_dn, scope, *args, **options):
+        assert isinstance(base_dn, DN)
         scope = ldap.SCOPE_SUBTREE
-        ndn = DN(('cn', options['type']), DN(base_dn))
-        base_dn = str(ndn)
-        return (filters, base_dn, scope)
+        ndn = DN(('cn', options['type']), base_dn)
+        return (filters, ndn, scope)
 
 api.register(automember_find)
 
@@ -500,22 +505,21 @@ api.register(automember_show)
 
 class automember_default_group_set(LDAPUpdate):
     __doc__ = _("""
-    Set default group for all unmatched entries.
+    Set default (fallback) group for all unmatched entries.
     """)
 
     takes_options = (
         Str('automemberdefaultgroup',
         cli_name='default_group',
-        label=_('Default Group'),
-        doc=_('Default group for entires to land'),
+        label=_('Default (fallback) Group'),
+        doc=_('Default (fallback) group for entries to land'),
         flags=['no_create', 'no_update']
         ),
     ) + group_type
-    msg_summary = _('Set default group for automember "%(value)s"')
+    msg_summary = _('Set default (fallback) group for automember "%(value)s"')
 
     def pre_callback(self, ldap, dn, entry_attrs, attrs_list, *keys, **options):
         dn = DN(('cn', options['type']), api.env.container_automember)
-        dn = str(dn)
         entry_attrs['automemberdefaultgroup'] = self.obj.dn_exists(options['type'], options['automemberdefaultgroup'])
         return dn
 
@@ -529,15 +533,14 @@ api.register(automember_default_group_set)
 
 class automember_default_group_remove(LDAPUpdate):
     __doc__ = _("""
-    Remove default group for all unmatched entries.
+    Remove default (fallback) group for all unmatched entries.
     """)
 
     takes_options = group_type
-    msg_summary = _('Removed default group for automember "%(value)s"')
+    msg_summary = _('Removed default (fallback) group for automember "%(value)s"')
 
     def pre_callback(self, ldap, dn, entry_attrs, attrs_list, *keys, **options):
         dn = DN(('cn', options['type']), api.env.container_automember)
-        dn = str(dn)
         attr = 'automemberdefaultgroup'
 
         (dn, entry_attrs_) = ldap.get_entry(
@@ -545,14 +548,15 @@ class automember_default_group_remove(LDAPUpdate):
         )
 
         if attr not in entry_attrs_:
-            raise errors.NotFound(reason=_(u'No default group set'))
+            raise errors.NotFound(reason=_(u'No default (fallback) group set'))
         else:
             entry_attrs[attr] = []
         return dn
 
     def post_callback(self, ldap, dn, entry_attrs, *keys, **options):
+        assert isinstance(dn, DN)
         if 'automemberdefaultgroup' not in entry_attrs:
-            entry_attrs['automemberdefaultgroup'] = u'No default group set'
+            entry_attrs['automemberdefaultgroup'] = unicode(_('No default (fallback) group set'))
         return dn
 
     def execute(self, *keys, **options):
@@ -565,18 +569,18 @@ api.register(automember_default_group_remove)
 
 class automember_default_group_show(LDAPRetrieve):
     __doc__ = _("""
-    Display information about the default automember groups.
+    Display information about the default (fallback) automember groups.
     """)
     takes_options = group_type
 
     def pre_callback(self, ldap, dn, attrs_list, *keys, **options):
         dn = DN(('cn', options['type']), api.env.container_automember)
-        dn = str(dn)
         return dn
 
     def post_callback(self, ldap, dn, entry_attrs, *keys, **options):
+        assert isinstance(dn, DN)
         if 'automemberdefaultgroup' not in entry_attrs:
-            entry_attrs['automemberdefaultgroup'] = u'No default group set'
+            entry_attrs['automemberdefaultgroup'] = unicode(_('No default (fallback) group set'))
         return dn
 
     def execute(self, *keys, **options):

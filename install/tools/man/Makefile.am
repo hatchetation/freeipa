@@ -13,6 +13,7 @@ man1_MANS = 				\
 	ipa-server-certinstall.1	\
 	ipa-server-install.1		\
 	ipa-dns-install.1		\
+	ipa-adtrust-install.1		\
 	ipa-ca-install.1		\
 	ipa-ldap-updater.1		\
 	ipa-compat-manage.1		\
@@ -22,7 +23,7 @@ man1_MANS = 				\
 
 man8_MANS =				\
 	ipactl.8			\
-	ipa_kpasswd.8			\
+	ipa-upgradeconfig.8		\
         $(NULL)
 
 install-data-hook:

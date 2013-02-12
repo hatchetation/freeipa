@@ -21,7 +21,8 @@ import sys
 import os
 
 import ldap, re, krbV
-import traceback, logging
+import traceback
+from urllib2 import urlparse
 
 from ipapython import ipautil
 from ipaserver.install import replication, dsinstance, installutils
@@ -29,12 +30,17 @@ from ipaserver.install import bindinstance
 from ipaserver import ipaldap
 from ipapython import version
 from ipalib import api, errors, util
+from ipapython.ipa_log_manager import *
+from ipapython.dn import DN
+from ipapython.config import IPAOptionParser
+from ipaclient import ipadiscovery
 
 CACERT = "/etc/ipa/ca.crt"
 
 # dict of command name and tuples of min/max num of args needed
 commands = {
     "list":(0, 1, "[master fqdn]", ""),
+    "list-ruv":(0, 0, "", ""),
     "connect":(1, 2, "<master fqdn> [other master fqdn]",
                     "must provide the name of the servers to connect"),
     "disconnect":(1, 2, "<master fqdn> [other master fqdn]",
@@ -42,20 +48,34 @@ commands = {
     "del":(1, 1, "<master fqdn>",
                     "must provide hostname of master to delete"),
     "re-initialize":(0, 0, "", ""),
-    "force-sync":(0, 0, "", "")
+    "force-sync":(0, 0, "", ""),
+    "clean-ruv":(1, 1, "Replica ID of to clean", "must provide replica ID to clean"),
+    "abort-clean-ruv":(1, 1, "Replica ID to abort cleaning", "must provide replica ID to abort cleaning"),
+    "list-clean-ruv":(0, 0, "", ""),
 }
 
-def parse_options():
-    from optparse import OptionParser
+def convert_error(exc):
+    """
+    LDAP exceptions are a dictionary, make them prettier.
+    """
+    if isinstance(exc, ldap.LDAPError):
+        desc = exc.args[0]['desc'].strip()
+        info = exc.args[0].get('info', '').strip()
+        return '%s %s' % (desc, info)
+    else:
+        return str(exc)
 
-    parser = OptionParser(version=version.VERSION)
+def parse_options():
+    parser = IPAOptionParser(version=version.VERSION)
     parser.add_option("-H", "--host", dest="host", help="starting host")
     parser.add_option("-p", "--password", dest="dirman_passwd", help="Directory Manager password")
     parser.add_option("-v", "--verbose", dest="verbose", action="store_true", default=False,
                       help="provide additional information")
     parser.add_option("-f", "--force", dest="force", action="store_true", default=False,
                       help="ignore some types of errors")
-    parser.add_option("--binddn", dest="binddn", default=None,
+    parser.add_option("-c", "--cleanup", dest="cleanup", action="store_true", default=False,
+                      help="DANGER: clean up references to a ghost master")
+    parser.add_option("--binddn", dest="binddn", default=None, type="dn",
                       help="Bind DN to use with remote server")
     parser.add_option("--bindpw", dest="bindpw", default=None,
                       help="Password for Bind DN to use with remote server")
@@ -66,7 +86,7 @@ def parse_options():
     parser.add_option("--win-subtree", dest="win_subtree", default=None,
                       help="DN of Windows subtree containing the users you want to sync (default cn=Users,<domain suffix)")
     parser.add_option("--passsync", dest="passsync", default=None,
-                      help="Password for the Windows PassSync user")
+                      help="Password for the IPA system user used by the Windows PassSync plugin to synchronize passwords")
     parser.add_option("--from", dest="fromhost", help="Host to get data from")
 
     options, args = parser.parse_args()
@@ -93,13 +113,6 @@ def parse_options():
         cmdstr = " | ".join(commands.keys())
         parser.error("must provide a command [%s]" % cmdstr)
 
-    # set log level
-    if options.verbose:
-        # if verbose, output events at INFO level if not already
-        mylogger = logging.getLogger()
-        if mylogger.getEffectiveLevel() > logging.INFO:
-            mylogger.setLevel(logging.INFO)
-        # else user has already configured logging externally lower
     return options, args
 
 def test_connection(realm, host):
@@ -117,8 +130,15 @@ def test_connection(realm, host):
         return True
     except ldap.LOCAL_ERROR:
         return False
+    except errors.NotFound:
+        # We do a search in cn=config. NotFound in this case means no
+        # permission
+        return False
 
 def list_replicas(realm, host, replica, dirman_passwd, verbose):
+
+    for check_host in [host, replica]:
+        enforce_host_existence(check_host)
 
     is_replica = False
     winsync_peer = None
@@ -130,23 +150,28 @@ def list_replicas(realm, host, replica, dirman_passwd, verbose):
             conn.do_simple_bind(bindpw=dirman_passwd)
         else:
             conn.do_sasl_gssapi_bind()
-
-        dn = 'cn=masters,cn=ipa,cn=etc,%s' % util.realm_to_suffix(realm)
-        entries = conn.search_s(dn, ldap.SCOPE_ONELEVEL)
-
-        for ent in entries:
-            peers[ent.cn] = ['master', '']
-
-        dn = 'cn=replicas,cn=ipa,cn=etc,%s' % util.realm_to_suffix(realm)
-        entries = conn.search_s(dn, ldap.SCOPE_ONELEVEL)
-
-        for ent in entries:
-            peers[ent.cn] = ent.ipaconfigstring.split(':')
-
     except Exception, e:
-        print "Failed to get data from '%s': %s" % (host, str(e))
+        print "Failed to connect to host '%s': %s" % (host, str(e))
         return
 
+    dn = DN(('cn', 'masters'), ('cn', 'ipa'), ('cn', 'etc'), ipautil.realm_to_suffix(realm))
+    try:
+        entries = conn.getList(dn, ldap.SCOPE_ONELEVEL)
+    except:
+        print "Failed to read master data from '%s': %s" % (host, str(e))
+        return
+    else:
+        for ent in entries:
+            peers[ent.getValue('cn')] = ['master', '']
+
+    dn = DN(('cn', 'replicas'), ('cn', 'ipa'), ('cn', 'etc'), ipautil.realm_to_suffix(realm))
+    try:
+        entries = conn.getList(dn, ldap.SCOPE_ONELEVEL)
+    except:
+        pass
+    else:
+        for ent in entries:
+            peers[ent.getValue('cn')] = ent.getValue('ipaConfigString').split(':')
 
     if not replica:
         for k, p in peers.iteritems():
@@ -169,8 +194,8 @@ def list_replicas(realm, host, replica, dirman_passwd, verbose):
             repl = replication.ReplicationManager(realm, winsync_peer,
                                                   dirman_passwd)
             cn, dn = repl.agreement_dn(replica)
-            entries = repl.conn.search_s(dn, ldap.SCOPE_BASE,
-                                         "(objectclass=nsDSWindowsReplicationAgreement)")
+            entries = repl.conn.getList(dn, ldap.SCOPE_BASE,
+                                        "(objectclass=nsDSWindowsReplicationAgreement)")
             ent_type = 'winsync'
         else:
             repl = replication.ReplicationManager(realm, replica,
@@ -178,19 +203,31 @@ def list_replicas(realm, host, replica, dirman_passwd, verbose):
             entries = repl.find_replication_agreements()
             ent_type = 'replica'
     except Exception, e:
-        print "Failed to get data from '%s': %s" % (replica, str(e))
+        print "Failed to get data from '%s': %s" % (replica, convert_error(e))
         return
 
     for entry in entries:
-        print '%s: %s' % (entry.nsds5replicahost, ent_type)
+        print '%s: %s' % (entry.getValue('nsds5replicahost'), ent_type)
 
         if verbose:
-            print "  last init status: %s" % entry.nsds5replicalastinitstatus
-            print "  last init ended: %s" % str(ipautil.parse_generalized_time(entry.nsds5replicalastinitend))
-            print "  last update status: %s" % entry.nsds5replicalastupdatestatus
-            print "  last update ended: %s" % str(ipautil.parse_generalized_time(entry.nsds5replicalastupdateend))
+            print "  last init status: %s" % entry.getValue('nsds5replicalastinitstatus')
+            print "  last init ended: %s" % str(ipautil.parse_generalized_time(entry.getValue('nsds5replicalastinitend')))
+            print "  last update status: %s" % entry.getValue('nsds5replicalastupdatestatus')
+            print "  last update ended: %s" % str(ipautil.parse_generalized_time(entry.getValue('nsds5replicalastupdateend')))
 
 def del_link(realm, replica1, replica2, dirman_passwd, force=False):
+    """
+    Delete a replication agreement from host A to host B.
+
+    @realm: the Kerberos realm
+    @replica1: the hostname of master A
+    @replica2: the hostname of master B
+    @dirman_passwd: the Directory Manager password
+    @force: force deletion even if one server is down
+    """
+
+    for check_host in [replica1, replica2]:
+        enforce_host_existence(check_host)
 
     repl2 = None
 
@@ -203,60 +240,53 @@ def del_link(realm, replica1, replica2, dirman_passwd, force=False):
         if not force and len(repl_list) <= 1 and type1 == replication.IPA_REPLICA:
             print "Cannot remove the last replication link of '%s'" % replica1
             print "Please use the 'del' command to remove it from the domain"
-            return
+            return False
 
-    except ldap.NO_SUCH_OBJECT:
+    except (ldap.NO_SUCH_OBJECT, errors.NotFound):
         print "'%s' has no replication agreement for '%s'" % (replica1, replica2)
-        return
-    except errors.NotFound:
-        print "'%s' has no replication agreement for '%s'" % (replica1, replica2)
-        return
+        return False
     except Exception, e:
-        print "Failed to get data from '%s': %s" % (replica1, str(e))
-        return
+        print "Failed to determine agreement type for '%s': %s" % (replica1, convert_error(e))
+        return False
 
     if type1 == replication.IPA_REPLICA:
         try:
             repl2 = replication.ReplicationManager(realm, replica2, dirman_passwd)
 
-            repl_list = repl1.find_ipa_replication_agreements()
+            repl_list = repl2.find_ipa_replication_agreements()
             if not force and len(repl_list) <= 1:
                 print "Cannot remove the last replication link of '%s'" % replica2
                 print "Please use the 'del' command to remove it from the domain"
-                return
+                return False
 
-        except ldap.NO_SUCH_OBJECT:
+        except (ldap.NO_SUCH_OBJECT, errors.NotFound):
             print "'%s' has no replication agreement for '%s'" % (replica2, replica1)
             if not force:
-                return
-        except errors.NotFound:
-            print "'%s' has no replication agreement for '%s'" % (replica2, replica1)
-            if not force:
-                return
+                return False
         except Exception, e:
-            print "Failed to get data from '%s': %s" % (replica2, str(e))
+            print "Failed to get list of agreements from '%s': %s" % (replica2, convert_error(e))
             if not force:
-                return
+                return False
 
     if repl2 and type1 == replication.IPA_REPLICA:
         failed = False
         try:
+            repl2.set_readonly(readonly=True)
+            repl2.force_sync(repl2.conn, replica1)
+            cn, dn = repl2.agreement_dn(repl1.conn.host)
+            repl2.wait_for_repl_update(repl2.conn, dn, 30)
             repl2.delete_agreement(replica1)
             repl2.delete_referral(replica1)
-        except ldap.LDAPError, e:
-            desc = e.args[0]['desc'].strip()
-            info = e.args[0].get('info', '').strip()
-            print "Unable to remove agreement on %s: %s: %s" % (replica2, desc, info)
-            failed = True
+            repl2.set_readonly(readonly=False)
         except Exception, e:
-            print "Unable to remove agreement on %s: %s" % (replica2, str(e))
+            print "Unable to remove agreement on %s: %s" % (replica2, convert_error(e))
             failed = True
 
         if failed:
             if force:
                 print "Forcing removal on '%s'" % replica1
             else:
-                return
+                return False
 
     if not repl2 and force:
         print "Forcing removal on '%s'" % replica1
@@ -266,9 +296,9 @@ def del_link(realm, replica1, replica2, dirman_passwd, force=False):
 
     if type1 == replication.WINSYNC:
         try:
-            dn = 'cn=%s,cn=replicas,cn=ipa,cn=etc,%s' % (replica2,
-                                                         util.realm_to_suffix(realm))
-            entries = repl1.conn.search_s(dn, ldap.SCOPE_SUBTREE)
+            dn = DN(('cn', replica2), ('cn', 'replicas'), ('cn', 'ipa'), ('cn', 'etc'),
+                    ipautil.realm_to_suffix(realm))
+            entries = repl1.conn.getList(dn, ldap.SCOPE_SUBTREE)
             if len(entries) != 0:
                 dnset = repl1.conn.get_dns_sorted_by_length(entries,
                                                             reverse=True)
@@ -276,62 +306,365 @@ def del_link(realm, replica1, replica2, dirman_passwd, force=False):
                     for dn in dns:
                         repl1.conn.deleteEntry(dn)
         except Exception, e:
-            print "Error deleting winsync replica shared info: %s" % str(e)
+            print "Error deleting winsync replica shared info: %s" % convert_error(e)
 
+    print "Deleted replication agreement from '%s' to '%s'" % (replica1, replica2)
+
+    return True
+
+def get_ruv(realm, host, dirman_passwd):
+    """
+    Return the RUV entries as a list of tuples: (hostname, rid)
+    """
+
+    enforce_host_existence(host)
+
+    try:
+        thisrepl = replication.ReplicationManager(realm, host, dirman_passwd)
+    except Exception, e:
+        print "Failed to connect to server %s: %s" % (host, convert_error(e))
+        sys.exit(1)
+
+    search_filter = '(&(nsuniqueid=ffffffff-ffffffff-ffffffff-ffffffff)(objectclass=nstombstone))'
+    try:
+        entries = thisrepl.conn.search_s(api.env.basedn, ldap.SCOPE_ONELEVEL,
+            search_filter, ['nsds50ruv'])
+    except ldap.NO_SUCH_OBJECT:
+        print "No RUV records found."
+        sys.exit(0)
+
+    servers = []
+    for e in entries:
+        for ruv in e[1]['nsds50ruv']:
+            if ruv.startswith('{replicageneration'):
+                continue
+            data = re.match('\{replica (\d+) (ldap://.*:\d+)\}(\s+\w+\s+\w*){0,1}', ruv)
+            if data:
+                rid = data.group(1)
+                (scheme, netloc, path, params, query, fragment) = urlparse.urlparse(data.group(2))
+                servers.append((netloc, rid))
+            else:
+                print "unable to decode: %s" % ruv
+
+    return servers
+
+def list_ruv(realm, host, dirman_passwd, verbose):
+    """
+    List the Replica Update Vectors on this host to get the available
+    replica IDs.
+    """
+
+    enforce_host_existence(host)
+
+    servers = get_ruv(realm, host, dirman_passwd)
+    for (netloc, rid) in servers:
+        print "%s: %s" % (netloc, rid)
+
+def get_rid_by_host(realm, sourcehost, host, dirman_passwd):
+    """
+    Try to determine the RID by host name.
+    """
+    servers = get_ruv(realm, sourcehost, dirman_passwd)
+    for (netloc, rid) in servers:
+        if '%s:389' % host == netloc:
+            return int(rid)
+
+def clean_ruv(realm, ruv, options):
+    """
+    Given an RID create a CLEANALLRUV task to clean it up.
+    """
+    try:
+        ruv = int(ruv)
+    except ValueError:
+        sys.exit("Replica ID must be an integer: %s" % ruv)
+
+    servers = get_ruv(realm, options.host, options.dirman_passwd)
+    found = False
+    for (netloc, rid) in servers:
+        if ruv == int(rid):
+           found = True
+           hostname = netloc
+           break
+
+    if not found:
+        sys.exit("Replica ID %s not found" % ruv)
+
+    print "Clean the Replication Update Vector for %s" % hostname
+    print
+    print "Cleaning the wrong replica ID will cause that server to no"
+    print "longer replicate so it may miss updates while the process"
+    print "is running. It would need to be re-initialized to maintain"
+    print "consistency. Be very careful."
+    if not options.force and not ipautil.user_input("Continue to clean?", False):
+        sys.exit("Aborted")
+    thisrepl = replication.ReplicationManager(realm, options.host,
+                                              options.dirman_passwd)
+    thisrepl.cleanallruv(ruv)
+    print "Cleanup task created"
+
+def abort_clean_ruv(realm, ruv, options):
+    """
+    Given an RID abort a CLEANALLRUV task.
+    """
+    try:
+        ruv = int(ruv)
+    except ValueError:
+        sys.exit("Replica ID must be an integer: %s" % ruv)
+
+    servers = get_ruv(realm, options.host, options.dirman_passwd)
+    found = False
+    for (netloc, rid) in servers:
+        if ruv == int(rid):
+           found = True
+           hostname = netloc
+           break
+
+    if not found:
+        sys.exit("Replica ID %s not found" % ruv)
+
+    servers = get_ruv(realm, options.host, options.dirman_passwd)
+    found = False
+    for (netloc, rid) in servers:
+        if ruv == int(rid):
+           found = True
+           hostname = netloc
+           break
+
+    if not found:
+        sys.exit("Replica ID %s not found" % ruv)
+
+    print "Aborting the clean Replication Update Vector task for %s" % hostname
+    print
+    thisrepl = replication.ReplicationManager(realm, options.host,
+                                              options.dirman_passwd)
+    thisrepl.abortcleanallruv(ruv)
+
+    print "Cleanup task stopped"
+
+def list_clean_ruv(realm, host, dirman_passwd, verbose):
+    """
+    List all clean RUV tasks.
+    """
+
+    enforce_host_existence(host)
+
+    repl = replication.ReplicationManager(realm, host, dirman_passwd)
+    dn = DN(('cn', 'cleanallruv'),('cn', 'tasks'), ('cn', 'config'))
+    try:
+        entries = repl.conn.getList(dn, ldap.SCOPE_ONELEVEL)
+    except errors.NotFound:
+        print "No CLEANALLRUV tasks running"
+    else:
+        print "CLEANALLRUV tasks"
+        for entry in entries:
+            name = entry.getValue('cn').replace('clean ', '')
+            status = entry.getValue('nsTaskStatus')
+            print "RID %s: %s" % (name, status)
+            if verbose:
+                print str(dn)
+                print entry.getValue('nstasklog')
+
+    print
+
+    dn = DN(('cn', 'abort cleanallruv'),('cn', 'tasks'), ('cn', 'config'))
+    try:
+        entries = repl.conn.getList(dn, ldap.SCOPE_ONELEVEL)
+    except errors.NotFound:
+        print "No abort CLEANALLRUV tasks running"
+    else:
+        print "Abort CLEANALLRUV tasks"
+        for entry in entries:
+            name = entry.getValue('cn').replace('abort ', '')
+            status = entry.getValue('nsTaskStatus')
+            print "RID %s: %s" % (name, status)
+            if verbose:
+                print str(dn)
+                print entry.getValue('nstasklog')
+
+def check_last_link(delrepl, realm, dirman_passwd, force):
+    """
+    We don't want to orphan a server when deleting another one. If you have
+    a topology that looks like this:
+
+             A     B
+             |     |
+             |     |
+             |     |
+             C---- D
+
+    If we try to delete host D it will orphan host B.
+
+    What we need to do is if the master being deleted has only a single
+    agreement, connect to that master and make sure it has agreements with
+    more than just this master.
+
+    @delrepl: a ReplicationManager object of the master being deleted
+
+    returns: hostname of orphaned server or None
+    """
+    replica_names = delrepl.find_ipa_replication_agreements()
+
+    orphaned = []
+    # Connect to each remote server and see what agreements it has
+    for replica in replica_names:
+        try:
+            repl = replication.ReplicationManager(realm, replica, dirman_passwd)
+        except ldap.SERVER_DOWN, e:
+            print "Unable to validate that '%s' will not be orphaned." % replica
+
+            if not force and not ipautil.user_input("Continue to delete?", False):
+                sys.exit("Aborted")
+            continue
+        names = repl.find_ipa_replication_agreements()
+        if len(names) == 1 and names[0] == delrepl.hostname:
+            orphaned.append(replica)
+
+    if len(orphaned):
+        return ', '.join(orphaned)
+    else:
+        return None
+
+def enforce_host_existence(host, message=None):
+    if not ipautil.host_exists(host):
+        if message is None:
+            message = "Unknown host %s" % host
+
+        sys.exit(message)
 
 def del_master(realm, hostname, options):
 
+    enforce_host_existence(hostname)
+
     force_del = False
+    delrepl = None
 
-    # 1. Connect to the master to be removed.
-    try:
-        delrepl = replication.ReplicationManager(realm, hostname, options.dirman_passwd)
-    except Exception, e:
-        if not options.force:
-            print "Unable to delete replica %s: %s" % (hostname, str(e))
-            sys.exit(1)
-        else:
-            print "Unable to connect to replica %s, forcing removal" % hostname
-            force_del = True
-
-    # 2. Connect to the local server
+    # 1. Connect to the local server
     try:
         thisrepl = replication.ReplicationManager(realm, options.host,
                                                   options.dirman_passwd)
     except Exception, e:
-        print "Failed to connect to server %s: %s" % (options.host, str(e))
+        print "Failed to connect to server %s: %s" % (options.host, convert_error(e))
         sys.exit(1)
 
-    if force_del:
-        dn = 'cn=masters,cn=ipa,cn=etc,%s' % thisrepl.suffix
-        res = thisrepl.conn.search_s(dn, ldap.SCOPE_ONELEVEL)
-        replica_names = []
-        for entry in res:
-            replica_names.append(entry.cn)
-    else:
-        # 2. Get list of agreements.
-        replica_names = delrepl.find_ipa_replication_agreements()
+    # 2. Ensure we have an agreement with the master
+    agreement = thisrepl.get_replication_agreement(hostname)
+    if agreement is None:
+        if options.cleanup:
+            """
+            We have no agreement with the current master, so this is a
+            candidate for cleanup. This is VERY dangerous to do because it
+            removes that master from the list of masters. If the master
+            were to try to come back online it wouldn't work at all.
+            """
+            print "Cleaning a master is irreversible."
+            print "This should not normally be require, so use cautiously."
+            if not ipautil.user_input("Continue to clean master?", False):
+                sys.exit("Cleanup aborted")
+            thisrepl.replica_cleanup(hostname, realm, force=True)
+            sys.exit(0)
+        else:
+            sys.exit("'%s' has no replication agreement for '%s'" % (options.host, hostname))
 
-    # 3. Remove each agreement
+    # 3. If an IPA agreement connect to the master to be removed.
+    repltype = thisrepl.get_agreement_type(hostname)
+    if repltype == replication.IPA_REPLICA:
+        winsync = False
+        try:
+            delrepl = replication.ReplicationManager(realm, hostname, options.dirman_passwd)
+        except Exception, e:
+            print "Connection to '%s' failed: %s" % (hostname, convert_error(e))
+            if not options.force:
+                print "Unable to delete replica '%s'" % hostname
+                sys.exit(1)
+            else:
+                print "Forcing removal of %s" % hostname
+                force_del = True
+
+        if force_del:
+            dn = DN(('cn', 'masters'), ('cn', 'ipa'), ('cn', 'etc'), thisrepl.suffix)
+            entries = thisrepl.conn.getList(dn, ldap.SCOPE_ONELEVEL)
+            replica_names = []
+            for entry in entries:
+                replica_names.append(entry.getValue('cn'))
+            # The host we're removing gets included in this list, remove it.
+            # Otherwise we try to delete an agreement from the host to itself.
+            try:
+                replica_names.remove(hostname)
+            except ValueError:
+                pass
+        else:
+            # Get list of agreements.
+            replica_names = delrepl.find_ipa_replication_agreements()
+    else:
+        # WINSYNC replica, delete agreement from current host
+        winsync = True
+        replica_names = [options.host]
+
+    if not winsync and not options.force:
+        print "Deleting a master is irreversible."
+        print "To reconnect to the remote master you will need to prepare " \
+              "a new replica file"
+        print "and re-install."
+        if not ipautil.user_input("Continue to delete?", False):
+            sys.exit("Deletion aborted")
+
+    # Check for orphans if the remote server is up.
+    if delrepl and not winsync:
+        masters_dn = DN(('cn', 'masters'), ('cn', 'ipa'), ('cn', 'etc'), ipautil.realm_to_suffix(realm))
+        try:
+            masters = delrepl.conn.getList(masters_dn, ldap.SCOPE_ONELEVEL)
+        except Exception, e:
+            masters = []
+            print "Failed to read masters data from '%s': %s" % (delrepl.hostname, convert_error(e))
+            print "Skipping calculation to determine if one or more masters would be orphaned."
+            if not options.force:
+                sys.exit(1)
+
+        # This only applies if we have more than 2 IPA servers, otherwise
+        # there is no chance of an orphan.
+        if len(masters) > 2:
+            orphaned_server = check_last_link(delrepl, realm, options.dirman_passwd, options.force)
+            if orphaned_server is not None:
+                print "Deleting this server will orphan '%s'. " % orphaned_server
+                print "You will need to reconfigure your replication topology to delete this server."
+                sys.exit(1)
+    else:
+        print "Skipping calculation to determine if one or more masters would be orphaned."
+
+    # Save the RID value before we start deleting
+    if repltype == replication.IPA_REPLICA:
+        rid = get_rid_by_host(realm, options.host, hostname, options.dirman_passwd)
+
+    # 4. Remove each agreement
+
+    print "Deleting replication agreements between %s and %s" % (hostname, ', '.join(replica_names))
     for r in replica_names:
         try:
-            del_link(realm, r, hostname, options.dirman_passwd, force=True)
+            if not del_link(realm, r, hostname, options.dirman_passwd, force=True):
+                print "Unable to remove replication agreement for %s from %s." % (hostname, r)
         except Exception, e:
-            print "There were issues removing a connection: %s" % str(e)
+            print "There were issues removing a connection for %s from %s: %s" % (hostname, r, convert_error(e))
 
-    # 4. Finally clean up the removed replica common entries.
+    # 5. Clean RUV for the deleted master
+    if repltype == replication.IPA_REPLICA:
+        try:
+            thisrepl.cleanallruv(rid)
+        except KeyboardInterrupt:
+            print "Wait for task interrupted. It will continue to run in the background"
+
+    # 6. Finally clean up the removed replica common entries.
     try:
         thisrepl.replica_cleanup(hostname, realm, force=True)
     except Exception, e:
-        print "Failed to cleanup %s entries: %s" % (hostname, str(e))
+        print "Failed to cleanup %s entries: %s" % (hostname, convert_error(e))
         print "You may need to manually remove them from the tree"
 
-    # 5. And clean up the removed replica DNS entries if any.
+    # 7. And clean up the removed replica DNS entries if any.
     try:
         if bindinstance.dns_container_exists(options.host, thisrepl.suffix,
                                              dm_password=options.dirman_passwd):
             if options.dirman_passwd:
-                api.Backend.ldap2.connect(bind_dn='cn=Directory Manager',
+                api.Backend.ldap2.connect(bind_dn=DN(('cn', 'Directory Manager')),
                                           bind_pw=options.dirman_passwd)
             else:
                 ccache = krbV.default_context().default_ccache().name
@@ -339,15 +672,33 @@ def del_master(realm, hostname, options):
             bind = bindinstance.BindInstance()
             bind.remove_master_dns_records(hostname, realm, realm.lower())
     except Exception, e:
-        print "Failed to cleanup %s DNS entries: %s" % (hostname, str(e))
+        print "Failed to cleanup %s DNS entries: %s" % (hostname, convert_error(e))
         print "You may need to manually remove them from the tree"
 
 def add_link(realm, replica1, replica2, dirman_passwd, options):
 
+    for check_host in [replica1,replica2]:
+        enforce_host_existence(check_host)
+
     if options.winsync:
         if not options.binddn or not options.bindpw or not options.cacert or not options.passsync:
-            logging.error("The arguments --binddn, --bindpw, --passsync and --cacert are required to create a winsync agreement")
+            root_logger.error("The arguments --binddn, --bindpw, --passsync and --cacert are required to create a winsync agreement")
             sys.exit(1)
+        if os.getegid() != 0:
+            root_logger.error("winsync agreements need to be created as root")
+            sys.exit(1)
+
+    # See if we already have an agreement with this host
+    try:
+        repl = replication.ReplicationManager(realm, replica1, dirman_passwd)
+        if repl.get_agreement_type(replica2) == replication.WINSYNC:
+            agreement = repl.get_replication_agreement(replica2)
+            sys.exit("winsync agreement already exists on subtree %s" %
+                agreement.getValue('nsds7WindowsReplicaSubtree'))
+        else:
+            sys.exit("A replication agreement to %s already exists" % replica2)
+    except errors.NotFound:
+        pass
 
     if options.cacert:
         # have to install the given CA cert before doing anything else
@@ -363,15 +714,11 @@ def add_link(realm, replica1, replica2, dirman_passwd, options):
     # the directory server and kill the connection
     try:
         repl1 = replication.ReplicationManager(realm, replica1, dirman_passwd)
-
-    except ldap.NO_SUCH_OBJECT:
-        print "Cannot find replica '%s'" % replica1
-        return
-    except errors.NotFound:
+    except (ldap.NO_SUCH_OBJECT, errors.NotFound):
         print "Cannot find replica '%s'" % replica1
         return
     except Exception, e:
-        print "Failed to get data from '%s': %s" % (replica1, str(e))
+        print "Failed to connect to '%s': %s" % (replica1, convert_error(e))
         return
 
     if options.winsync:
@@ -380,37 +727,87 @@ def add_link(realm, replica1, replica2, dirman_passwd, options):
                                         options.passsync, options.win_subtree,
                                         options.cacert)
     else:
-        repl1.setup_gssapi_replication(replica2, "cn=Directory Manager", dirman_passwd)
+        # Check if the master entry exists for both servers.
+        # If one of the tree misses one of the entries, it means one of the
+        # replicas was fully deleted previously and needs to be reinstalled
+        # from scratch
+        try:
+            masters_dn = DN(('cn', 'masters'), ('cn', 'ipa'), ('cn', 'etc'), (api.env.basedn))
+            master1_dn = DN(('cn', replica1), masters_dn)
+            master2_dn = DN(('cn', replica2), masters_dn)
+
+            repl1.conn.getEntry(master1_dn, ldap.SCOPE_BASE)
+            repl1.conn.getEntry(master2_dn, ldap.SCOPE_BASE)
+
+            repl2 = replication.ReplicationManager(realm, replica2, dirman_passwd)
+            repl2.conn.getEntry(master1_dn, ldap.SCOPE_BASE)
+            repl2.conn.getEntry(master2_dn, ldap.SCOPE_BASE)
+
+        except errors.NotFound:
+            standard_logging_setup(console_format='%(message)s')
+
+            ds = ipadiscovery.IPADiscovery()
+            ret = ds.search(server=replica2)
+
+            if ret == ipadiscovery.NOT_IPA_SERVER:
+                sys.exit("Connection unsuccessful: %s is not an IPA Server." %
+                    replica2)
+            elif ret == 0:  # success
+                sys.exit("Connection unsuccessful: %s is an IPA Server, "
+                    "but it might be unknown, foreign or previously deleted "
+                    "one." % replica2)
+            else:
+                sys.exit("Connection to %s unsuccessful." % replica2)
+
+        repl1.setup_gssapi_replication(replica2, DN(('cn', 'Directory Manager')), dirman_passwd)
     print "Connected '%s' to '%s'" % (replica1, replica2)
 
-def re_initialize(realm, options):
+def re_initialize(realm, thishost, fromhost, dirman_passwd):
 
-    if not options.fromhost:
-        print "re-initialize requires the option --from <host name>"
-        sys.exit(1)
+    for check_host in [thishost, fromhost]:
+        enforce_host_existence(check_host)
 
-    repl = replication.ReplicationManager(realm, options.fromhost, options.dirman_passwd)
+    thisrepl = replication.ReplicationManager(realm, thishost, dirman_passwd)
+    agreement = thisrepl.get_replication_agreement(fromhost)
+    if agreement is None:
+        sys.exit("'%s' has no replication agreement for '%s'" % (thishost, fromhost))
+    repltype = thisrepl.get_agreement_type(fromhost)
+    if repltype == replication.WINSYNC:
+        # With winsync we don't have a "remote" agreement, it is all local
+        repl = replication.ReplicationManager(realm, thishost, dirman_passwd)
+        repl.initialize_replication(agreement.dn, repl.conn)
+        repl.wait_for_repl_init(repl.conn, agreement.dn)
+    else:
+        repl = replication.ReplicationManager(realm, fromhost, dirman_passwd)
+        agreement = repl.get_replication_agreement(thishost)
+        repl.force_sync(repl.conn, thishost)
 
-    thishost = installutils.get_fqdn()
+        repl.initialize_replication(agreement.dn, repl.conn)
+        repl.wait_for_repl_init(repl.conn, agreement.dn)
 
-    filter = "(&(nsDS5ReplicaHost=%s)(|(objectclass=nsDSWindowsReplicationAgreement)(objectclass=nsds5ReplicationAgreement)))" % thishost
-    entry = repl.conn.search_s("cn=config", ldap.SCOPE_SUBTREE, filter)
-    if len(entry) == 0:
-        logging.error("Unable to find %s -> %s replication agreement" % (options.fromhost, thishost))
-        sys.exit(1)
-    if len(entry) > 1:
-        logging.error("Found multiple agreements for %s. Only initializing the first one returned: %s" % (thishost, entry[0].dn))
-
-    repl.initialize_replication(entry[0].dn, repl.conn)
-    repl.wait_for_repl_init(repl.conn, entry[0].dn)
-
-    ds = dsinstance.DsInstance(realm_name = realm, dm_password = options.dirman_passwd)
-    ds.init_memberof()
+    # If the agreement doesn't have nsDS5ReplicatedAttributeListTotal it means
+    # we did not replicate memberOf, do so now.
+    if not agreement.getValue('nsDS5ReplicatedAttributeListTotal'):
+        ds = dsinstance.DsInstance(realm_name = realm, dm_password = dirman_passwd)
+        ds.init_memberof()
 
 def force_sync(realm, thishost, fromhost, dirman_passwd):
 
-    repl = replication.ReplicationManager(realm, fromhost, dirman_passwd)
-    repl.force_sync(repl.conn, thishost)
+    for check_host in [thishost, fromhost]:
+        enforce_host_existence(check_host)
+
+    thisrepl = replication.ReplicationManager(realm, thishost, dirman_passwd)
+    agreement = thisrepl.get_replication_agreement(fromhost)
+    if agreement is None:
+        sys.exit("'%s' has no replication agreement for '%s'" % (thishost, fromhost))
+    repltype = thisrepl.get_agreement_type(fromhost)
+    if repltype == replication.WINSYNC:
+        # With winsync we don't have a "remote" agreement, it is all local
+        repl = replication.ReplicationManager(realm, thishost, dirman_passwd)
+        repl.force_sync(repl.conn, fromhost)
+    else:
+        repl = replication.ReplicationManager(realm, fromhost, dirman_passwd)
+        repl.force_sync(repl.conn, thishost)
 
 def main():
     if os.getegid() == 0:
@@ -422,8 +819,9 @@ def main():
 
     # Just initialize the environment. This is so the installer can have
     # access to the plugin environment
-    api_env = {}
-    api_env['in_server'] = True
+    api_env = {'in_server' : True,
+               'verbose'   : options.verbose,
+              }
 
     if os.getegid() != 0:
         api_env['log'] = None # turn off logging for non-root
@@ -457,10 +855,15 @@ def main():
         if len(args) == 2:
             replica = args[1]
         list_replicas(realm, host, replica, dirman_passwd, options.verbose)
+    elif args[0] == "list-ruv":
+        list_ruv(realm, host, dirman_passwd, options.verbose)
     elif args[0] == "del":
         del_master(realm, args[1], options)
     elif args[0] == "re-initialize":
-        re_initialize(realm, options)
+        if not options.fromhost:
+            print "re-initialize requires the option --from <host name>"
+            sys.exit(1)
+        re_initialize(realm, host, options.fromhost, dirman_passwd)
     elif args[0] == "force-sync":
         if not options.fromhost:
             print "force-sync requires the option --from <host name>"
@@ -482,6 +885,12 @@ def main():
             replica1 = host
             replica2 = args[1]
         del_link(realm, replica1, replica2, dirman_passwd)
+    elif args[0] == "clean-ruv":
+        clean_ruv(realm, args[1], options)
+    elif args[0] == "abort-clean-ruv":
+        abort_clean_ruv(realm, args[1], options)
+    elif args[0] == "list-clean-ruv":
+        list_clean_ruv(realm, host, dirman_passwd, options.verbose)
 
 try:
     main()

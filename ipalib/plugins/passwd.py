@@ -24,6 +24,7 @@ from ipalib import _
 from ipalib import output
 from ipalib.plugins.user import split_principal, validate_principal, normalize_principal
 from ipalib.request import context
+from ipapython.dn import DN
 
 __doc__ = _("""
 Set a user's password
@@ -69,7 +70,7 @@ class passwd(Command):
             label=_('User name'),
             primary_key=True,
             autofill=True,
-            create_default=lambda **kw: util.get_current_principal(),
+            default_from=lambda: util.get_current_principal(),
             normalizer=lambda value: normalize_principal(value),
         ),
         Password('password',
@@ -104,14 +105,14 @@ class passwd(Command):
 
         (dn, entry_attrs) = ldap.find_entry_by_attr(
             'krbprincipalname', principal, 'posixaccount', [''],
-            ",".join([api.env.container_user, api.env.basedn])
+            DN(api.env.container_user, api.env.basedn)
         )
 
         if principal == getattr(context, 'principal') and \
             current_password == MAGIC_VALUE:
             # No cheating
             self.log.warn('User attempted to change password using magic value')
-            raise errors.ACIError(info='Invalid credentials')
+            raise errors.ACIError(info=_('Invalid credentials'))
 
         if current_password == MAGIC_VALUE:
             ldap.modify_password(dn, password)

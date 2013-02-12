@@ -18,13 +18,23 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+from time import gmtime, strftime, strptime
+import string
+
 from ipalib import api, errors
-from ipalib import Flag, Int, Password, Str, Bool
+from ipalib import Flag, Int, Password, Str, Bool, Bytes
 from ipalib.plugins.baseldap import *
 from ipalib.request import context
-from time import gmtime, strftime
-import copy
 from ipalib import _, ngettext
+from ipalib import output
+from ipapython.ipautil import ipa_generate_password
+from ipapython.ipavalidate import Email
+import posixpath
+from ipalib.util import (normalize_sshpubkey, validate_sshpubkey,
+    convert_sshpubkey_post)
+if api.env.in_server and api.env.context in ['lite', 'server']:
+    from ipaserver.plugins.ldap2 import ldap2
+    import os
 
 __doc__ = _("""
 Users
@@ -43,6 +53,10 @@ been issued.
 
 Password management is not a part of this module. For more information
 about this topic please see: ipa help passwd
+
+Account lockout on password failure happens per IPA master. The user-status
+command can be used to identify which master the user is locked out on.
+It is on that master the administrator must unlock the user.
 
 EXAMPLES:
 
@@ -67,6 +81,37 @@ EXAMPLES:
 
 
 NO_UPG_MAGIC = '__no_upg__'
+DNA_MAGIC = 999
+
+user_output_params = (
+    Flag('has_keytab',
+        label=_('Kerberos keys available'),
+    ),
+    Str('sshpubkeyfp*',
+        label=_('SSH public key fingerprint'),
+    ),
+   )
+
+status_output_params = (
+    Str('server',
+        label=_('Server'),
+    ),
+    Str('krbloginfailedcount',
+        label=_('Failed logins'),
+    ),
+    Str('krblastsuccessfulauth',
+        label=_('Last successful authentication'),
+    ),
+    Str('krblastfailedauth',
+        label=_('Last failed authentication'),
+    ),
+    Str('now',
+        label=_('Time now'),
+    ),
+   )
+
+# characters to be used for generating random user passwords
+user_pwdchars = string.digits + string.ascii_letters + '_,.@+-='
 
 def validate_nsaccountlock(entry_attrs):
     if 'nsaccountlock' in entry_attrs:
@@ -74,8 +119,9 @@ def validate_nsaccountlock(entry_attrs):
         if not isinstance(nsaccountlock, (bool, Bool)):
             if not isinstance(nsaccountlock, basestring):
                 raise errors.OnlyOneValueAllowed(attr='nsaccountlock')
-            if nsaccountlock.lower() not in ('true','false'):
-                raise errors.ValidationError(name='nsaccountlock', error='must be TRUE or FALSE')
+            if nsaccountlock.lower() not in ('true', 'false'):
+                raise errors.ValidationError(name='nsaccountlock',
+                    error=_('must be TRUE or FALSE'))
 
 def convert_nsaccountlock(entry_attrs):
     if not 'nsaccountlock' in entry_attrs:
@@ -94,9 +140,7 @@ def split_principal(principal):
     parts = principal.split('@')
     user = parts[0].lower()
     if len(parts) > 2:
-        raise errors.MalformedUserPrincipal(
-            principal=principal
-        )
+        raise errors.MalformedUserPrincipal(principal=principal)
 
     if len(parts) == 2:
         realm = parts[1].upper()
@@ -126,6 +170,24 @@ def normalize_principal(principal):
     return unicode('%s@%s' % (user, realm))
 
 
+def check_protected_member(user, protected_group_name=u'admins'):
+    '''
+    Ensure the last enabled member of a protected group cannot be deleted or
+    disabled by raising LastMemberError.
+    '''
+
+    # Get all users in the protected group
+    result = api.Command.user_find(in_group=protected_group_name)
+
+    # Build list of users in the protected group who are enabled
+    result = result['result']
+    enabled_users = [entry['uid'][0] for entry in result if not entry['nsaccountlock']]
+
+    # If the user is the last enabled user raise LastMemberError exception
+    if enabled_users == [user]:
+        raise errors.LastMemberError(key=user, label=_(u'group'),
+            container=protected_group_name)
+
 class user(LDAPObject):
     """
     User object.
@@ -147,14 +209,14 @@ class user(LDAPObject):
     search_display_attributes = [
         'uid', 'givenname', 'sn', 'homedirectory', 'loginshell',
         'mail', 'telephonenumber', 'title', 'nsaccountlock',
-        'uidnumber', 'gidnumber',
+        'uidnumber', 'gidnumber', 'sshpubkeyfp',
     ]
     uuid_attribute = 'ipauniqueid'
     attribute_members = {
         'memberof': ['group', 'netgroup', 'role', 'hbacrule', 'sudorule'],
         'memberofindirect': ['group', 'netgroup', 'role', 'hbacrule', 'sudorule'],
     }
-    rdnattr = 'uid'
+    rdn_is_primary_key = True
     bindable = True
     password_attributes = [('userpassword', 'has_password'),
                            ('krbprincipalkey', 'has_keytab')]
@@ -181,7 +243,7 @@ class user(LDAPObject):
             cli_name='last',
             label=_('Last name'),
         ),
-        Str('cn?',
+        Str('cn',
             label=_('Full name'),
             default_from=lambda givenname, sn: '%s %s' % (givenname, sn),
             autofill=True,
@@ -199,7 +261,6 @@ class user(LDAPObject):
         Str('homedirectory?',
             cli_name='homedir',
             label=_('Home directory'),
-            default_from=lambda uid: '/home/%s' % uid,
         ),
         Str('gecos?',
             label=_('GECOS field'),
@@ -209,7 +270,6 @@ class user(LDAPObject):
         Str('loginshell?',
             cli_name='shell',
             label=_('Login shell'),
-            default=u'/bin/sh',
         ),
         Str('krbprincipalname?', validate_principal,
             cli_name='principal',
@@ -231,18 +291,29 @@ class user(LDAPObject):
             # bomb out via the webUI.
             exclude='webui',
         ),
-        Int('uidnumber?',
+        Flag('random?',
+            doc=_('Generate a random user password'),
+            flags=('no_search', 'virtual_attribute'),
+            default=False,
+        ),
+        Str('randompassword?',
+            label=_('Random password'),
+            flags=('no_create', 'no_update', 'no_search', 'virtual_attribute'),
+        ),
+        Int('uidnumber',
             cli_name='uid',
             label=_('UID'),
             doc=_('User ID Number (system will assign one if not provided)'),
             autofill=True,
-            default=999,
+            default=DNA_MAGIC,
             minvalue=1,
         ),
-        Int('gidnumber?',
+        Int('gidnumber',
             label=_('GID'),
             doc=_('Group ID Number'),
-            default_from=lambda uid: uid,
+            minvalue=1,
+            default=DNA_MAGIC,
+            autofill=True,
         ),
         Str('street?',
             cli_name='street',
@@ -288,23 +359,37 @@ class user(LDAPObject):
         ),
         Bool('nsaccountlock?',
             label=_('Account disabled'),
-            flags=['no_create', 'no_update', 'no_search'],
+            flags=['no_option'],
+        ),
+        Str('ipasshpubkey*', validate_sshpubkey,
+            cli_name='sshpubkey',
+            label=_('SSH public key'),
+            normalizer=normalize_sshpubkey,
+            csv=True,
+            flags=['no_search'],
         ),
     )
 
-    def _normalize_email(self, email, config=None):
+    def _normalize_and_validate_email(self, email, config=None):
         if not config:
             config = self.backend.get_ipa_config()[1]
 
         # check if default email domain should be added
-        if email and 'ipadefaultemaildomain' in config:
+        defaultdomain = config.get('ipadefaultemaildomain', [None])[0]
+        if email:
             norm_email = []
             if not isinstance(email, (list, tuple)):
                 email = [email]
             for m in email:
-                if isinstance(m, basestring) and m.find('@') == -1:
-                    norm_email.append(m + u'@' + config['ipadefaultemaildomain'][0])
+                if isinstance(m, basestring):
+                    if '@' not in m and defaultdomain:
+                        m = m + u'@' + defaultdomain
+                    if not Email(m):
+                        raise errors.ValidationError(name='email', error=_('invalid e-mail format: %(email)s') % dict(email=m))
+                    norm_email.append(m)
                 else:
+                    if not Email(m):
+                        raise errors.ValidationError(name='email', error=_('invalid e-mail format: %(email)s') % dict(email=m))
                     norm_email.append(m)
             return norm_email
 
@@ -317,11 +402,12 @@ class user(LDAPObject):
         if not manager:
             return None
 
-        if isinstance(manager, basestring):
+        if not isinstance(manager, list):
             manager = [manager]
         try:
+            container_dn = DN(self.container_dn, api.env.basedn)
             for m in xrange(len(manager)):
-                if manager[m].endswith('%s,%s' % (self.container_dn, api.env.basedn)):
+                if isinstance(manager[m], DN) and manager[m].endswith(container_dn):
                     continue
                 (dn, entry_attrs) = self.backend.find_entry_by_attr(
                         self.primary_key.name, manager[m], self.object_class, [''],
@@ -352,6 +438,8 @@ class user_add(LDAPCreate):
 
     msg_summary = _('Added user "%(value)s"')
 
+    has_output_params = LDAPCreate.has_output_params + user_output_params
+
     takes_options = LDAPCreate.takes_options + (
         Flag('noprivate',
             cli_name='noprivate',
@@ -360,6 +448,7 @@ class user_add(LDAPCreate):
     )
 
     def pre_callback(self, ldap, dn, entry_attrs, attrs_list, *keys, **options):
+        assert isinstance(dn, DN)
         if not options.get('noprivate', False):
             try:
                 # The Managed Entries plugin will allow a user to be created
@@ -389,21 +478,22 @@ class user_add(LDAPCreate):
                         len = int(config.get('ipamaxusernamelength')[0])
                     )
                 )
-        entry_attrs.setdefault('loginshell', config.get('ipadefaultloginshell'))
+        default_shell = config.get('ipadefaultloginshell', ['/bin/sh'])[0]
+        entry_attrs.setdefault('loginshell', default_shell)
         # hack so we can request separate first and last name in CLI
         full_name = '%s %s' % (entry_attrs['givenname'], entry_attrs['sn'])
         entry_attrs.setdefault('cn', full_name)
         if 'homedirectory' not in entry_attrs:
             # get home's root directory from config
-            homes_root = config.get('ipahomesrootdir', '/home')[0]
+            homes_root = config.get('ipahomesrootdir', ['/home'])[0]
             # build user's home directory based on his uid
-            home_dir = '%s/%s' % (homes_root, keys[-1])
-            home_dir = home_dir.replace('//', '/').rstrip('/')
-            entry_attrs['homedirectory'] = home_dir
-        entry_attrs.setdefault('krbpwdpolicyreference', 'cn=global_policy,cn=%s,cn=kerberos,%s' % (api.env.realm, api.env.basedn))
+            entry_attrs['homedirectory'] = posixpath.join(homes_root, keys[-1])
+        entry_attrs.setdefault('krbpwdpolicyreference',
+                               DN(('cn', 'global_policy'), ('cn', api.env.realm), ('cn', 'kerberos'),
+                                  api.env.basedn))
         entry_attrs.setdefault('krbprincipalname', '%s@%s' % (entry_attrs['uid'], api.env.realm))
 
-        if 'gidnumber' not in entry_attrs:
+        if entry_attrs.get('gidnumber', DNA_MAGIC) == DNA_MAGIC:
             # gidNumber wasn't specified explicity, find out what it should be
             if not options.get('noprivate', False) and ldap.has_upg():
                 # User Private Groups - uidNumber == gidNumber
@@ -416,12 +506,26 @@ class user_add(LDAPCreate):
                 try:
                     (group_dn, group_attrs) = ldap.get_entry(group_dn, ['gidnumber'])
                 except errors.NotFound:
-                    error_msg = 'Default group for new users not found.'
+                    error_msg = _('Default group for new users not found')
+                    raise errors.NotFound(reason=error_msg)
+                if 'gidnumber' not in group_attrs:
+                    error_msg = _('Default group for new users is not POSIX')
                     raise errors.NotFound(reason=error_msg)
                 entry_attrs['gidnumber'] = group_attrs['gidnumber']
 
+        if 'userpassword' not in entry_attrs and options.get('random'):
+            entry_attrs['userpassword'] = ipa_generate_password(user_pwdchars)
+            # save the password so it can be displayed in post_callback
+            setattr(context, 'randompassword', entry_attrs['userpassword'])
+
         if 'mail' in entry_attrs:
-            entry_attrs['mail'] = self.obj._normalize_email(entry_attrs['mail'], config)
+            entry_attrs['mail'] = self.obj._normalize_and_validate_email(entry_attrs['mail'], config)
+        else:
+            # No e-mail passed in. If we have a default e-mail domain set
+            # then we'll add it automatically.
+            defaultdomain = config.get('ipadefaultemaildomain', [None])[0]
+            if defaultdomain:
+                entry_attrs['mail'] = self.obj._normalize_and_validate_email(keys[-1], config)
 
         if 'manager' in entry_attrs:
             entry_attrs['manager'] = self.obj._normalize_manager(entry_attrs['manager'])
@@ -429,14 +533,20 @@ class user_add(LDAPCreate):
         return dn
 
     def post_callback(self, ldap, dn, entry_attrs, *keys, **options):
+        assert isinstance(dn, DN)
         config = ldap.get_ipa_config()[1]
         # add the user we just created into the default primary group
         def_primary_group = config.get('ipadefaultprimarygroup')
         group_dn = self.api.Object['group'].get_dn(def_primary_group)
-        ldap.add_entry_to_group(dn, group_dn)
-        if self.api.env.wait_for_attr:
-            newentry = wait_for_value(ldap, dn, 'memberOf', def_primary_group)
-            entry_from_entry(entry_attrs, newentry)
+
+        # if the user is already a member of default primary group,
+        # do not raise error
+        # this can happen if automember rule or default group is set
+        try:
+            ldap.add_entry_to_group(dn, group_dn)
+        except errors.AlreadyGroupMember:
+            pass
+
         self.obj._convert_manager(entry_attrs, **options)
         # delete description attribute NO_UPG_MAGIC if present
         if options.get('noprivate', False):
@@ -450,12 +560,23 @@ class user_add(LDAPCreate):
                     self.api.Command['user_mod'](keys[-1], **kw)
                 except (errors.EmptyModlist, errors.NotFound):
                     pass
-        else:
-            if self.api.env.wait_for_attr:
-                newentry = wait_for_value(ldap, dn, 'objectclass', 'mepOriginEntry')
-                entry_from_entry(entry_attrs, newentry)
+
+        # Fetch the entry again to update memberof, mep data, etc updated
+        # at the end of the transaction.
+        (newdn, newentry) = ldap.get_entry(dn, ['*'])
+        entry_attrs.update(newentry)
+
+        if options.get('random', False):
+            try:
+                entry_attrs['randompassword'] = unicode(getattr(context, 'randompassword'))
+            except AttributeError:
+                # if both randompassword and userpassword options were used
+                pass
 
         self.obj.get_password_attributes(ldap, dn, entry_attrs)
+
+        convert_sshpubkey_post(ldap, dn, entry_attrs)
+
         return dn
 
 api.register(user_add)
@@ -466,8 +587,10 @@ class user_del(LDAPDelete):
 
     msg_summary = _('Deleted user "%(value)s"')
 
-    def post_callback(self, ldap, dn, *keys, **options):
-        return True
+    def pre_callback(self, ldap, dn, *keys, **options):
+        assert isinstance(dn, DN)
+        check_protected_member(keys[-1])
+        return dn
 
 api.register(user_del)
 
@@ -477,18 +600,51 @@ class user_mod(LDAPUpdate):
 
     msg_summary = _('Modified user "%(value)s"')
 
+    has_output_params = LDAPUpdate.has_output_params + user_output_params
+
     def pre_callback(self, ldap, dn, entry_attrs, attrs_list, *keys, **options):
+        assert isinstance(dn, DN)
+        if options.get('rename') is not None:
+            config = ldap.get_ipa_config()[1]
+            if 'ipamaxusernamelength' in config:
+                if len(options['rename']) > int(config.get('ipamaxusernamelength')[0]):
+                    raise errors.ValidationError(
+                        name=self.obj.primary_key.cli_name,
+                        error=_('can be at most %(len)d characters') % dict(
+                            len = int(config.get('ipamaxusernamelength')[0])
+                        )
+                    )
         if 'mail' in entry_attrs:
-            entry_attrs['mail'] = self.obj._normalize_email(entry_attrs['mail'])
+            entry_attrs['mail'] = self.obj._normalize_and_validate_email(entry_attrs['mail'])
         if 'manager' in entry_attrs:
             entry_attrs['manager'] = self.obj._normalize_manager(entry_attrs['manager'])
         validate_nsaccountlock(entry_attrs)
+        if 'userpassword' not in entry_attrs and options.get('random'):
+            entry_attrs['userpassword'] = ipa_generate_password(user_pwdchars)
+            # save the password so it can be displayed in post_callback
+            setattr(context, 'randompassword', entry_attrs['userpassword'])
+        if 'ipasshpubkey' in entry_attrs:
+            if 'objectclass' in entry_attrs:
+                obj_classes = entry_attrs['objectclass']
+            else:
+                (_dn, _entry_attrs) = ldap.get_entry(dn, ['objectclass'])
+                obj_classes = entry_attrs['objectclass'] = _entry_attrs['objectclass']
+            if 'ipasshuser' not in obj_classes:
+                obj_classes.append('ipasshuser')
         return dn
 
     def post_callback(self, ldap, dn, entry_attrs, *keys, **options):
+        assert isinstance(dn, DN)
+        if options.get('random', False):
+            try:
+                entry_attrs['randompassword'] = unicode(getattr(context, 'randompassword'))
+            except AttributeError:
+                # if both randompassword and userpassword options were used
+                pass
         convert_nsaccountlock(entry_attrs)
         self.obj._convert_manager(entry_attrs, **options)
         self.obj.get_password_attributes(ldap, dn, entry_attrs)
+        convert_sshpubkey_post(ldap, dn, entry_attrs)
         return dn
 
 api.register(user_mod)
@@ -498,6 +654,7 @@ class user_find(LDAPSearch):
     __doc__ = _('Search for users.')
 
     member_attributes = ['memberof']
+    has_output_params = LDAPSearch.has_output_params + user_output_params
 
     takes_options = LDAPSearch.takes_options + (
         Flag('whoami',
@@ -506,7 +663,15 @@ class user_find(LDAPSearch):
         ),
     )
 
+    def execute(self, *args, **options):
+        # assure the manager attr is a dn, not just a bare uid
+        manager = options.get('manager')
+        if manager is not None:
+            options['manager'] = self.obj._normalize_manager(manager)
+        return super(user_find, self).execute(self, *args, **options)
+
     def pre_callback(self, ldap, filter, attrs_list, base_dn, scope, *keys, **options):
+        assert isinstance(base_dn, DN)
         if options.get('whoami'):
             return ("(&(objectclass=posixaccount)(krbprincipalname=%s))"%\
                         getattr(context, 'principal'), base_dn, scope)
@@ -514,11 +679,15 @@ class user_find(LDAPSearch):
         return (filter, base_dn, scope)
 
     def post_callback(self, ldap, entries, truncated, *args, **options):
+        if options.get('pkey_only', False):
+            return truncated
         for entry in entries:
             (dn, attrs) = entry
             self.obj._convert_manager(attrs, **options)
             self.obj.get_password_attributes(ldap, dn, attrs)
             convert_nsaccountlock(attrs)
+            convert_sshpubkey_post(ldap, dn, attrs)
+        return truncated
 
     msg_summary = ngettext(
         '%(count)d user matched', '%(count)d users matched', 0
@@ -530,10 +699,14 @@ api.register(user_find)
 class user_show(LDAPRetrieve):
     __doc__ = _('Display information about a user.')
 
+    has_output_params = LDAPRetrieve.has_output_params + user_output_params
+
     def post_callback(self, ldap, dn, entry_attrs, *keys, **options):
+        assert isinstance(dn, DN)
         convert_nsaccountlock(entry_attrs)
         self.obj._convert_manager(entry_attrs, **options)
         self.obj.get_password_attributes(ldap, dn, entry_attrs)
+        convert_sshpubkey_post(ldap, dn, entry_attrs)
         return dn
 
 api.register(user_show)
@@ -548,8 +721,9 @@ class user_disable(LDAPQuery):
     def execute(self, *keys, **options):
         ldap = self.obj.backend
 
-        dn = self.obj.get_dn(*keys, **options)
+        check_protected_member(keys[-1])
 
+        dn = self.obj.get_dn(*keys, **options)
         ldap.deactivate_entry(dn)
 
         return dict(
@@ -564,6 +738,7 @@ class user_enable(LDAPQuery):
     __doc__ = _('Enable a user account.')
 
     has_output = output.standard_value
+    has_output_params = LDAPQuery.has_output_params + user_output_params
     msg_summary = _('Enabled user account "%(value)s"')
 
     def execute(self, *keys, **options):
@@ -604,3 +779,117 @@ class user_unlock(LDAPQuery):
         )
 
 api.register(user_unlock)
+
+class user_status(LDAPQuery):
+    __doc__ = _("""
+    Lockout status of a user account
+
+    An account may become locked if the password is entered incorrectly too
+    many times within a specific time period as controlled by password
+    policy. A locked account is a temporary condition and may be unlocked by
+    an administrator.
+
+    This connects to each IPA master and displays the lockout status on
+    each one.
+
+    To determine whether an account is locked on a given server you need
+    to compare the number of failed logins and the time of the last failure.
+    For an account to be locked it must exceed the maxfail failures within
+    the failinterval duration as specified in the password policy associated
+    with the user.
+
+    The failed login counter is modified only when a user attempts a log in
+    so it is possible that an account may appear locked but the last failed
+    login attempt is older than the lockouttime of the password policy. This
+    means that the user may attempt a login again. """)
+
+    has_output = output.standard_list_of_entries
+    has_output_params = LDAPSearch.has_output_params + status_output_params
+
+    def execute(self, *keys, **options):
+        ldap = self.obj.backend
+        dn = self.obj.get_dn(*keys, **options)
+        attr_list = ['krbloginfailedcount', 'krblastsuccessfulauth', 'krblastfailedauth', 'nsaccountlock']
+
+        disabled = False
+        masters = []
+        # Get list of masters
+        try:
+            (masters, truncated) = ldap.find_entries(
+                None, ['*'], DN(('cn', 'masters'), ('cn', 'ipa'), ('cn', 'etc'), api.env.basedn),
+                ldap.SCOPE_ONELEVEL
+            )
+        except errors.NotFound:
+            # If this happens we have some pretty serious problems
+            self.error('No IPA masters found!')
+            pass
+
+        entries = []
+        count = 0
+        for master in masters:
+            host = master[1]['cn'][0]
+            if host == api.env.host:
+                other_ldap = self.obj.backend
+            else:
+                other_ldap = ldap2(shared_instance=False,
+                                   ldap_uri='ldap://%s' % host,
+                                   base_dn=self.api.env.basedn)
+                try:
+                    other_ldap.connect(ccache=os.environ['KRB5CCNAME'])
+                except Exception, e:
+                    self.error("user_status: Connecting to %s failed with %s" % (host, str(e)))
+                    newresult = dict()
+                    newresult['dn'] = dn
+                    newresult['server'] = _("%(host)s failed: %(error)s") % dict(host=host, error=str(e))
+                    entries.append(newresult)
+                    count += 1
+                    continue
+            try:
+                entry = other_ldap.get_entry(dn, attr_list)
+                newresult = dict()
+                for attr in ['krblastsuccessfulauth', 'krblastfailedauth']:
+                    newresult[attr] = entry[1].get(attr, [u'N/A'])
+                newresult['krbloginfailedcount'] = entry[1].get('krbloginfailedcount', u'0')
+                if not options.get('raw', False):
+                    for attr in ['krblastsuccessfulauth', 'krblastfailedauth']:
+                        try:
+                            if newresult[attr][0] == u'N/A':
+                                continue
+                            newtime = time.strptime(newresult[attr][0], '%Y%m%d%H%M%SZ')
+                            newresult[attr][0] = unicode(time.strftime('%Y-%m-%dT%H:%M:%SZ', newtime))
+                        except Exception, e:
+                            self.debug("time conversion failed with %s" % str(e))
+                            pass
+                newresult['dn'] = dn
+                newresult['server'] = host
+                if options.get('raw', False):
+                    time_format = '%Y%m%d%H%M%SZ'
+                else:
+                    time_format = '%Y-%m-%dT%H:%M:%SZ'
+                newresult['now'] = unicode(strftime(time_format, gmtime()))
+                convert_nsaccountlock(entry[1])
+                if 'nsaccountlock' in entry[1].keys():
+                    disabled = entry[1]['nsaccountlock']
+                entries.append(newresult)
+                count += 1
+            except errors.NotFound:
+                self.obj.handle_not_found(*keys)
+            except Exception, e:
+                self.error("user_status: Retrieving status for %s failed with %s" % (dn, str(e)))
+                newresult = dict()
+                newresult['dn'] = dn
+                newresult['server'] = _("%(host)s failed") % dict(host=host)
+                entries.append(newresult)
+                count += 1
+
+            if host != api.env.host:
+                other_ldap.destroy_connection()
+
+        return dict(result=entries,
+                    count=count,
+                    truncated=False,
+                    summary=unicode(_('Account disabled: %(disabled)s' %
+                        dict(disabled=disabled))),
+        )
+
+api.register(user_status)

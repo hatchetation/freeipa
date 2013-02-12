@@ -85,45 +85,58 @@ Slapi_PluginDesc ipapwd_plugin_desc = {
 };
 
 void *ipapwd_plugin_id;
+static int usetxn = 0;
 
-static int filter_keys(struct ipapwd_krbcfg *krbcfg, struct ipapwd_keyset *kset)
+static int filter_keys(struct ipapwd_krbcfg *krbcfg,
+                       struct ipapwd_keyset *kset)
 {
-	int i, j;
+    int i, j;
 
-	for (i = 0; i < kset->num_keys; i++) {
-		for (j = 0; j < krbcfg->num_supp_encsalts; j++) {
-			if (kset->keys[i].ekey->type ==
-					krbcfg->supp_encsalts[j].enc_type) {
-				break;
-			}
-		}
-		if (j == krbcfg->num_supp_encsalts) { /* not valid */
+    for (i = 0; i < kset->num_keys; i++) {
+        for (j = 0; j < krbcfg->num_supp_encsalts; j++) {
+            if (kset->keys[i].key_data_type[0] ==
+                    krbcfg->supp_encsalts[j].ks_enctype) {
+                break;
+            }
+        }
+        if (j == krbcfg->num_supp_encsalts) { /* not valid */
 
-			/* free key */
-			if (kset->keys[i].ekey) {
-				free(kset->keys[i].ekey->value.bv_val);
-				free(kset->keys[i].ekey);
-			}
-			if (kset->keys[i].salt) {
-				free(kset->keys[i].salt->value.bv_val);
-				free(kset->keys[i].salt);
-			}
-			free(kset->keys[i].s2kparams.bv_val);
+            /* free key */
+            free(kset->keys[i].key_data_contents[0]);
+            free(kset->keys[i].key_data_contents[1]);
 
-			/* move all remaining keys up by one */
-			kset->num_keys -= 1;
+            /* move all remaining keys up by one */
+            kset->num_keys -= 1;
 
-			for (j = i; j < kset->num_keys; j++) {
-				kset->keys[j] = kset->keys[j + 1];
-			}
+            for (j = i; j < kset->num_keys; j++) {
+                kset->keys[j] = kset->keys[j + 1];
+            }
 
-			/* new key has been moved to this position, make sure
-			 * we do not skip it, by neutralizing next increment */
-			i--;
-		}
-	}
+            /* new key has been moved to this position, make sure
+             * we do not skip it, by neutralizing next increment */
+            i--;
+        }
+    }
 
-	return 0;
+    return 0;
+}
+
+static int ipapwd_to_ldap_pwpolicy_error(int ipapwderr)
+{
+    switch (ipapwderr) {
+    case IPAPWD_POLICY_ACCOUNT_EXPIRED:
+        return LDAP_PWPOLICY_PWDMODNOTALLOWED;
+    case IPAPWD_POLICY_PWD_TOO_YOUNG:
+        return LDAP_PWPOLICY_PWDTOOYOUNG;
+    case IPAPWD_POLICY_PWD_TOO_SHORT:
+        return LDAP_PWPOLICY_PWDTOOSHORT;
+    case IPAPWD_POLICY_PWD_IN_HISTORY:
+        return LDAP_PWPOLICY_PWDINHISTORY;
+    case IPAPWD_POLICY_PWD_COMPLEXITY:
+        return LDAP_PWPOLICY_INVALIDPWDSYNTAX;
+    }
+    /* in case of unhandled error return access denied */
+    return LDAP_PWPOLICY_PWDMODNOTALLOWED;
 }
 
 
@@ -144,8 +157,9 @@ static int ipapwd_chpwop(Slapi_PBlock *pb, struct ipapwd_krbcfg *krbcfg)
 	Slapi_Value *objectclass=NULL;
 	char *attrlist[] = {"*", "passwordHistory", NULL };
 	struct ipapwd_data pwdata;
-	int is_krb, is_smb;
+	int is_krb, is_smb, is_ipant;
     char *principal = NULL;
+	Slapi_PBlock *chpwop_pb = NULL;
 
 	/* Get the ber value of the extended operation */
 	slapi_pblock_get(pb, SLAPI_EXT_OP_REQ_VALUE, &extop_value);
@@ -226,6 +240,22 @@ static int ipapwd_chpwop(Slapi_PBlock *pb, struct ipapwd_krbcfg *krbcfg)
 	}
 
 parse_req_done:
+
+	if (usetxn) {
+                Slapi_DN *sdn = slapi_sdn_new_dn_byref(dn);
+                Slapi_Backend *be = slapi_be_select(sdn);
+                slapi_sdn_free(&sdn);
+                if (be) {
+			chpwop_pb = slapi_pblock_new();
+			slapi_pblock_set(chpwop_pb, SLAPI_BACKEND, be);
+			rc = slapi_back_transaction_begin(chpwop_pb);
+			if (rc) {
+				LOG_FATAL("failed to start transaction\n");
+			}
+		} else {
+			LOG_FATAL("failed to get be backend from %s\n", dn);
+		}
+	}
 	/* Uncomment for debugging, otherwise we don't want to leak the
 	 * password values into the log... */
 	/* LDAPDebug( LDAP_DEBUG_ARGS, "passwd: dn (%s), oldPasswd (%s),
@@ -353,7 +383,7 @@ parse_req_done:
     }
 
 	 rc = ipapwd_entry_checks(pb, targetEntry,
-				&is_root, &is_krb, &is_smb,
+				&is_root, &is_krb, &is_smb, &is_ipant,
 				SLAPI_USERPWD_ATTR, SLAPI_ACL_WRITE);
 	 if (rc) {
 		goto free_and_return;
@@ -449,13 +479,14 @@ parse_req_done:
 	/* check the policy */
 	ret = ipapwd_CheckPolicy(&pwdata);
 	if (ret) {
-		errMesg = "Password Fails to meet minimum strength criteria";
-		if (ret & IPAPWD_POLICY_ERROR) {
-			slapi_pwpolicy_make_response_control(pb, -1, -1, ret & IPAPWD_POLICY_MASK);
-			rc = LDAP_CONSTRAINT_VIOLATION;
-		} else {
+		errMesg = ipapwd_error2string(ret);
+		if (ret == IPAPWD_POLICY_ERROR) {
 			errMesg = "Internal error";
 			rc = ret;
+		} else {
+			ret = ipapwd_to_ldap_pwpolicy_error(ret);
+			slapi_pwpolicy_make_response_control(pb, -1, -1, ret);
+			rc = LDAP_CONSTRAINT_VIOLATION;
 		}
 		goto free_and_return;
 	}
@@ -486,14 +517,28 @@ parse_req_done:
 
 	/* Free anything that we allocated above */
 free_and_return:
+	if (usetxn && chpwop_pb) {
+		if (rc) { /* fails */
+			slapi_back_transaction_abort(chpwop_pb);
+		} else {
+			slapi_back_transaction_commit(chpwop_pb);
+		}
+		slapi_pblock_destroy(chpwop_pb);
+	}
 	slapi_ch_free_string(&oldPasswd);
 	slapi_ch_free_string(&newPasswd);
 	/* Either this is the same pointer that we allocated and set above,
 	 * or whoever used it should have freed it and allocated a new
 	 * value that we need to free here */
-	slapi_pblock_get(pb, SLAPI_ORIGINAL_TARGET, &dn);
+    ret = slapi_pblock_get(pb, SLAPI_ORIGINAL_TARGET, &dn);
+    if (ret) {
+        LOG_TRACE("Failed to get SLAPI_ORIGINAL_TARGET\n");
+    }
 	slapi_ch_free_string(&dn);
-	slapi_pblock_set(pb, SLAPI_ORIGINAL_TARGET, NULL);
+    ret = slapi_pblock_set(pb, SLAPI_ORIGINAL_TARGET, NULL);
+    if (ret) {
+        LOG_TRACE("Failed to clear SLAPI_ORIGINAL_TARGET\n");
+    }
 	slapi_ch_free_string(&authmethod);
     slapi_ch_free_string(&principal);
 
@@ -742,6 +787,7 @@ static int ipapwd_setkeytab(Slapi_PBlock *pb, struct ipapwd_krbcfg *krbcfg)
 	kset = malloc(sizeof(struct ipapwd_keyset));
 	if (!kset) {
 		LOG_OOM();
+		rc = LDAP_OPERATIONS_ERROR;
 		goto free_and_return;
 	}
 
@@ -749,45 +795,35 @@ static int ipapwd_setkeytab(Slapi_PBlock *pb, struct ipapwd_krbcfg *krbcfg)
 	/* major-vno = 1 and minor-vno = 1 */
 	kset->major_vno = 1;
 	kset->minor_vno = 1;
-	kset->kvno = kvno;
-	/* we also assum mkvno is 0 */
-	kset->mkvno = 0;
+	kset->mkvno = krbcfg->mkvno;
 
 	kset->keys = NULL;
 	kset->num_keys = 0;
 
 	rtag = ber_peek_tag(ber, &tlen);
 	while (rtag == LBER_SEQUENCE) {
+		krb5_key_data *newset;
 		krb5_data plain;
 		krb5_enc_data cipher;
 		struct berval tval;
 		krb5_octet *kdata;
+                krb5_int16 t;
 		size_t klen;
 
 		i = kset->num_keys;
 
-		if (kset->keys) {
-			struct ipapwd_krbkey *newset;
-
-			newset = realloc(kset->keys, sizeof(struct ipapwd_krbkey) * (i + 1));
-			if (!newset) {
-				LOG_OOM();
-				goto free_and_return;
-			}
-			kset->keys = newset;
-		} else {
-			kset->keys = malloc(sizeof(struct ipapwd_krbkey));
-			if (!kset->keys) {
-				LOG_OOM();
-				goto free_and_return;
-			}
+		newset = realloc(kset->keys, sizeof(krb5_key_data) * (i + 1));
+		if (!newset) {
+			LOG_OOM();
+			goto free_and_return;
 		}
+		kset->keys = newset;
+
 		kset->num_keys += 1;
 
-		kset->keys[i].salt = NULL;
-		kset->keys[i].ekey = NULL;
-		kset->keys[i].s2kparams.bv_len = 0;
-		kset->keys[i].s2kparams.bv_val = NULL;
+		memset(&kset->keys[i], 0, sizeof(krb5_key_data));
+		kset->keys[i].key_data_ver = 1;
+		kset->keys[i].key_data_kvno = kvno;
 
 		/* EncryptionKey */
 		rtag = ber_scanf(ber, "{t[{t[i]t[o]}]", &ttmp, &ttmp, &tint, &ttmp, &tval);
@@ -798,13 +834,7 @@ static int ipapwd_setkeytab(Slapi_PBlock *pb, struct ipapwd_krbcfg *krbcfg)
 			goto free_and_return;
 		}
 
-		kset->keys[i].ekey = calloc(1, sizeof(struct ipapwd_krbkeydata));
-		if (!kset->keys[i].ekey) {
-			LOG_OOM();
-			goto free_and_return;
-		}
-
-		kset->keys[i].ekey->type = tint;
+		kset->keys[i].key_data_type[0] = tint;
 
 		plain.length = tval.bv_len;
 		plain.data = tval.bv_val;
@@ -822,10 +852,11 @@ static int ipapwd_setkeytab(Slapi_PBlock *pb, struct ipapwd_krbcfg *krbcfg)
 			LOG_OOM();
 			goto free_and_return;
 		}
-		encode_int16(plain.length, kdata);
+		t = htole16(plain.length);
+		memcpy(kdata, &t, 2);
 
-		kset->keys[i].ekey->value.bv_len = 2 + klen;
-		kset->keys[i].ekey->value.bv_val = (char *)kdata;
+		kset->keys[i].key_data_length[0] = 2 + klen;
+		kset->keys[i].key_data_contents[0] = (krb5_octet *)kdata;
 
 		cipher.ciphertext.length = klen;
 		cipher.ciphertext.data = (char *)kdata + 2;
@@ -837,7 +868,7 @@ static int ipapwd_setkeytab(Slapi_PBlock *pb, struct ipapwd_krbcfg *krbcfg)
 			goto free_and_return;
 		}
 
-		free(tval.bv_val);
+		ber_memfree(tval.bv_val);
 
 		rtag = ber_peek_tag(ber, &tlen);
 
@@ -852,13 +883,8 @@ static int ipapwd_setkeytab(Slapi_PBlock *pb, struct ipapwd_krbcfg *krbcfg)
 				goto free_and_return;
 			}
 
-			kset->keys[i].salt = calloc(1, sizeof(struct ipapwd_krbkeydata));
-			if (!kset->keys[i].salt) {
-				LOG_OOM();
-				goto free_and_return;
-			}
-
-			kset->keys[i].salt->type = tint;
+			kset->keys[i].key_data_ver = 2; /* we have a salt */
+			kset->keys[i].key_data_type[1] = tint;
 
 			rtag = ber_peek_tag(ber, &tlen);
 			if (rtag == (ber_tag_t)(LBER_CONSTRUCTED | LBER_CLASS_CONTEXT | 1)) {
@@ -871,7 +897,16 @@ static int ipapwd_setkeytab(Slapi_PBlock *pb, struct ipapwd_krbcfg *krbcfg)
 					goto free_and_return;
 				}
 
-				kset->keys[i].salt->value = tval;
+				kset->keys[i].key_data_length[1] = tval.bv_len;
+				kset->keys[i].key_data_contents[1] = malloc(tval.bv_len);
+				if (!kset->keys[i].key_data_contents[1]) {
+				    LOG_OOM();
+				    rc = LDAP_OPERATIONS_ERROR;
+				    goto free_and_return;
+				}
+				memcpy(kset->keys[i].key_data_contents[1],
+				       tval.bv_val, tval.bv_len);
+				ber_memfree(tval.bv_val);
 
 				rtag = ber_peek_tag(ber, &tlen);
 			}
@@ -935,9 +970,10 @@ static int ipapwd_setkeytab(Slapi_PBlock *pb, struct ipapwd_krbcfg *krbcfg)
 	slapi_mods_add_string(smods, LDAP_MOD_REPLACE, "krbPasswordExpiration", timestr);
 #endif
 
-	bval = encode_keys(kset);
-	if (!bval) {
-		LOG_FATAL("encoding asn1 KrbSalt failed\n");
+	ret = ber_encode_krb5_key_data(kset->keys, kset->num_keys,
+                                       kset->mkvno, &bval);
+	if (ret != 0) {
+		LOG_FATAL("encoding krb5_key_data failed\n");
 		slapi_mods_free(&smods);
 		goto free_and_return;
 	}
@@ -1023,7 +1059,7 @@ static int ipapwd_setkeytab(Slapi_PBlock *pb, struct ipapwd_krbcfg *krbcfg)
 	}
 
 	for (i = 0; i < kset->num_keys; i++) {
-		ret = ber_printf(ber, "{i}", (ber_int_t)kset->keys[i].ekey->type);
+		ret = ber_printf(ber, "{i}", (ber_int_t)kset->keys[i].key_data_type[0]);
 		if (ret == -1) {
 			goto free_and_return;
 		}
@@ -1260,6 +1296,14 @@ static char *ipapwd_name_list[] = {
 int ipapwd_init( Slapi_PBlock *pb )
 {
     int ret;
+    Slapi_Entry *plugin_entry = NULL;
+
+    /* get args */
+    if ((slapi_pblock_get(pb, SLAPI_PLUGIN_CONFIG_ENTRY, &plugin_entry) == 0) &&
+        plugin_entry) {
+            usetxn = slapi_entry_attr_get_bool(plugin_entry,
+                                                 "nsslapd-pluginbetxn");
+    }
 
     /* Get the arguments appended to the plugin extendedop directive. The first argument
      * (after the standard arguments for the directive) should contain the OID of the
@@ -1285,11 +1329,23 @@ int ipapwd_init( Slapi_PBlock *pb )
     if (!ret) ret = slapi_pblock_set(pb, SLAPI_PLUGIN_DESCRIPTION, (void *)&ipapwd_plugin_desc);
     if (!ret) ret = slapi_pblock_set(pb, SLAPI_PLUGIN_EXT_OP_OIDLIST, ipapwd_oid_list);
     if (!ret) ret = slapi_pblock_set(pb, SLAPI_PLUGIN_EXT_OP_NAMELIST, ipapwd_name_list);
-    if (!ret) slapi_pblock_set(pb, SLAPI_PLUGIN_EXT_OP_FN, (void *)ipapwd_extop);
+    if (!ret) ret = slapi_pblock_set(pb, SLAPI_PLUGIN_EXT_OP_FN, (void *)ipapwd_extop);
     if (ret) {
         LOG("Failed to set plug-in version, function, and OID.\n" );
         return -1;
     }
+
+    if (usetxn) {
+        slapi_register_plugin("betxnpreoperation", 1,
+                              "ipapwd_pre_init_betxn", ipapwd_pre_init_betxn,
+                              "IPA pwd pre ops betxn", NULL,
+                              ipapwd_plugin_id);
+
+        slapi_register_plugin("betxnpostoperation", 1,
+                              "ipapwd_post_init_betxn", ipapwd_post_init_betxn,
+                              "IPA pwd post ops betxn", NULL,
+                              ipapwd_plugin_id);
+    } 
 
     slapi_register_plugin("preoperation", 1,
                           "ipapwd_pre_init", ipapwd_pre_init,

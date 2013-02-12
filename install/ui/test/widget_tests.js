@@ -21,22 +21,19 @@
 
 var widget_container;
 var widget;
-var factory
+var factory;
 var spec;
 
 
 module('widget',{
        setup: function() {
            IPA.ajax_options.async = false;
-           IPA.init(
-               "data",
-               true,
-               function(data, text_status, xhr) {
-               },
-               function(xhr, text_status, error_thrown) {
+           IPA.init({
+               url: 'data',
+               on_error: function(xhr, text_status, error_thrown) {
                    ok(false, "ipa_init() failed: "+error_thrown);
                }
-           );
+           });
            widget_container = $('<div id="widget"/>').appendTo(document.body);
 
            widget = null;
@@ -58,15 +55,14 @@ function base_widget_test(value){
 
     widget = factory(spec);
 
-    var entity_name = 'user';
     var field_name = widget.name;
     ok (widget, "Created Widget");
 
     //init reads param info for an entity.  We'll use the user entity
     widget.name = field_name;
 
-    ok(widget.label,'widget with entity and name has label');
-    ok(widget.tooltip,'widget with entity and name has tooltip');
+//    ok(widget.label,'widget with entity and name has label');
+//    ok(widget.tooltip,'widget with entity and name has tooltip');
 
 
     ok(!widget.container,'widget has no container before create');
@@ -80,13 +76,13 @@ function widget_string_test() {
     var value = 'test_title';
     var mock_record = {'title': value};
 
-    widget.load(mock_record);
+    widget.update(mock_record.title);
 
     ok(widget.save() instanceof Array,'save returns array');
 
 
     mock_record = {'title':[value]};
-    widget.load(mock_record);
+    widget.update(mock_record.title);
 
     ok(widget.save() instanceof Array,'save returns array');
 
@@ -96,59 +92,47 @@ function widget_string_test() {
 
 function text_tests(widget,input){
 
+    var value_changed = false;
+    var undo_clicked = false;
+
+    widget.value_changed.attach(function() {
+        value_changed = true;
+    });
+
+    widget.undo_clicked.attach(function() {
+        undo_clicked = true;
+    });
+
     input.val('changed');
     input.keyup();
     same(widget.save(),['changed'], "Setting Value");
-    same(widget.is_dirty(),true, "Click  sets is_dirty");
+    same(value_changed, true, "Click triggers value_changed");
 
     var undo = widget.get_undo();
     undo.click();
-    same(widget.is_dirty(),false, "Undo Clears is_dirty");
-
-
-    var old_pattern =  widget.param_info.pattern;
-
-    widget.param_info.pattern ='abc';
-    input.val('not right');
-    input.keyup();
-    same(widget.valid,false, 'Field is not valid');
-    var error_field = widget.get_error_link();
-
-    same(error_field.css('display'),'block','error field is visible');
-
-
-    input.val('abc');
-    input.keyup();
-    same(widget.valid,true, 'Field is valid');
-    same(error_field.css('display'),'none','error field not visible');
-
-    widget.param_info.pattern = old_pattern;
-
+    same(undo_clicked, true, "Click on 'undo' triggers undo_clicked");
 }
 
 function multivalued_text_tests(widget) {
 
     var values = ['val1', 'val2', 'val3'];
 
-    var record = {};
-    record[widget.name] = values;
-
-    widget.load(record);
+    widget.update(values);
 
     same(widget.save(), values, "All values loaded");
-    same(widget.is_dirty(), false, "Field initially clean");
+    same(widget.test_dirty(), false, "Field initially clean");
 
     values = ['val1', 'val2', 'val3', 'val4'];
-    widget.add_row('val4');
+    widget.add_row(['val4']);
 
     same(widget.save(), values, "Value added");
-    same(widget.is_dirty(), true, "Field is dirty");
+    same(widget.test_dirty(), true, "Field is dirty");
 
     values = ['val1', 'val3', 'val4'];
-    widget.remove_row(1);
+    widget.remove_row(widget.rows[1]);
 
     same(widget.save(), values, "Value removed");
-    same(widget.is_dirty(), true, "Field is dirty");
+    same(widget.test_dirty(), true, "Field is dirty");
 }
 
 test("IPA.table_widget" ,function(){
@@ -166,16 +150,14 @@ test("IPA.table_widget" ,function(){
         name:'uid',
         label:'User ID',
         primary_key:'uid',
-        width:'20em',
-        entity_name:'user'
+        width:'20em'
     }));
     widget.add_column(IPA.column({
         entity: spec.entity,
         name:'title',
         lable:'Title',
         primary_key:'uid',
-        width:'20em',
-        entity_name:'user'
+        width:'20em'
     }));
 
     ok(!widget.container,'widget has no container before create');
@@ -202,7 +184,7 @@ test("Testing base widget.", function() {
         name:'title'
     };
 
-    factory = IPA.widget;
+    factory = IPA.input_widget;
     base_widget_test('test_value');
     widget_string_test();
 });
@@ -229,7 +211,7 @@ test("Testing text widget.", function() {
 });
 
 test("Testing multi-valued text widget.", function() {
-    factory  = IPA.multivalued_text_widget;
+    factory  = IPA.multivalued_widget;
     spec = {undo:true,name:'title'};
     base_widget_test('test_value');
     widget_string_test();
@@ -241,24 +223,31 @@ test("Testing checkbox widget.", function() {
     spec = {name:'title'};
     base_widget_test('test_value');
 
-    mock_record = { 'title': 'TRUE' };
+    //Changing mock record from 'TRUE' to true. Value normalization is field's
+    //job. Checkbox should work with booleans values.
+     var mock_record = { 'title': [true] };
 
-    widget.load(mock_record);
+    widget.update(mock_record.title);
     same(widget.save(),[true], "Checkbox is set");
 
     mock_record = {'title':null};
 
-    widget.load(mock_record);
+    widget.update(mock_record.title);
     same(widget.save(), [false], "Checkbox is not set");
 
     var input = $('input[type=checkbox]',widget_container);
 
     same(input.length,1,'One control in the container');
 
+    var value_changed = false;
+    widget.value_changed.attach(function() {
+        value_changed = true;
+    });
+
     input.click();
 
     same(widget.save(),[true], "Click  sets checkbox");
-    same(widget.is_dirty(),true, "Click  sets is_dirty");
+    same(value_changed, true, "Click triggers value_changed");
 
 
 });
@@ -279,24 +268,27 @@ test("IPA.select_widget" ,function(){
 });
 
 
-test("IPA.entity_select_widget" ,function(){
-    factory =  IPA.entity_select_widget;
+test("IPA.entity_select_widget" ,function() {
+    var user = IPA.entity({ name: 'user' });
+    factory = IPA.entity_select_widget;
     spec = {
         name: 'uid',
-        other_entity:'user',
-        field_name:'uid',
-        other_field: 'uid' };
+        other_entity: user,
+        other_field: 'uid'
+    };
 
     base_widget_test('test_value');
-    mock_record = {'uid':'kfrog'};
-    widget.load(mock_record);
-    ok( $('option',widget.list ).length > 1,"options come from AJAX");
-    same(widget.values[0],'kfrog','select set from values');
+    var mock_record = { uid: ['kfrog']};
+    widget.update(mock_record.uid);
+    ok($('option', widget.list).length > 1,"options come from AJAX");
+
+    var value = widget.save();
+    same(value, ['kfrog'],'select set from values');
 });
 
 
 test("IPA.entity_link_widget" ,function(){
-    factory  = IPA.entity_link_widget;
+    factory  = IPA.link_widget;
     spec = {
         name: 'gidnumber',
         other_entity:'group'
@@ -309,7 +301,7 @@ test("IPA.entity_link_widget" ,function(){
         }
     };
 
-    mock_record = {'uid':'kfrog','gidnumber':'123456'};
+    var mock_record = { uid: ['kfrog'], gidnumber: ['123456']};
 
     widget.entity = mock_entity;
     widget.create(widget_container);
@@ -320,9 +312,10 @@ test("IPA.entity_link_widget" ,function(){
     ok(nonlink.length > 1);
     ok(link.length > 1);
 
-    widget.load(mock_record);
+    widget.is_link = true; //setting is_link is responsibility of field
+    widget.update(mock_record.gidnumber);
 
-    link = widget_container.find('a[text=123456]');
+    link = widget_container.find('a:contains("123456")');
 
     same(link.length, 1,'link is populated');
     same(link.css('display'), 'inline','link is displayed');
@@ -340,12 +333,12 @@ test("IPA.radio_widget" ,function(){
     spec = {undo:true, name: 'title',options:options};
     base_widget_test('test_value');
     var mock_record = {'title':["director"]};
-    widget.load(mock_record);
+    widget.update(mock_record.title);
     var values = widget.save();
     same(values[0],'director','Options set correctly');
 
-    mock_record = {'title':"VP"};
-    widget.load(mock_record);
+    mock_record = { title: ["VP"]};
+    widget.update(mock_record.title);
     values = widget.save();
     same(values[0],'VP','Options set correctly');
 

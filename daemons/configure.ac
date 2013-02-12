@@ -7,6 +7,7 @@ AC_INIT([ipa-server],
 AC_CONFIG_HEADERS([config.h])
 
 AM_INIT_AUTOMAKE([foreign])
+m4_ifdef([AM_SILENT_RULES], [AM_SILENT_RULES])
 
 AM_MAINTAINER_MODE
 AC_PROG_CC
@@ -174,7 +175,7 @@ if test "$with_ldap" = "yes"; then
   if test "$with_ldap_lber" = "yes" ; then
     OPENLDAP_LIBS="${OPENLDAP_LIBS} -llber"
   fi
-  OPENLDAP_LIBS="${OPENLDAP_LIBS} -lldap"
+  OPENLDAP_LIBS="${OPENLDAP_LIBS} -lldap_r"
 else
   AC_MSG_ERROR([OpenLDAP not found])
 fi
@@ -225,6 +226,47 @@ AM_PATH_PYTHON(2.3)
 if test "x$PYTHON" = "x" ; then
   AC_MSG_ERROR([Python not found])
 fi
+
+dnl ---------------------------------------------------------------------------
+dnl Check for ndr_krb5pac and other samba libraries
+dnl ---------------------------------------------------------------------------
+
+PKG_PROG_PKG_CONFIG()
+PKG_CHECK_MODULES([TALLOC], [talloc])
+PKG_CHECK_MODULES([TEVENT], [tevent])
+PKG_CHECK_MODULES([NDRPAC], [ndr_krb5pac])
+PKG_CHECK_MODULES([NDRNBT], [ndr_nbt])
+PKG_CHECK_MODULES([NDR], [ndr])
+PKG_CHECK_MODULES([SAMBAUTIL], [samba-util])
+SAMBA40EXTRA_LIBPATH="-L`$PKG_CONFIG --variable=libdir samba-util`/samba -Wl,-rpath=`$PKG_CONFIG --variable=libdir samba-util`/samba"
+AC_SUBST(SAMBA40EXTRA_LIBPATH)
+AC_CHECK_HEADERS([samba-4.0/wbclient.h],
+                 ,
+                 [AC_MSG_ERROR([samba-4.0/wbclient.h not found])],
+                 [#include <stdbool.h>
+                  #include <stdint.h>])
+AC_CHECK_LIB([wbclient],
+             [wbcLookupSid],
+             [WBCLIENT_LIBS="$SAMBA40EXTRA_LIBPATH -lwbclient"],
+             [AC_MSG_ERROR([libwbclient does not have wbcLookupSid])],
+             [$SAMBA40EXTRA_LIBPATH])
+AC_SUBST(WBCLIENT_LIBS)
+
+dnl ---------------------------------------------------------------------------
+dnl - Check for check unit test framework http://check.sourceforge.net/
+dnl ---------------------------------------------------------------------------
+PKG_CHECK_MODULES([CHECK], [check >= 0.9.5], [have_check=1], [have_check=])
+if test x$have_check = x; then
+    AC_MSG_WARN([Without the 'CHECK' library, you will be unable to run all tests in the 'make check' suite])
+else
+    AC_CHECK_HEADERS([check.h],,AC_MSG_ERROR([Could not find CHECK headers]))
+fi
+AM_CONDITIONAL([HAVE_CHECK], [test x$have_check != x])
+
+dnl -- dirsrv is needed for the extdom unit tests --
+PKG_CHECK_MODULES([DIRSRV], [dirsrv  >= 1.3.0])
+dnl -- sss_idmap is needed by the extdom exop --
+PKG_CHECK_MODULES([SSSIDMAP], [sss_idmap])
 
 dnl ---------------------------------------------------------------------------
 dnl - Set the data install directory since we don't use pkgdatadir
@@ -288,15 +330,20 @@ AC_SUBST(LDFLAGS)
 
 AC_CONFIG_FILES([
     Makefile
-    ipa-kpasswd/Makefile
+    ipa-kdb/Makefile
+    ipa-sam/Makefile
     ipa-slapi-plugins/Makefile
+    ipa-slapi-plugins/ipa-cldap/Makefile
     ipa-slapi-plugins/ipa-enrollment/Makefile
     ipa-slapi-plugins/ipa-lockout/Makefile
     ipa-slapi-plugins/ipa-pwd-extop/Makefile
+    ipa-slapi-plugins/ipa-extdom-extop/Makefile
     ipa-slapi-plugins/ipa-winsync/Makefile
     ipa-slapi-plugins/ipa-version/Makefile
     ipa-slapi-plugins/ipa-uuid/Makefile
     ipa-slapi-plugins/ipa-modrdn/Makefile
+    ipa-slapi-plugins/ipa-sidgen/Makefile
+    ipa-slapi-plugins/ipa-range-check/Makefile
 ])
 
 AC_OUTPUT

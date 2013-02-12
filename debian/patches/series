@@ -1,13 +1,8 @@
-fix_dnsclient.py.patch
 add_debian.py.patch
-include-stdint.patch
-no-arrows.patch
 no-testcert.patch
 prefix.patch
 fix-string-format.diff
-create-client-dirs.patch
-0110-Upload-CA-cert-in-the-directory-on-install.patch
-0111-Update-plugin-to-upload-CA-certificate-to-LDAP.patch
-0112-Do-SSL-CA-verification-and-hostname-validation.patch
-check-through-all-ldap-servers.patch
-0113-Use-secure-method-to-acquire-IPA-CA-certificate.patch
+fix-nss-include.diff
+no-test-lang.diff
+correct-python-path.diff
+dont-search-platform-path.diff

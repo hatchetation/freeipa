@@ -3,21 +3,17 @@ Date:   Mon Jan 2 16:09:40 2012 +0200
 
 use the debian layout when installing python modules
 
-diff --git a/Makefile b/Makefile
-index 3cd08e2..97af4c0 100644
 --- a/Makefile
 +++ b/Makefile
-@@ -128,7 +128,7 @@ server-install: server
+@@ -140,7 +140,7 @@ server-install: server
  	if [ "$(DESTDIR)" = "" ]; then \
- 		python setup.py install; \
+ 		$(PYTHON) setup.py install; \
  	else \
--		python setup.py install --root $(DESTDIR); \
-+		python setup.py install --root $(DESTDIR) --install-layout=deb; \
+-		$(PYTHON) setup.py install --root $(DESTDIR); \
++		$(PYTHON) setup.py install --root $(DESTDIR) --install-layout=deb; \
  	fi
  
  archive:
-diff --git a/ipapython/Makefile b/ipapython/Makefile
-index a09ffd1..a4cdc2d 100644
 --- a/ipapython/Makefile
 +++ b/ipapython/Makefile
 @@ -14,7 +14,7 @@ install:
@@ -29,8 +25,6 @@ index a09ffd1..a4cdc2d 100644
  	fi
  	@for subdir in $(SUBDIRS); do \
  		(cd $$subdir && $(MAKE) $@) || exit 1; \
-diff --git a/ipapython/py_default_encoding/Makefile b/ipapython/py_default_encoding/Makefile
-index 7cd1f6c..f5754f6 100644
 --- a/ipapython/py_default_encoding/Makefile
 +++ b/ipapython/py_default_encoding/Makefile
 @@ -9,7 +9,7 @@ install:

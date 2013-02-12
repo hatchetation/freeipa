@@ -21,11 +21,13 @@
 Joining an IPA domain
 """
 
+import krbV
+
 from ipalib import api, util
 from ipalib import Command, Str
 from ipalib import errors
-import krbV
 from ipalib import _
+from ipaserver.install import installutils
 
 def get_realm():
     """
@@ -52,7 +54,7 @@ class join(Command):
             validate_host,
             cli_name='hostname',
             doc=_("The hostname to register as"),
-            create_default=lambda **kw: unicode(util.get_fqdn()),
+            default_from=lambda: unicode(installutils.get_fqdn()),
             autofill=True,
             #normalizer=lamda value: value.lower(),
         ),
@@ -60,7 +62,7 @@ class join(Command):
     takes_options= (
         Str('realm',
             doc=_("The IPA realm"),
-            create_default=lambda **kw: get_realm(),
+            default_from=lambda: get_realm(),
             autofill=True,
         ),
         Str('nshardwareplatform?',
@@ -104,7 +106,7 @@ class join(Command):
             # It exists, can we write the password attributes?
             allowed = ldap.can_write(dn, 'krblastpwdchange')
             if not allowed:
-                raise errors.ACIError(info="Insufficient 'write' privilege to the 'krbLastPwdChange' attribute of entry '%s'." % dn)
+                raise errors.ACIError(info=_("Insufficient 'write' privilege to the 'krbLastPwdChange' attribute of entry '%s'.") % dn)
 
             kw = {'fqdn': hostname, 'all': True}
             attrs_list = api.Command['host_show'](**kw)['result']

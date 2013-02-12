@@ -3,9 +3,6 @@
     "id": 6,
     "result": {
         "result": {
-            "aci": [
-                "(targetattr = \"krbMKey\")(version 3.0; acl \"No external access\"; deny (read,write,search,compare) userdn != \"ldap:///uid=kdc,cn=sysaccounts,cn=etc,dc=ipa14,dc=ayoung,dc=boston,dc=devel,dc=redhat,dc=com\";)"
-            ],
             "attributelevelrights": {
                 "aci": "rscwo",
                 "cn": "rscwo",
@@ -30,9 +27,9 @@
                 "objectclass": "rscwo"
             },
             "cn": [
-                "IPA14.AYOUNG.BOSTON.DEVEL.REDHAT.COM"
+                "EXAMPLE.COM"
             ],
-            "dn": "cn=ipa14.ayoung.boston.devel.redhat.com,cn=kerberos,dc=ipa14,dc=ayoung,dc=boston,dc=devel,dc=redhat,dc=com",
+            "dn": "cn=EXAMPLE.COM,cn=kerberos,dc=example,dc=com",
             "krbdefaultencsalttypes": [
                 "aes256-cts:special",
                 "aes128-cts:special",
@@ -49,7 +46,7 @@
                 "2"
             ],
             "krbsubtrees": [
-                "dc=ipa14,dc=ayoung,dc=boston,dc=devel,dc=redhat,dc=com"
+                "dc=example,dc=com"
             ],
             "krbsupportedencsalttypes": [
                 "aes256-cts:normal",

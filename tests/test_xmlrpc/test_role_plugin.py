@@ -25,7 +25,7 @@ Test the `ipalib/plugins/role.py` module.
 from ipalib import api, errors
 from tests.test_xmlrpc import objectclasses
 from xmlrpc_test import Declarative, fuzzy_digits, fuzzy_uuid
-from ipalib.dn import *
+from ipapython.dn import DN
 
 search = u'test-role'
 
@@ -33,6 +33,7 @@ role1 = u'test-role-1'
 role1_dn = DN(('cn',role1),api.env.container_rolegroup,
               api.env.basedn)
 renamedrole1 = u'test-role'
+invalidrole1 = u' whitespace '
 
 role2 = u'test-role-2'
 role2_dn = DN(('cn',role2),api.env.container_rolegroup,
@@ -45,9 +46,6 @@ group1_dn = DN(('cn',group1),api.env.container_group,
 privilege1 = u'r,w privilege 1'
 privilege1_dn = DN(('cn', privilege1), DN(api.env.container_privilege),
                    api.env.basedn)
-
-def escape_comma(value):
-    return value.replace(',', '\\,')
 
 class test_role(Declarative):
 
@@ -63,28 +61,28 @@ class test_role(Declarative):
         dict(
             desc='Try to retrieve non-existent %r' % role1,
             command=('role_show', [role1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: role not found' % role1),
         ),
 
 
         dict(
             desc='Try to update non-existent %r' % role1,
             command=('role_mod', [role1], dict(description=u'Foo')),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: role not found' % role1),
         ),
 
 
         dict(
             desc='Try to delete non-existent %r' % role1,
             command=('role_del', [role1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: role not found' % role1),
         ),
 
 
         dict(
             desc='Try to rename non-existent %r' % role1,
-            command=('role_del', [role1], dict(setattr=u'cn=%s' % renamedrole1)),
-            expected=errors.NotFound(reason='no such entry'),
+            command=('role_mod', [role1], dict(setattr=u'cn=%s' % renamedrole1)),
+            expected=errors.NotFound(reason=u'%s: role not found' % role1),
         ),
 
 
@@ -101,6 +99,16 @@ class test_role(Declarative):
 
 
         dict(
+            desc='Create invalid %r' % invalidrole1,
+            command=('role_add', [invalidrole1],
+                dict(description=u'role desc 1')
+            ),
+            expected=errors.ValidationError(name='name',
+                error=u'Leading and trailing spaces are not allowed'),
+        ),
+
+
+        dict(
             desc='Create %r' % role1,
             command=('role_add', [role1],
                 dict(description=u'role desc 1')
@@ -109,7 +117,7 @@ class test_role(Declarative):
                 value=role1,
                 summary=u'Added role "%s"' % role1,
                 result=dict(
-                    dn=lambda x: DN(x) == role1_dn,
+                    dn=role1_dn,
                     cn=[role1],
                     description=[u'role desc 1'],
                     objectclass=objectclasses.role,
@@ -125,7 +133,7 @@ class test_role(Declarative):
                 value=role1,
                 summary=None,
                 result=dict(
-                    dn=lambda x: DN(x) == role1_dn,
+                    dn=role1_dn,
                     cn=[role1],
                     description=[u'role desc 1'],
                 ),
@@ -143,7 +151,7 @@ class test_role(Declarative):
                 value=group1,
                 summary=u'Added group "testgroup1"',
                 result=dict(
-                    dn=lambda x: DN(x) == group1_dn,
+                    dn=group1_dn,
                     cn=[group1],
                     description=[u'group desc 1'],
                     objectclass=objectclasses.group,
@@ -162,7 +170,7 @@ class test_role(Declarative):
                 value=privilege1,
                 summary=u'Added privilege "%s"' % privilege1,
                 result=dict(
-                    dn=lambda x: DN(x) == privilege1_dn,
+                    dn=privilege1_dn,
                     cn=[privilege1],
                     description=[u'privilege desc. 1'],
                     objectclass=objectclasses.privilege,
@@ -174,7 +182,7 @@ class test_role(Declarative):
         dict(
             desc='Add privilege %r to role %r' % (privilege1, role1),
             command=('role_add_privilege', [role1],
-                dict(privilege=escape_comma(privilege1))
+                dict(privilege=privilege1)
             ),
             expected=dict(
                 completed=1,
@@ -184,10 +192,55 @@ class test_role(Declarative):
                     ),
                 ),
                 result={
-                    'dn': lambda x: DN(x) == role1_dn,
+                    'dn': role1_dn,
                     'cn': [role1],
                     'description': [u'role desc 1'],
                     'memberof_privilege': [privilege1],
+                    'objectclass': objectclasses.role,
+                }
+            ),
+        ),
+
+
+        dict(
+            desc='Add zero privileges to role %r' % role1,
+            command=('role_add_privilege', [role1], dict(privilege=None)
+            ),
+            expected=dict(
+                completed=0,
+                failed=dict(
+                    member=dict(
+                        privilege=[],
+                    ),
+                ),
+                result={
+                    'dn': role1_dn,
+                    'cn': [role1],
+                    'description': [u'role desc 1'],
+                    'memberof_privilege': [privilege1],
+                    'objectclass': objectclasses.role,
+                }
+            ),
+        ),
+
+
+        dict(
+            desc='Remove zero privileges from role %r' % role1,
+            command=('role_remove_privilege', [role1], dict(privilege=None)
+            ),
+            expected=dict(
+                completed=0,
+                failed=dict(
+                    member=dict(
+                        privilege=[],
+                    ),
+                ),
+                result={
+                    'dn': role1_dn,
+                    'cn': [role1],
+                    'description': [u'role desc 1'],
+                    'memberof_privilege': [privilege1],
+                    'objectclass': objectclasses.role,
                 }
             ),
         ),
@@ -207,7 +260,7 @@ class test_role(Declarative):
                     ),
                 ),
                 result={
-                    'dn': lambda x: DN(x) == role1_dn,
+                    'dn': role1_dn,
                     'cn': [role1],
                     'description': [u'role desc 1'],
                     'member_group': [group1],
@@ -224,7 +277,7 @@ class test_role(Declarative):
                 value=role1,
                 summary=None,
                 result={
-                    'dn': lambda x: DN(x) == role1_dn,
+                    'dn': role1_dn,
                     'cn': [role1],
                     'description': [u'role desc 1'],
                     'member_group': [group1],
@@ -243,7 +296,7 @@ class test_role(Declarative):
                 summary=u'1 role matched',
                 result=[
                     {
-                        'dn': lambda x: DN(x) == role1_dn,
+                        'dn': role1_dn,
                         'cn': [role1],
                         'description': [u'role desc 1'],
                         'member_group': [group1],
@@ -263,7 +316,7 @@ class test_role(Declarative):
                 summary=u'1 role matched',
                 result=[
                     {
-                        'dn': lambda x: DN(x) == role1_dn,
+                        'dn': role1_dn,
                         'cn': [role1],
                         'description': [u'role desc 1'],
                         'member_group': [group1],
@@ -283,7 +336,7 @@ class test_role(Declarative):
                 value=role2,
                 summary=u'Added role "%s"' % role2,
                 result=dict(
-                    dn=lambda x: DN(x) == role2_dn,
+                    dn=role2_dn,
                     cn=[role2],
                     description=[u'role desc 2'],
                     objectclass=objectclasses.role,
@@ -301,7 +354,7 @@ class test_role(Declarative):
                 summary=u'1 role matched',
                 result=[
                     {
-                        'dn': lambda x: DN(x) == role1_dn,
+                        'dn': role1_dn,
                         'cn': [role1],
                         'description': [u'role desc 1'],
                         'member_group': [group1],
@@ -321,14 +374,14 @@ class test_role(Declarative):
                 summary=u'2 roles matched',
                 result=[
                     {
-                        'dn': lambda x: DN(x) == role1_dn,
+                        'dn': role1_dn,
                         'cn': [role1],
                         'description': [u'role desc 1'],
                         'member_group': [group1],
                         'memberof_privilege': [privilege1],
                     },
                     {
-                        'dn': lambda x: DN(x) == role2_dn,
+                        'dn': role2_dn,
                         'cn': [role2],
                         'description': [u'role desc 2'],
                     },
@@ -362,7 +415,7 @@ class test_role(Declarative):
                 value=role1,
                 summary=None,
                 result={
-                    'dn': lambda x: DN(x) == role1_dn,
+                    'dn': role1_dn,
                     'cn': [role1],
                     'description': [u'New desc 1'],
                     'member_group': [group1],
@@ -386,7 +439,7 @@ class test_role(Declarative):
                     ),
                 ),
                 result={
-                    'dn': lambda x: DN(x) == role1_dn,
+                    'dn': role1_dn,
                     'cn': [role1],
                     'description': [u'New desc 1'],
                     'memberof_privilege': [privilege1],
@@ -402,7 +455,7 @@ class test_role(Declarative):
                 value=role1,
                 summary=None,
                 result={
-                    'dn': lambda x: DN(x) == role1_dn,
+                    'dn': role1_dn,
                     'cn': [role1],
                     'description': [u'New desc 1'],
                     'memberof_privilege': [privilege1],
@@ -455,7 +508,7 @@ class test_role(Declarative):
         dict(
             desc='Remove privilege %r from role %r' % (privilege1, role1),
             command=('role_remove_privilege', [role1],
-                dict(privilege=escape_comma(privilege1))
+                dict(privilege=privilege1)
             ),
             expected=dict(
                 completed=1,
@@ -465,9 +518,10 @@ class test_role(Declarative):
                     ),
                 ),
                 result={
-                    'dn': lambda x: DN(x) == role1_dn,
+                    'dn': role1_dn,
                     'cn': [role1],
                     'description': [u'New desc 1'],
+                    'objectclass': objectclasses.role,
                 }
             ),
         ),
@@ -476,7 +530,7 @@ class test_role(Declarative):
         dict(
             desc='Remove privilege %r from role %r again' % (privilege1, role1),
             command=('role_remove_privilege', [role1],
-                dict(privilege=escape_comma(privilege1))
+                dict(privilege=privilege1)
             ),
             expected=dict(
                 completed=0,
@@ -486,9 +540,10 @@ class test_role(Declarative):
                     ),
                 ),
                 result={
-                    'dn': lambda x: DN(x) == role1_dn,
+                    'dn': role1_dn,
                     'cn': [role1],
                     'description': [u'New desc 1'],
+                    'objectclass': objectclasses.role,
                 }
             ),
         ),
@@ -509,21 +564,21 @@ class test_role(Declarative):
         dict(
             desc='Try to delete non-existent %r' % role1,
             command=('role_del', [role1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: role not found' % role1),
         ),
 
 
         dict(
-            desc='Try to retrieve non-existent %r' % role1,
-            command=('role_show', [group1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            desc='Try to show non-existent %r' % role1,
+            command=('role_show', [role1], {}),
+            expected=errors.NotFound(reason=u'%s: role not found' % role1),
         ),
 
 
         dict(
             desc='Try to update non-existent %r' % role1,
             command=('role_mod', [role1], dict(description=u'Foo')),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: role not found' % role1),
         ),
 
 
@@ -536,7 +591,7 @@ class test_role(Declarative):
                 summary=u'1 role matched',
                 result=[
                     {
-                        'dn': lambda x: DN(x) == role2_dn,
+                        'dn': role2_dn,
                         'cn': [role2],
                         'description': [u'role desc 2'],
                     },

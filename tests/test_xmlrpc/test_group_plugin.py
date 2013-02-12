@@ -24,20 +24,31 @@ Test the `ipalib/plugins/group.py` module.
 from ipalib import api, errors
 from tests.test_xmlrpc import objectclasses
 from xmlrpc_test import Declarative, fuzzy_digits, fuzzy_uuid
-from ipalib.dn import *
+from ipapython.dn import DN
 
 group1 = u'testgroup1'
 group2 = u'testgroup2'
+group3 = u'testgroup3'
 renamedgroup1 = u'testgroup'
 user1 = u'tuser1'
 
 invalidgroup1=u'+tgroup1'
 
+# When adding external SID member to a group we can't test
+# it fully due to possibly missing Samba 4 python bindings
+# and/or not configured AD trusts. Thus, we'll use incorrect
+# SID value to merely test that proper exceptions are raised
+external_sid1=u'S-1-1-123456-789-1'
+
+def get_group_dn(cn):
+    return DN(('cn', cn), api.env.container_group, api.env.basedn)
 
 class test_group(Declarative):
     cleanup_commands = [
         ('group_del', [group1], {}),
         ('group_del', [group2], {}),
+        ('group_del', [group3], {}),
+        ('group_del', [renamedgroup1], {}),
         ('user_del', [user1], {}),
     ]
 
@@ -48,28 +59,28 @@ class test_group(Declarative):
         dict(
             desc='Try to retrieve non-existent %r' % group1,
             command=('group_show', [group1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: group not found' % group1),
         ),
 
 
         dict(
             desc='Try to update non-existent %r' % group1,
             command=('group_mod', [group1], dict(description=u'Foo')),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: group not found' % group1),
         ),
 
 
         dict(
             desc='Try to delete non-existent %r' % group1,
             command=('group_del', [group1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: group not found' % group1),
         ),
 
 
         dict(
             desc='Try to rename non-existent %r' % group1,
             command=('group_mod', [group1], dict(setattr=u'cn=%s' % renamedgroup1)),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: group not found' % group1),
         ),
 
 
@@ -86,9 +97,7 @@ class test_group(Declarative):
                     description=[u'Test desc 1'],
                     objectclass=objectclasses.group,
                     ipauniqueid=[fuzzy_uuid],
-                    dn=lambda x: DN(x) == \
-                        DN(('cn','testgroup1'),('cn','groups'),('cn','accounts'),
-                           api.env.basedn),
+                    dn=get_group_dn('testgroup1'),
                 ),
             ),
         ),
@@ -99,7 +108,8 @@ class test_group(Declarative):
             command=(
                 'group_add', [group1], dict(description=u'Test desc 1')
             ),
-            expected=errors.DuplicateEntry(),
+            expected=errors.DuplicateEntry(
+                message=u'group with name "%s" already exists' % group1),
         ),
 
 
@@ -112,9 +122,7 @@ class test_group(Declarative):
                 result=dict(
                     cn=[group1],
                     description=[u'Test desc 1'],
-                    dn=lambda x: DN(x) == \
-                        DN(('cn','testgroup1'),('cn','groups'),('cn','accounts'),
-                           api.env.basedn),
+                    dn=get_group_dn('testgroup1'),
                 ),
             ),
         ),
@@ -144,9 +152,7 @@ class test_group(Declarative):
                 result=dict(
                     cn=[group1],
                     description=[u'New desc 1'],
-                    dn=lambda x: DN(x) == \
-                        DN(('cn','testgroup1'),('cn','groups'),('cn','accounts'),
-                           api.env.basedn),
+                    dn=get_group_dn('testgroup1'),
                 ),
                 summary=None,
             ),
@@ -179,9 +185,7 @@ class test_group(Declarative):
                 result=dict(
                     cn=[group1],
                     description=(u'New desc 1',),
-                    dn=lambda x: DN(x) == \
-                        DN(('cn','testgroup1'),('cn','groups'),('cn','accounts'),
-                           api.env.basedn),
+                    dn=get_group_dn('testgroup1'),
                     gidnumber=[fuzzy_digits],
                 ),
                 summary=None,
@@ -197,9 +201,7 @@ class test_group(Declarative):
                 truncated=False,
                 result=[
                     dict(
-                        dn=lambda x: DN(x) == \
-                            DN(('cn',group1),('cn','groups'),('cn','accounts'),
-                               api.env.basedn),
+                        dn=get_group_dn(group1),
                         cn=[group1],
                         description=[u'New desc 1'],
                         gidnumber=[fuzzy_digits],
@@ -216,21 +218,21 @@ class test_group(Declarative):
         dict(
             desc='Try to retrieve non-existent %r' % group2,
             command=('group_show', [group2], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: group not found' % group2),
         ),
 
 
         dict(
             desc='Try to update non-existent %r' % group2,
             command=('group_mod', [group2], dict(description=u'Foo')),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: group not found' % group2),
         ),
 
 
         dict(
             desc='Try to delete non-existent %r' % group2,
             command=('group_del', [group2], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: group not found' % group2),
         ),
 
 
@@ -248,9 +250,7 @@ class test_group(Declarative):
                     gidnumber=[fuzzy_digits],
                     objectclass=objectclasses.group + [u'posixgroup'],
                     ipauniqueid=[fuzzy_uuid],
-                    dn=lambda x: DN(x) == \
-                        DN(('cn','testgroup2'),('cn','groups'),('cn','accounts'),
-                           api.env.basedn),
+                    dn=get_group_dn('testgroup2'),
                 ),
             ),
         ),
@@ -261,7 +261,8 @@ class test_group(Declarative):
             command=(
                 'group_add', [group2], dict(description=u'Test desc 2')
             ),
-            expected=errors.DuplicateEntry(),
+            expected=errors.DuplicateEntry(
+                message=u'group with name "%s" already exists' % group2),
         ),
 
 
@@ -275,9 +276,7 @@ class test_group(Declarative):
                     cn=[group2],
                     description=[u'Test desc 2'],
                     gidnumber=[fuzzy_digits],
-                    dn=lambda x: DN(x) == \
-                        DN(('cn','testgroup2'),('cn','groups'),('cn','accounts'),
-                           api.env.basedn),
+                    dn=get_group_dn('testgroup2'),
                 ),
             ),
         ),
@@ -309,9 +308,7 @@ class test_group(Declarative):
                     cn=[group2],
                     description=[u'New desc 2'],
                     gidnumber=[fuzzy_digits],
-                    dn=lambda x: DN(x) == \
-                        DN(('cn','testgroup2'),('cn','groups'),('cn','accounts'),
-                           api.env.basedn),
+                    dn=get_group_dn('testgroup2'),
                 ),
                 summary=None,
             ),
@@ -326,9 +323,7 @@ class test_group(Declarative):
                 truncated=False,
                 result=[
                     dict(
-                        dn=lambda x: DN(x) == \
-                            DN(('cn',group2),('cn','groups'),('cn','accounts'),
-                               api.env.basedn),
+                        dn=get_group_dn('testgroup2'),
                         cn=[group2],
                         description=[u'New desc 2'],
                         gidnumber=[fuzzy_digits],
@@ -343,55 +338,107 @@ class test_group(Declarative):
             desc='Search for all groups',
             command=('group_find', [], {}),
             expected=dict(
-                summary=u'5 groups matched',
-                count=5,
+                summary=u'6 groups matched',
+                count=6,
                 truncated=False,
                 result=[
                     {
-                        'dn': lambda x: DN(x) == \
-                            DN(('cn','admins'),('cn','groups'),('cn','accounts'),
-                               api.env.basedn),
+                        'dn': get_group_dn('admins'),
                         'member_user': [u'admin'],
                         'gidnumber': [fuzzy_digits],
                         'cn': [u'admins'],
                         'description': [u'Account administrators group'],
                     },
                     {
-                        'dn': lambda x: DN(x) == \
-                            DN(('cn','editors'),('cn','groups'),('cn','accounts'),
-                               api.env.basedn),
+                        'dn': get_group_dn('editors'),
                         'gidnumber': [fuzzy_digits],
                         'cn': [u'editors'],
                         'description': [u'Limited admins who can edit other users'],
                     },
                     {
-                        'dn': lambda x: DN(x) == \
-                            DN(('cn','ipausers'),('cn','groups'),('cn','accounts'),
-                               api.env.basedn),
-                        'gidnumber': [fuzzy_digits],
+                        'dn': get_group_dn('ipausers'),
                         'cn': [u'ipausers'],
                         'description': [u'Default group for all users'],
                     },
                     dict(
-                        dn=lambda x: DN(x) == \
-                            DN(('cn',group1),('cn','groups'),('cn','accounts'),
-                               api.env.basedn),
+                        dn=get_group_dn(group1),
                         cn=[group1],
                         description=[u'New desc 1'],
                         gidnumber=[fuzzy_digits],
                     ),
                     dict(
-                        dn=lambda x: DN(x) == \
-                            DN(('cn',group2),('cn','groups'),('cn','accounts'),
-                               api.env.basedn),
+                        dn=get_group_dn(group2),
                         cn=[group2],
                         description=[u'New desc 2'],
                         gidnumber=[fuzzy_digits],
                     ),
+                    {
+                        'dn': get_group_dn('trust admins'),
+                        'member_user': [u'admin'],
+                        'cn': [u'trust admins'],
+                        'description': [u'Trusts administrators group'],
+                    },
                 ],
             ),
         ),
 
+        ###############
+        # test external SID members for group3:
+        dict(
+            desc='Create external %r' % group3,
+            command=(
+                'group_add', [group3], dict(description=u'Test desc 3',external=True)
+            ),
+            expected=dict(
+                value=group3,
+                summary=u'Added group "testgroup3"',
+                result=dict(
+                    cn=[group3],
+                    description=[u'Test desc 3'],
+                    objectclass=objectclasses.externalgroup,
+                    ipauniqueid=[fuzzy_uuid],
+                    dn=get_group_dn(group3),
+                ),
+            ),
+        ),
+
+
+        dict(
+            desc='Convert posix group %r to support external membership' % (group2),
+            command=(
+                'group_mod', [group2], dict(external=True)
+            ),
+            expected=errors.PosixGroupViolation(),
+        ),
+
+
+        dict(
+            desc='Convert external members group %r to posix' % (group3),
+            command=(
+                'group_mod', [group3], dict(posix=True)
+            ),
+            expected=errors.ExternalGroupViolation(),
+        ),
+
+
+        dict(
+            desc='Add external member %r to %r' % (external_sid1, group3),
+            command=(
+                'group_add_member', [group3], dict(ipaexternalmember=external_sid1)
+            ),
+            expected=lambda x, output: type(x) == errors.ValidationError or type(x) == errors.NotFound,
+        ),
+
+
+        dict(
+            desc='Remove group %r with external membership' % (group3),
+            command=('group_del', [group3], {}),
+            expected=dict(
+                result=dict(failed=u''),
+                value=group3,
+                summary=u'Deleted group "testgroup3"',
+            ),
+        ),
 
 
         ###############
@@ -410,9 +457,7 @@ class test_group(Declarative):
                     ),
                 ),
                 result={
-                        'dn': lambda x: DN(x) == \
-                            DN(('cn',group1),('cn','groups'),('cn','accounts'),
-                               api.env.basedn),
+                        'dn': get_group_dn(group1),
                         'member_group': (group2,),
                         'gidnumber': [fuzzy_digits],
                         'cn': [group1],
@@ -436,9 +481,7 @@ class test_group(Declarative):
                     ),
                 ),
                 result={
-                        'dn': lambda x: DN(x) == \
-                            DN(('cn',group1),('cn','groups'),('cn','accounts'),
-                               api.env.basedn),
+                        'dn': get_group_dn(group1),
                         'member_group': (group2,),
                         'gidnumber': [fuzzy_digits],
                         'cn': [group1],
@@ -461,9 +504,7 @@ class test_group(Declarative):
                     ),
                 ),
                 result={
-                    'dn': lambda x: DN(x) == \
-                        DN(('cn',group1),('cn','groups'),('cn','accounts'),
-                           api.env.basedn),
+                    'dn': get_group_dn(group1),
                     'cn': [group1],
                     'gidnumber': [fuzzy_digits],
                     'description': [u'New desc 1'],
@@ -486,9 +527,7 @@ class test_group(Declarative):
                     ),
                 ),
                 result={
-                    'dn': lambda x: DN(x) == \
-                        DN(('cn',group1),('cn','groups'),('cn','accounts'),
-                           api.env.basedn),
+                    'dn': get_group_dn(group1),
                     'cn': [group1],
                     'gidnumber': [fuzzy_digits],
                     'description': [u'New desc 1'],
@@ -544,21 +583,21 @@ class test_group(Declarative):
         dict(
             desc='Try to delete non-existent %r' % group1,
             command=('group_del', [group1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: group not found' % group1),
         ),
 
 
         dict(
             desc='Try to retrieve non-existent %r' % group1,
             command=('group_show', [group1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: group not found' % group1),
         ),
 
 
         dict(
             desc='Try to update non-existent %r' % group1,
             command=('group_mod', [group1], dict(description=u'Foo')),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: group not found' % group1),
         ),
 
 
@@ -579,27 +618,53 @@ class test_group(Declarative):
         dict(
             desc='Try to delete non-existent %r' % group2,
             command=('group_del', [group2], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: group not found' % group2),
         ),
 
 
         dict(
             desc='Try to retrieve non-existent %r' % group2,
             command=('group_show', [group2], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: group not found' % group2),
         ),
 
 
         dict(
             desc='Try to update non-existent %r' % group2,
             command=('group_mod', [group2], dict(description=u'Foo')),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: group not found' % group2),
         ),
 
         dict(
             desc='Test an invalid group name %r' % invalidgroup1,
             command=('group_add', [invalidgroup1], dict(description=u'Test')),
-            expected=errors.ValidationError(name='cn', error='may only include letters, numbers, _, -, . and $'),
+            expected=errors.ValidationError(name='group_name',
+                error=u'may only include letters, numbers, _, -, . and $'),
+        ),
+
+        # The assumption on these next 4 tests is that if we don't get a
+        # validation error then the request was processed normally.
+        dict(
+            desc='Test that validation is disabled on mods',
+            command=('group_mod', [invalidgroup1], {}),
+            expected=errors.NotFound(
+                reason=u'%s: group not found' % invalidgroup1),
+        ),
+
+
+        dict(
+            desc='Test that validation is disabled on deletes',
+            command=('group_del', [invalidgroup1], {}),
+            expected=errors.NotFound(
+                reason=u'%s: group not found' % invalidgroup1),
+        ),
+
+
+        dict(
+            desc='Test that validation is disabled on show',
+            command=('group_show', [invalidgroup1], {}),
+            expected=errors.NotFound(
+                reason=u'%s: group not found' % invalidgroup1),
         ),
 
 
@@ -623,20 +688,17 @@ class test_group(Declarative):
                     uid=[user1],
                     uidnumber=[fuzzy_digits],
                     gidnumber=[fuzzy_digits],
+                    mail=[u'%s@%s' % (user1, api.env.domain)],
                     displayname=[u'Test User1'],
                     cn=[u'Test User1'],
                     initials=[u'TU'],
                     ipauniqueid=[fuzzy_uuid],
-                    krbpwdpolicyreference=lambda x: [DN(i) for i in x] == \
-                        [DN(('cn','global_policy'),('cn',api.env.realm),
-                            ('cn','kerberos'),api.env.basedn)],
-                    mepmanagedentry=lambda x: [DN(i) for i in x] == \
-                        [DN(('cn',user1),('cn','groups'),('cn','accounts'),
-                            api.env.basedn)],
+                    krbpwdpolicyreference=[DN(('cn','global_policy'),('cn',api.env.realm),
+                                              ('cn','kerberos'),api.env.basedn)],
+                    mepmanagedentry=[get_group_dn(user1)],
                     memberof_group=[u'ipausers'],
-                    dn=lambda x: DN(x) == \
-                        DN(('uid',user1),('cn','users'),('cn','accounts'),
-                           api.env.basedn),
+                    dn=DN(('uid',user1),('cn','users'),('cn','accounts'),
+                          api.env.basedn),
                     has_keytab=False,
                     has_password=False,
                 ),
@@ -654,9 +716,7 @@ class test_group(Declarative):
                     cn=[user1],
                     description=[u'User private group for %s' % user1],
                     gidnumber=[fuzzy_digits],
-                    dn=lambda x: DN(x) == \
-                        DN(('cn',user1),('cn','groups'),('cn','accounts'),
-                           api.env.basedn),
+                    dn=get_group_dn(user1),
                 ),
             ),
         ),
@@ -670,9 +730,7 @@ class test_group(Declarative):
                 truncated=False,
                 result=[
                     dict(
-                        dn=lambda x: DN(x) == \
-                            DN(('cn',user1),('cn','groups'),('cn','accounts'),
-                               api.env.basedn),
+                        dn=get_group_dn(user1),
                         cn=[user1],
                         description=[u'User private group for %s' % user1],
                         gidnumber=[fuzzy_digits],
@@ -711,11 +769,10 @@ class test_group(Declarative):
             )
         ),
 
-
         dict(
             desc='Verify that %r is really gone' % user1,
             command=('group_show', [user1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: group not found' % user1),
         ),
 
         dict(
@@ -731,7 +788,7 @@ class test_group(Declarative):
         dict(
             desc='Create %r without User Private Group' % user1,
             command=(
-                'user_add', [user1], dict(givenname=u'Test', sn=u'User1', noprivate=True)
+                'user_add', [user1], dict(givenname=u'Test', sn=u'User1', noprivate=True, gidnumber=1000)
             ),
             expected=dict(
                 value=user1,
@@ -747,14 +804,17 @@ class test_group(Declarative):
                     sn=[u'User1'],
                     uid=[user1],
                     uidnumber=[fuzzy_digits],
-                    gidnumber=[fuzzy_digits],
+                    gidnumber=[u'1000'],
+                    mail=[u'%s@%s' % (user1, api.env.domain)],
                     displayname=[u'Test User1'],
                     cn=[u'Test User1'],
                     initials=[u'TU'],
                     ipauniqueid=[fuzzy_uuid],
-                    dn=lambda x: DN(x) == \
-                        DN(('uid','tuser1'),('cn','users'),('cn','accounts'),
-                           api.env.basedn),
+                    dn=DN(('uid','tuser1'),('cn','users'),('cn','accounts'),
+                          api.env.basedn),
+                    krbpwdpolicyreference=[DN(('cn','global_policy'),('cn',api.env.realm),
+                                              ('cn','kerberos'),api.env.basedn)],
+                    memberof_group=[u'ipausers'],
                     has_keytab=False,
                     has_password=False,
                 ),
@@ -764,7 +824,96 @@ class test_group(Declarative):
         dict(
             desc='Verify the managed group %r was not created' % user1,
             command=('group_show', [user1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(reason=u'%s: group not found' % user1),
+        ),
+
+        dict(
+            desc='Try to remove the admin user from the admins group',
+            command=('group_remove_member', [u'admins'], dict(user=[u'admin'])),
+            expected=errors.LastMemberError(key=u'admin', label=u'group',
+                container='admins'),
+        ),
+
+        dict(
+            desc='Add %r to the admins group' % user1,
+            command=('group_add_member', [u'admins'], dict(user=user1)),
+            expected=dict(
+                completed=1,
+                failed=dict(
+                    member=dict(
+                        group=tuple(),
+                        user=tuple(),
+                    ),
+                ),
+                result={
+                        'dn': get_group_dn('admins'),
+                        'member_user': [u'admin', user1],
+                        'gidnumber': [fuzzy_digits],
+                        'cn': [u'admins'],
+                        'description': [u'Account administrators group'],
+                },
+            ),
+        ),
+
+        dict(
+            desc='Try to remove admin and %r from the admins group' % user1,
+            command=('group_remove_member', [u'admins'],
+                dict(user=[u'admin', user1])),
+            expected=errors.LastMemberError(key=u'admin', label=u'group',
+                container='admins'),
+        ),
+
+        dict(
+            desc='Try to delete the admins group',
+            command=('group_del', [u'admins'], {}),
+            expected=errors.ProtectedEntryError(label=u'group',
+                key='admins', reason='privileged group'),
+        ),
+
+
+        dict(
+            desc='Try to rename the admins group',
+            command=('group_mod', [u'admins'], dict(rename=u'loosers')),
+            expected=errors.ProtectedEntryError(label=u'group',
+                key='admins', reason='Cannot be renamed'),
+        ),
+
+        dict(
+            desc='Try to modify the admins group to support external membership',
+            command=('group_mod', [u'admins'], dict(external=True)),
+            expected=errors.ProtectedEntryError(label=u'group',
+                key='admins', reason='Cannot support external non-IPA members'),
+        ),
+
+        dict(
+            desc='Try to delete the trust admins group',
+            command=('group_del', [u'trust admins'], {}),
+            expected=errors.ProtectedEntryError(label=u'group',
+                key='trust admins', reason='privileged group'),
+        ),
+
+        dict(
+            desc='Try to rename the trust admins group',
+            command=('group_mod', [u'trust admins'], dict(rename=u'loosers')),
+            expected=errors.ProtectedEntryError(label=u'group',
+                key='trust admins', reason='Cannot be renamed'),
+        ),
+
+        dict(
+            desc='Try to modify the trust admins group to support external membership',
+            command=('group_mod', [u'trust admins'], dict(external=True)),
+            expected=errors.ProtectedEntryError(label=u'group',
+                key='trust admins', reason='Cannot support external non-IPA members'),
+        ),
+
+        dict(
+            desc='Delete %r' % user1,
+            command=('user_del', [user1], {}),
+            expected=dict(
+                result=dict(failed=u''),
+                summary=u'Deleted user "%s"' % user1,
+                value=user1,
+            ),
         ),
 
     ]

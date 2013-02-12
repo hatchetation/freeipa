@@ -53,11 +53,15 @@
 #include <ssl.h>
 #include <dirsrv/slapi-plugin.h>
 #include <krb5.h>
+#include <kdb.h>
 #include <lber.h>
 #include <time.h>
 #include <iconv.h>
 #include <openssl/des.h>
 #include <openssl/md4.h>
+
+#include "ipa_krb5.h"
+#include "ipa_pwd.h"
 
 #define IPAPWD_PLUGIN_NAME   "ipa-pwd-extop"
 #define IPAPWD_FEATURE_DESC  "IPA Password Manager"
@@ -77,39 +81,31 @@ struct ipapwd_data {
     char *dn;
     char *password;
     time_t timeNow;
-    time_t lastPwChange;
     time_t expireTime;
     int changetype;
-    int pwHistoryLen;
+    struct ipapwd_policy policy;
 };
 
 struct ipapwd_operation {
     struct ipapwd_data pwdata;
     int pwd_op;
     int is_krb;
+    int skip_keys;
+    int skip_history;
 };
 
 #define GENERALIZED_TIME_LENGTH 15
 
-#define IPAPWD_POLICY_MASK 0x0FF
-#define IPAPWD_POLICY_ERROR 0x100
-#define IPAPWD_POLICY_OK 0
-
-
 /* from ipapwd_common.c */
-struct ipapwd_encsalt {
-    krb5_int32 enc_type;
-    krb5_int32 salt_type;
-};
-
 struct ipapwd_krbcfg {
     krb5_context krbctx;
     char *realm;
+    int mkvno;
     krb5_keyblock *kmkey;
     int num_supp_encsalts;
-    struct ipapwd_encsalt *supp_encsalts;
+    krb5_key_salt_tuple *supp_encsalts;
     int num_pref_encsalts;
-    struct ipapwd_encsalt *pref_encsalts;
+    krb5_key_salt_tuple *pref_encsalts;
     char **passsync_mgrs;
     int num_passsync_mgrs;
     bool allow_lm_hash;
@@ -117,7 +113,7 @@ struct ipapwd_krbcfg {
 };
 
 int ipapwd_entry_checks(Slapi_PBlock *pb, struct slapi_entry *e,
-                        int *is_root, int *is_krb, int *is_smb,
+                        int *is_root, int *is_krb, int *is_smb, int *is_ipant,
                         char *attr, int access);
 int ipapwd_gen_checks(Slapi_PBlock *pb, char **errMesg,
                       struct ipapwd_krbcfg **config, int check_flags);
@@ -136,35 +132,26 @@ void ipapwd_free_slapi_value_array(Slapi_Value ***svals);
 void free_ipapwd_krbcfg(struct ipapwd_krbcfg **cfg);
 
 /* from ipapwd_encoding.c */
-struct ipapwd_krbkeydata {
-    int32_t type;
-    struct berval value;
-};
-struct ipapwd_krbkey {
-    struct ipapwd_krbkeydata *salt;
-    struct ipapwd_krbkeydata *ekey;
-    struct berval s2kparams;
-};
 struct ipapwd_keyset {
     uint16_t major_vno;
     uint16_t minor_vno;
-    uint32_t kvno;
     uint32_t mkvno;
-    struct ipapwd_krbkey *keys;
+    krb5_key_data *keys;
     int num_keys;
 };
 
-void encode_int16(unsigned int val, unsigned char *p);
-struct berval *encode_keys(struct ipapwd_keyset *kset);
 void ipapwd_keyset_free(struct ipapwd_keyset **pkset);
 
 int ipapwd_gen_hashes(struct ipapwd_krbcfg *krbcfg,
                       struct ipapwd_data *data, char *userpw,
-                      int is_krb, int is_smb, Slapi_Value ***svals,
-                      char **nthash, char **lmhash, char **errMesg);
+                      int is_krb, int is_smb, int is_ipant,
+                      Slapi_Value ***svals, char **nthash, char **lmhash,
+                      Slapi_Value ***ntvals, char **errMesg);
 
 /* from ipapwd_prepost.c */
 int ipapwd_ext_init(void);
 int ipapwd_pre_init(Slapi_PBlock *pb);
 int ipapwd_post_init(Slapi_PBlock *pb);
+int ipapwd_pre_init_betxn(Slapi_PBlock *pb);
+int ipapwd_post_init_betxn(Slapi_PBlock *pb);
 

@@ -23,18 +23,23 @@ Test the `ipalib.plugins.hostgroup` module.
 """
 
 from ipalib import api, errors
-from ipalib.dn import *
 from tests.test_xmlrpc.xmlrpc_test import Declarative, fuzzy_uuid
 from tests.test_xmlrpc import objectclasses
-from ipalib.dn import *
+from ipapython.dn import DN
 
 hostgroup1 = u'testhostgroup1'
 dn1 = DN(('cn',hostgroup1),('cn','hostgroups'),('cn','accounts'),
          api.env.basedn)
 
+hostgroup_single = u'a'
+dn_single = DN(('cn',hostgroup_single),('cn','hostgroups'),('cn','accounts'),
+         api.env.basedn)
+
 fqdn1 = u'testhost1.%s' % api.env.domain
 host_dn1 = DN(('fqdn',fqdn1),('cn','computers'),('cn','accounts'),
               api.env.basedn)
+
+invalidhostgroup1 = u'@invalid'
 
 
 class test_hostgroup(Declarative):
@@ -49,7 +54,8 @@ class test_hostgroup(Declarative):
         dict(
             desc='Try to retrieve non-existent %r' % hostgroup1,
             command=('hostgroup_show', [hostgroup1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(
+                reason=u'%s: host group not found' % hostgroup1),
         ),
 
 
@@ -58,14 +64,24 @@ class test_hostgroup(Declarative):
             command=('hostgroup_mod', [hostgroup1],
                 dict(description=u'Updated hostgroup 1')
             ),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(
+                reason=u'%s: host group not found' % hostgroup1),
         ),
 
 
         dict(
             desc='Try to delete non-existent %r' % hostgroup1,
             command=('hostgroup_del', [hostgroup1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(
+                reason=u'%s: host group not found' % hostgroup1),
+        ),
+
+
+        dict(
+            desc='Test an invalid hostgroup name %r' % invalidhostgroup1,
+            command=('hostgroup_add', [invalidhostgroup1], dict(description=u'Test')),
+            expected=errors.ValidationError(name='hostgroup_name',
+                error=u'may only include letters, numbers, _, -, and .'),
         ),
 
 
@@ -78,14 +94,13 @@ class test_hostgroup(Declarative):
                 value=hostgroup1,
                 summary=u'Added hostgroup "testhostgroup1"',
                 result=dict(
-                    dn=lambda x: DN(x) == dn1,
+                    dn=dn1,
                     cn=[hostgroup1],
                     objectclass=objectclasses.hostgroup,
                     description=[u'Test hostgroup 1'],
                     ipauniqueid=[fuzzy_uuid],
-                    mepmanagedentry=lambda x: [DN(i) for i in x] == \
-                        [DN(('cn',hostgroup1),('cn','ng'),('cn','alt'),
-                            api.env.basedn)],
+                    mepmanagedentry=[DN(('cn',hostgroup1),('cn','ng'),('cn','alt'),
+                                        api.env.basedn)],
                 ),
             ),
         ),
@@ -96,7 +111,8 @@ class test_hostgroup(Declarative):
             command=('hostgroup_add', [hostgroup1],
                 dict(description=u'Test hostgroup 1')
             ),
-            expected=errors.DuplicateEntry(),
+            expected=errors.DuplicateEntry(message=
+                u'host group with name "%s" already exists' % hostgroup1),
         ),
 
 
@@ -113,7 +129,7 @@ class test_hostgroup(Declarative):
                 value=fqdn1,
                 summary=u'Added host "%s"' % fqdn1,
                 result=dict(
-                    dn=lambda x: DN(x) == host_dn1,
+                    dn=host_dn1,
                     fqdn=[fqdn1],
                     description=[u'Test host 1'],
                     l=[u'Undisclosed location 1'],
@@ -142,7 +158,7 @@ class test_hostgroup(Declarative):
                     ),
                 ),
                 result={
-                    'dn': lambda x: DN(x) == dn1,
+                    'dn': dn1,
                     'cn': [hostgroup1],
                     'description': [u'Test hostgroup 1'],
                     'member_host': [fqdn1],
@@ -158,7 +174,7 @@ class test_hostgroup(Declarative):
                 value=hostgroup1,
                 summary=None,
                 result={
-                    'dn': lambda x: DN(x) == dn1,
+                    'dn': dn1,
                     'member_host': [u'testhost1.%s' % api.env.domain],
                     'cn': [hostgroup1],
                     'description': [u'Test hostgroup 1'],
@@ -176,7 +192,7 @@ class test_hostgroup(Declarative):
                 summary=u'1 hostgroup matched',
                 result=[
                     {
-                        'dn': lambda x: DN(x) == dn1,
+                        'dn': dn1,
                         'member_host': [u'testhost1.%s' % api.env.domain],
                         'cn': [hostgroup1],
                         'description': [u'Test hostgroup 1'],
@@ -210,7 +226,7 @@ class test_hostgroup(Declarative):
                 value=hostgroup1,
                 summary=None,
                 result={
-                    'dn': lambda x: DN(x) == dn1,
+                    'dn': dn1,
                     'member_host': [u'testhost1.%s' % api.env.domain],
                     'cn': [hostgroup1],
                     'description': [u'Updated hostgroup 1'],
@@ -233,7 +249,7 @@ class test_hostgroup(Declarative):
                 ),
                 completed=1,
                 result={
-                    'dn': lambda x: DN(x) == dn1,
+                    'dn': dn1,
                     'cn': [hostgroup1],
                     'description': [u'Updated hostgroup 1'],
                 },
@@ -247,6 +263,38 @@ class test_hostgroup(Declarative):
             expected=dict(
                 value=hostgroup1,
                 summary=u'Deleted hostgroup "testhostgroup1"',
+                result=dict(failed=u''),
+            ),
+        ),
+
+
+        dict(
+            desc='Create  hostgroup with name containing only one letter: %r' % hostgroup_single,
+            command=('hostgroup_add', [hostgroup_single],
+                dict(description=u'Test hostgroup with single letter in name')
+            ),
+            expected=dict(
+                value=hostgroup_single,
+                summary=u'Added hostgroup "a"',
+                result=dict(
+                    dn=dn_single,
+                    cn=[hostgroup_single],
+                    objectclass=objectclasses.hostgroup,
+                    description=[u'Test hostgroup with single letter in name'],
+                    ipauniqueid=[fuzzy_uuid],
+                    mepmanagedentry=[DN(('cn',hostgroup_single),('cn','ng'),('cn','alt'),
+                                        api.env.basedn)],
+                ),
+            ),
+        ),
+
+
+        dict(
+            desc='Delete %r' % hostgroup_single,
+            command=('hostgroup_del', [hostgroup_single], {}),
+            expected=dict(
+                value=hostgroup_single,
+                summary=u'Deleted hostgroup "a"',
                 result=dict(failed=u''),
             ),
         ),

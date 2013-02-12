@@ -32,7 +32,6 @@ from ipalib import util
 from ipalib.plugins.virtual import *
 from ipalib.plugins.service import split_principal
 import base64
-import logging
 import traceback
 from ipalib.text import _
 from ipalib.request import context
@@ -233,37 +232,32 @@ class cert_request(VirtualCommand):
     )
 
     has_output_params = (
-        Str('certificate?',
+        Str('certificate',
             label=_('Certificate'),
-            flags=['no_create', 'no_update', 'no_search'],
         ),
-        Str('subject?',
+        Str('subject',
             label=_('Subject'),
-            flags=['no_create', 'no_update', 'no_search'],
         ),
-        Str('issuer?',
+        Str('issuer',
             label=_('Issuer'),
-            flags=['no_create', 'no_update', 'no_search'],
         ),
-        Str('valid_not_before?',
+        Str('valid_not_before',
             label=_('Not Before'),
-            flags=['no_create', 'no_update', 'no_search'],
         ),
-        Str('valid_not_after?',
+        Str('valid_not_after',
             label=_('Not After'),
-            flags=['no_create', 'no_update', 'no_search'],
         ),
-        Str('md5_fingerprint?',
+        Str('md5_fingerprint',
             label=_('Fingerprint (MD5)'),
-            flags=['no_create', 'no_update', 'no_search'],
         ),
-        Str('sha1_fingerprint?',
+        Str('sha1_fingerprint',
             label=_('Fingerprint (SHA1)'),
-            flags=['no_create', 'no_update', 'no_search'],
         ),
-        Str('serial_number?',
+        Str('serial_number',
             label=_('Serial number'),
-            flags=['no_create', 'no_update', 'no_search'],
+        ),
+        Str('serial_number_hex',
+            label=_('Serial number (hex)'),
         ),
     )
 
@@ -302,9 +296,16 @@ class cert_request(VirtualCommand):
 
         # Ensure that the hostname in the CSR matches the principal
         subject_host = get_csr_hostname(csr)
+        if not subject_host:
+            raise errors.ValidationError(name='csr',
+                error=_("No hostname was found in subject of request."))
+
         (servicename, hostname, realm) = split_principal(principal)
         if subject_host.lower() != hostname.lower():
-            raise errors.ACIError(info="hostname in subject of request '%s' does not match principal hostname '%s'" % (subject_host, hostname))
+            raise errors.ACIError(
+                info=_("hostname in subject of request '%(subject_host)s' "
+                    "does not match principal hostname '%(hostname)s'") % dict(
+                        subject_host=subject_host, hostname=hostname))
 
         dn = None
         service = None
@@ -320,22 +321,26 @@ class cert_request(VirtualCommand):
                 dn = service['dn']
         except errors.NotFound, e:
             if not add:
-                raise errors.NotFound(reason="The service principal for this request doesn't exist.")
+                raise errors.NotFound(reason=_("The service principal for "
+                    "this request doesn't exist."))
             try:
                 service = api.Command['service_add'](principal, **{'force': True})['result']
                 dn = service['dn']
             except errors.ACIError:
-                raise errors.ACIError(info='You need to be a member of the serviceadmin role to add services')
+                raise errors.ACIError(info=_('You need to be a member of '
+                    'the serviceadmin role to add services'))
 
         # We got this far so the service entry exists, can we write it?
         if not ldap.can_write(dn, "usercertificate"):
-            raise errors.ACIError(info="Insufficient 'write' privilege to the 'userCertificate' attribute of entry '%s'." % dn)
+            raise errors.ACIError(info=_("Insufficient 'write' privilege "
+                "to the 'userCertificate' attribute of entry '%s'.") % dn)
 
         # Validate the subject alt name, if any
         request = pkcs10.load_certificate_request(csr)
         subjectaltname = pkcs10.get_subjectaltname(request)
         if subjectaltname is not None:
             for name in subjectaltname:
+                name = unicode(name)
                 try:
                     hostentry = api.Command['host_show'](name, all=True, raw=True)['result']
                     hostdn = hostentry['dn']
@@ -343,11 +348,14 @@ class cert_request(VirtualCommand):
                     # We don't want to issue any certificates referencing
                     # machines we don't know about. Nothing is stored in this
                     # host record related to this certificate.
-                    raise errors.NotFound(reason='no host record for subject alt name %s in certificate request' % name)
+                    raise errors.NotFound(reason=_('no host record for '
+                        'subject alt name %s in certificate request') % name)
                 authprincipal = getattr(context, 'principal')
                 if authprincipal.startswith("host/"):
                     if not hostdn in service.get('managedby', []):
-                        raise errors.ACIError(info="Insufficient privilege to create a certificate with subject alt name '%s'." % name)
+                        raise errors.ACIError(info=_(
+                            "Insufficient privilege to create a certificate "
+                            "with subject alt name '%s'.") % name)
 
         if 'usercertificate' in service:
             serial = x509.get_serial_number(service['usercertificate'][0], datatype=x509.DER)
@@ -457,8 +465,11 @@ class cert_show(VirtualCommand):
         Str('sha1_fingerprint',
             label=_('Fingerprint (SHA1)'),
         ),
-        Str('revocation_reason?',
+        Str('revocation_reason',
             label=_('Revocation reason'),
+        ),
+        Str('serial_number_hex',
+            label=_('Serial number (hex)'),
         ),
     )
 
@@ -529,7 +540,7 @@ class cert_revoke(VirtualCommand):
 
     # FIXME: The default is 0.  Is this really an Int param?
     takes_options = (
-        Int('revocation_reason?',
+        Int('revocation_reason',
             label=_('Reason'),
             doc=_('Reason for revoking the certificate (0-10)'),
             minvalue=0,
@@ -566,10 +577,10 @@ class cert_remove_hold(VirtualCommand):
     takes_args = _serial_number
 
     has_output_params = (
-        Flag('unrevoked?',
+        Flag('unrevoked',
             label=_('Unrevoked'),
         ),
-        Str('error_string?',
+        Str('error_string',
             label=_('Error'),
         ),
     )

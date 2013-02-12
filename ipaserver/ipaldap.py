@@ -1,5 +1,6 @@
 # Authors: Rich Megginson <richm@redhat.com>
-#          Rob Crittenden <rcritten@redhat.com
+#          Rob Crittenden <rcritten@redhat.com>
+#          John Dennis <jdennis@redhat.com>
 #
 # Copyright (C) 2007  Red Hat
 # see file 'COPYING' for use and warranty information
@@ -30,14 +31,61 @@ import cStringIO
 import time
 import struct
 import ldap.sasl
-from ldap.controls import LDAPControl,DecodeControlTuples,EncodeControlTuples
+import ldapurl
+from ldap.controls import LDAPControl
 from ldap.ldapobject import SimpleLDAPObject
-from ipaserver import ipautil
+from ipapython.ipa_log_manager import *
+from ipapython import ipautil
 from ipalib import errors
-from ipapython.ipautil import format_netloc
+from ipapython.ipautil import format_netloc, wait_for_open_socket, wait_for_open_ports
+from ipapython.dn import DN
+from ipapython.entity import Entity
+from ipaserver.plugins.ldap2 import IPASimpleLDAPObject
 
 # Global variable to define SASL auth
 SASL_AUTH = ldap.sasl.sasl({},'GSSAPI')
+DEFAULT_TIMEOUT = 10
+
+class IPAEntryLDAPObject(IPASimpleLDAPObject):
+    def __init__(self, *args, **kwds):
+        IPASimpleLDAPObject.__init__(self, *args, **kwds)
+
+    def result(self, msgid=ldap.RES_ANY, all=1, timeout=None):
+        objtype, data = IPASimpleLDAPObject.result(self, msgid, all, timeout)
+        # data is either a 2-tuple or a list of 2-tuples
+        if data:
+            if isinstance(data, tuple):
+                return objtype, Entry(data)
+            elif isinstance(data, list):
+                return objtype, [Entry(x) for x in data]
+            else:
+                raise TypeError, "unknown data type %s returned by result" % type(data)
+        else:
+            return objtype, data
+
+    def add(self, dn, modlist):
+        if isinstance(dn, Entry):
+            return IPASimpleLDAPObject.add(self, dn.dn, dn.toTupleList())
+        else:
+            return IPASimpleLDAPObject.add(self, dn, modlist)
+
+    def add_s(self, dn, modlist):
+        if isinstance(dn, Entry):
+            return IPASimpleLDAPObject.add_s(self, dn.dn, dn.toTupleList())
+        else:
+            return IPASimpleLDAPObject.add_s(self, dn, modlist)
+
+    def add_ext(self, dn, modlist, serverctrls=None, clientctrls=None):
+        if isinstance(dn, Entry):
+            return IPASimpleLDAPObject.add_ext(self, dn.dn, dn.toTupleList(), serverctrls, clientctrls)
+        else:
+            return IPASimpleLDAPObject.add_ext(self, dn, modlist, serverctrls, clientctrls)
+
+    def add_ext_s(self, dn, modlist, serverctrls=None, clientctrls=None):
+        if isinstance(dn, Entry):
+            return IPASimpleLDAPObject.add_ext_s(self, dn.dn, dn.toTupleList(), serverctrls, clientctrls)
+        else:
+            return IPASimpleLDAPObject.add_ext_s(self, dn, modlist, serverctrls, clientctrls)
 
 class Entry:
     """
@@ -46,7 +94,7 @@ class Entry:
     a list of values.  In python-ldap, entries are returned as a list of
     2-tuples.  Instance variables:
 
-        * dn - string - the string DN of the entry
+        * dn - DN object - the DN of the entry
         * data - CIDict - case insensitive dict of the attributes and values
     """
     def __init__(self,entrydata):
@@ -57,12 +105,21 @@ class Entry:
             if isinstance(entrydata,tuple):
                 self.dn = entrydata[0]
                 self.data = ipautil.CIDict(entrydata[1])
-            elif isinstance(entrydata,str) or isinstance(entrydata,unicode):
+            elif isinstance(entrydata,DN):
                 self.dn = entrydata
                 self.data = ipautil.CIDict()
+            elif isinstance(entrydata, basestring):
+                self.dn = DN(entrydata)
+                self.data = ipautil.CIDict()
+            else:
+                raise TypeError("entrydata must be 2-tuple, DN, or basestring, got %s" % type(entrydata))
         else:
-            self.dn = ''
+            self.dn = DN()
             self.data = ipautil.CIDict()
+
+        assert isinstance(self.dn, DN)
+
+    dn = ipautil.dn_attribute_property('_dn')
 
     def __nonzero__(self):
         """This allows us to do tests like if entry: returns false if there is no data,
@@ -73,23 +130,16 @@ class Entry:
         """Return True if this entry has an attribute named name, False otherwise"""
         return self.data and self.data.has_key(name)
 
-    def __getattr__(self,name):
-        """If name is the name of an LDAP attribute, return the first value for that
-        attribute - equivalent to getValue - this allows the use of
-        entry.cn
-        instead of
-        entry.getValue('cn')
-        This also allows us to return None if an attribute is not found rather than
-        throwing an exception"""
-        return self.getValue(name)
-
     def getValues(self,name):
         """Get the list (array) of values for the attribute named name"""
         return self.data.get(name)
 
-    def getValue(self,name):
+    def getValue(self,name, default=None):
         """Get the first value for the attribute named name"""
-        return self.data.get(name,[None])[0]
+        value = self.data.get(name, default)
+        if isinstance(value, (list, tuple)):
+            return value[0]
+        return value
 
     def setValue(self, name, *value):
         """
@@ -133,6 +183,7 @@ class Entry:
     def toDict(self):
         """Convert the attrs and values to a dict. The dict is keyed on the
         attribute name.  The value is either single value or a list of values."""
+        assert isinstance(self.dn, DN)
         result = ipautil.CIDict(self.data)
         for i in result.keys():
             result[i] = ipautil.utf8_encode_values(result[i])
@@ -160,75 +211,49 @@ class Entry:
         # (1000)
         newdata = {}
         newdata.update(self.data)
-        ldif.LDIFWriter(sio,Entry.base64_attrs,1000).unparse(self.dn,newdata)
+        ldif.LDIFWriter(sio,Entry.base64_attrs,1000).unparse(str(self.dn),newdata)
         return sio.getvalue()
 
-def wrapper(f,name):
-    """This is the method that wraps all of the methods of the superclass.
-       This seems to need to be an unbound method, that's why it's outside
-       of IPAdmin.  Perhaps there is some way to do this with the new
-       classmethod or staticmethod of 2.4. Basically, we replace every call
-       to a method in SimpleLDAPObject (the superclass of IPAdmin) with a
-       call to inner.  The f argument to wrapper is the bound method of
-       IPAdmin (which is inherited from the superclass).  Bound means that it
-       will implicitly be called with the self argument, it is not in the
-       args list.  name is the name of the method to call.  If name is a
-       method that returns entry objects (e.g. result), we wrap the data
-       returned by an Entry class.  If name is a method that takes an entry
-       argument, we extract the raw data from the entry object to pass in.
-    """
-    def inner(*args, **kargs):
-        if name == 'result':
-            objtype, data = f(*args, **kargs)
-            # data is either a 2-tuple or a list of 2-tuples
-            # print data
-            if data:
-                if isinstance(data,tuple):
-                    return objtype, Entry(data)
-                elif isinstance(data,list):
-                    return objtype, [Entry(x) for x in data]
-                else:
-                    raise TypeError, "unknown data type %s returned by result" % type(data)
-            else:
-                return objtype, data
-        elif name.startswith('add'):
-            # the first arg is self
-            # the second and third arg are the dn and the data to send
-            # We need to convert the Entry into the format used by
-            # python-ldap
-            ent = args[0]
-            if isinstance(ent,Entry):
-                return f(ent.dn, ent.toTupleList(), *args[2:])
-            else:
-                return f(*args, **kargs)
-        else:
-            return f(*args, **kargs)
-    return inner
-
-class IPAdmin(SimpleLDAPObject):
+class IPAdmin(IPAEntryLDAPObject):
 
     def __localinit(self):
-        """If a CA certificate is provided then it is assumed that we are
-           doing SSL client authentication with proxy auth.
+        if self.protocol == 'ldaps':
+            IPAEntryLDAPObject.__init__(self,'ldaps://%s' % format_netloc(self.host, self.port))
+        elif self.protocol == 'ldapi':
+            IPAEntryLDAPObject.__init__(self,'ldapi://%%2fvar%%2frun%%2fslapd-%s.socket' % "-".join(self.realm.split(".")))
+        elif self.protocol == 'ldap':
+            IPAEntryLDAPObject.__init__(self,'ldap://%s' % format_netloc(self.host, self.port))
+        else:
+            raise ValueError('Protocol %r not supported' % self.protocol)
 
-           If a CA certificate is not present then it is assumed that we are
-           using a forwarded kerberos ticket for SASL auth. SASL provides
-           its own encryption.
+    def __guess_protocol(self):
+        """Return the protocol to use based on flags passed to the constructor
+
+        Only used when "protocol" is not specified explicitly.
+
+        If a CA certificate is provided then it is assumed that we are
+        doing SSL client authentication with proxy auth.
+
+        If a CA certificate is not present then it is assumed that we are
+        using a forwarded kerberos ticket for SASL auth. SASL provides
+        its own encryption.
         """
         if self.cacert is not None:
-            SimpleLDAPObject.__init__(self,'ldaps://%s' % format_netloc(self.host, self.port))
+            return 'ldaps'
+        elif self.ldapi:
+            return 'ldapi'
         else:
-            if self.ldapi:
-                SimpleLDAPObject.__init__(self,'ldapi://%%2fvar%%2frun%%2fslapd-%s.socket' % "-".join(self.realm.split(".")))
-            else:
-                SimpleLDAPObject.__init__(self,'ldap://%s' % format_netloc(self.host, self.port))
+            return 'ldap'
 
-    def __init__(self,host='',port=389,cacert=None,bindcert=None,bindkey=None,proxydn=None,debug=None,ldapi=False,realm=None):
+    def __init__(self, host='', port=389, cacert=None, bindcert=None,
+                 bindkey=None, proxydn=None, debug=None, ldapi=False,
+                 realm=None, protocol=None):
         """We just set our instance variables and wrap the methods - the real
            work is done in __localinit. This is separated out this way so
            that we can call it from places other than instance creation
            e.g. when we just need to reconnect
            """
+        log_mgr.get_logger(self, True)
         if debug and debug.lower() == "on":
             ldap.set_option(ldap.OPT_DEBUG_LEVEL,255)
         if cacert is not None:
@@ -238,7 +263,6 @@ class IPAdmin(SimpleLDAPObject):
         if bindkey is not None:
             ldap.set_option(ldap.OPT_X_TLS_KEYFILE,bindkey)
 
-        self.__wrapmethods()
         self.port = port
         self.host = host
         self.cacert = cacert
@@ -248,7 +272,7 @@ class IPAdmin(SimpleLDAPObject):
         self.ldapi = ldapi
         self.realm = realm
         self.suffixes = {}
-        self.schema = None
+        self.protocol = protocol or self.__guess_protocol()
         self.__localinit()
 
     def __lateinit(self):
@@ -257,13 +281,13 @@ class IPAdmin(SimpleLDAPObject):
         values.
         """
         try:
-            ent = self.getEntry('cn=config,cn=ldbm database,cn=plugins,cn=config',
+            ent = self.getEntry(DN(('cn', 'config'), ('cn', 'ldbm database'), ('cn', 'plugins'), ('cn', 'config')),
                                 ldap.SCOPE_BASE, '(objectclass=*)',
                                 [ 'nsslapd-directory' ])
 
             self.dbdir = os.path.dirname(ent.getValue('nsslapd-directory'))
         except ldap.LDAPError, e:
-            self.__handle_errors(e, **{})
+            self.__handle_errors(e)
 
     def __str__(self):
         return self.host + ":" + str(self.port)
@@ -296,6 +320,9 @@ class IPAdmin(SimpleLDAPObject):
         if not isinstance(e,ldap.TIMEOUT):
             desc = e.args[0]['desc'].strip()
             info = e.args[0].get('info','').strip()
+            arg_desc = kw.get('arg_desc')
+            if arg_desc is not None:
+                info += " arguments: %s" % arg_desc
         else:
             desc = ''
             info = ''
@@ -304,13 +331,13 @@ class IPAdmin(SimpleLDAPObject):
             # re-raise the error so we can handle it
             raise e
         except ldap.NO_SUCH_OBJECT, e:
-            args = kw.get('args', ["entry not found"])
-            raise errors.NotFound(reason=notfound(args))
+            arg_desc = kw.get('arg_desc', "entry not found")
+            raise errors.NotFound(reason=arg_desc)
         except ldap.ALREADY_EXISTS, e:
             raise errors.DuplicateEntry()
         except ldap.CONSTRAINT_VIOLATION, e:
             # This error gets thrown by the uniqueness plugin
-            if info == 'Another entry with the same attribute value already exists':
+            if info.startswith('Another entry with the same attribute value already exists'):
                 raise errors.DuplicateEntry()
             else:
                 raise errors.DatabaseError(desc=desc,info=info)
@@ -330,6 +357,28 @@ class IPAdmin(SimpleLDAPObject):
         except ldap.LDAPError, e:
             raise errors.DatabaseError(desc=desc,info=info)
 
+    def __wait_for_connection(self, timeout):
+        lurl = ldapurl.LDAPUrl(self.uri)
+        if lurl.urlscheme == 'ldapi':
+            wait_for_open_socket(lurl.hostport, timeout)
+        else:
+            (host,port) = lurl.hostport.split(':')
+            wait_for_open_ports(host, int(port), timeout)
+
+    def __bind_with_wait(self, bind_func, timeout, *args, **kwargs):
+        try:
+            bind_func(*args, **kwargs)
+        except (ldap.CONNECT_ERROR, ldap.SERVER_DOWN), e:
+            if not timeout or 'TLS' in e.args[0].get('info', ''):
+                # No connection to continue on if we have a TLS failure
+                # https://bugzilla.redhat.com/show_bug.cgi?id=784989
+                raise e
+            try:
+                self.__wait_for_connection(timeout)
+            except:
+                raise e
+            bind_func(*args, **kwargs)
+
     def toLDAPURL(self):
         return "ldap://%s/" % format_netloc(self.host, self.port)
 
@@ -340,28 +389,28 @@ class IPAdmin(SimpleLDAPObject):
         try:
             if krbccache is not None:
                 os.environ["KRB5CCNAME"] = krbccache
-                self.sasl_interactive_bind_s("", SASL_AUTH)
+                self.sasl_interactive_bind_s(None, SASL_AUTH)
                 self.principal = principal
             self.proxydn = None
         except ldap.LDAPError, e:
-            self.__handle_errors(e, **{})
+            self.__handle_errors(e)
 
-    def do_simple_bind(self, binddn="cn=directory manager", bindpw=""):
-        self.binddn = binddn
+    def do_simple_bind(self, binddn=DN(('cn', 'directory manager')), bindpw="", timeout=DEFAULT_TIMEOUT):
+        self.binddn = binddn    # FIXME, self.binddn & self.bindpwd never referenced.
         self.bindpwd = bindpw
-        self.simple_bind_s(binddn, bindpw)
+        self.__bind_with_wait(self.simple_bind_s, timeout, binddn, bindpw)
         self.__lateinit()
 
-    def do_sasl_gssapi_bind(self):
-        self.sasl_interactive_bind_s('', SASL_AUTH)
+    def do_sasl_gssapi_bind(self, timeout=DEFAULT_TIMEOUT):
+        self.__bind_with_wait(self.sasl_interactive_bind_s, timeout, None, SASL_AUTH)
         self.__lateinit()
 
-    def do_external_bind(self, user_name=None):
+    def do_external_bind(self, user_name=None, timeout=DEFAULT_TIMEOUT):
         auth_tokens = ldap.sasl.external(user_name)
-        self.sasl_interactive_bind_s("", auth_tokens)
+        self.__bind_with_wait(self.sasl_interactive_bind_s, timeout, None, auth_tokens)
         self.__lateinit()
 
-    def getEntry(self,*args):
+    def getEntry(self, base, scope, filterstr='(objectClass=*)', attrlist=None, attrsonly=0):
         """This wraps the search function.  It is common to just get one entry"""
 
         sctrl = self.__get_server_controls()
@@ -370,21 +419,22 @@ class IPAdmin(SimpleLDAPObject):
             self.set_option(ldap.OPT_SERVER_CONTROLS, sctrl)
 
         try:
-            res = self.search(*args)
+            res = self.search(base, scope, filterstr, attrlist, attrsonly)
             objtype, obj = self.result(res)
         except ldap.LDAPError, e:
-            kw = {'args': args}
-            self.__handle_errors(e, **kw)
+            arg_desc = 'base="%s", scope=%s, filterstr="%s"' % (base, scope, filterstr)
+            self.__handle_errors(e, arg_desc=arg_desc)
 
         if not obj:
-            raise errors.NotFound(reason=notfound(args))
+            arg_desc = 'base="%s", scope=%s, filterstr="%s"' % (base, scope, filterstr)
+            raise errors.NotFound(reason=arg_desc)
 
         elif isinstance(obj,Entry):
             return obj
         else: # assume list/tuple
             return obj[0]
 
-    def getList(self,*args):
+    def getList(self, base, scope, filterstr='(objectClass=*)', attrlist=None, attrsonly=0):
         """This wraps the search function to find multiple entries."""
 
         sctrl = self.__get_server_controls()
@@ -392,14 +442,15 @@ class IPAdmin(SimpleLDAPObject):
             self.set_option(ldap.OPT_SERVER_CONTROLS, sctrl)
 
         try:
-            res = self.search(*args)
+            res = self.search(base, scope, filterstr, attrlist, attrsonly)
             objtype, obj = self.result(res)
         except ldap.LDAPError, e:
-            kw = {'args': args}
-            self.__handle_errors(e, **kw)
+            arg_desc = 'base="%s", scope=%s, filterstr="%s"' % (base, scope, filterstr)
+            self.__handle_errors(e, arg_desc=arg_desc)
 
         if not obj:
-            raise errors.NotFound(reason=notfound(args))
+            arg_desc = 'base="%s", scope=%s, filterstr="%s"' % (base, scope, filterstr)
+            raise errors.NotFound(reason=arg_desc)
 
         entries = []
         for s in obj:
@@ -407,7 +458,8 @@ class IPAdmin(SimpleLDAPObject):
 
         return entries
 
-    def getListAsync(self,*args):
+    def getListAsync(self, base, scope, filterstr='(objectClass=*)', attrlist=None, attrsonly=0,
+                     serverctrls=None, clientctrls=None, timeout=-1, sizelimit=0):
         """This version performs an asynchronous search, to allow
            results even if we hit a limit.
 
@@ -423,7 +475,8 @@ class IPAdmin(SimpleLDAPObject):
         partial = 0
 
         try:
-            msgid = self.search_ext(*args)
+            msgid = self.search_ext(base, scope, filterstr, attrlist, attrsonly,
+                                    serverctrls, clientctrls, timeout, sizelimit)
             objtype, result_list = self.result(msgid, 0)
             while result_list:
                 for result in result_list:
@@ -433,11 +486,13 @@ class IPAdmin(SimpleLDAPObject):
                 ldap.TIMELIMIT_EXCEEDED), e:
             partial = 1
         except ldap.LDAPError, e:
-            kw = {'args': args}
-            self.__handle_errors(e, **kw)
+            arg_desc = 'base="%s", scope=%s, filterstr="%s", timeout=%s, sizelimit=%s' % \
+                       (base, scope, filterstr, timeout, sizelimit)
+            self.__handle_errors(e, arg_desc=arg_desc)
 
         if not entries:
-            raise errors.NotFound(reason=notfound(args))
+            arg_desc = 'base="%s", scope=%s, filterstr="%s"' % (base, scope, filterstr)
+            raise errors.NotFound(reason=arg_desc)
 
         if partial == 1:
             counter = -1
@@ -446,24 +501,29 @@ class IPAdmin(SimpleLDAPObject):
 
         return [counter] + entries
 
-    def addEntry(self,*args):
+    def addEntry(self, entry):
         """This wraps the add function. It assumes that the entry is already
            populated with all of the desired objectclasses and attributes"""
+
+        if not isinstance(entry, (Entry, Entity)):
+            raise TypeError('addEntry expected an Entry or Entity object, got %s instead' % entry.__class__)
 
         sctrl = self.__get_server_controls()
 
         try:
             if sctrl is not None:
                 self.set_option(ldap.OPT_SERVER_CONTROLS, sctrl)
-            self.add_s(*args)
+            self.add_s(entry.dn, entry.toTupleList())
         except ldap.LDAPError, e:
-            kw = {'args': args}
-            self.__handle_errors(e, **kw)
+            arg_desc = 'entry=%s: %s' % (entry.dn, entry.toTupleList())
+            self.__handle_errors(e, arg_desc=arg_desc)
         return True
 
     def updateRDN(self, dn, newrdn):
         """Wrap the modrdn function."""
 
+        assert isinstance(dn, DN)
+        assert isinstance(newrdn, DN)
         sctrl = self.__get_server_controls()
 
         if dn == newrdn:
@@ -475,13 +535,14 @@ class IPAdmin(SimpleLDAPObject):
                 self.set_option(ldap.OPT_SERVER_CONTROLS, sctrl)
             self.modrdn_s(dn, newrdn, delold=1)
         except ldap.LDAPError, e:
-            self.__handle_errors(e, **{})
+            self.__handle_errors(e)
         return True
 
     def updateEntry(self,dn,oldentry,newentry):
         """This wraps the mod function. It assumes that the entry is already
            populated with all of the desired objectclasses and attributes"""
 
+        assert isinstance(dn, DN)
         sctrl = self.__get_server_controls()
 
         modlist = self.generateModList(oldentry, newentry)
@@ -494,7 +555,7 @@ class IPAdmin(SimpleLDAPObject):
                 self.set_option(ldap.OPT_SERVER_CONTROLS, sctrl)
             self.modify_s(dn, modlist)
         except ldap.LDAPError, e:
-            self.__handle_errors(e, **{})
+            self.__handle_errors(e)
         return True
 
     def generateModList(self, old_entry, new_entry):
@@ -505,7 +566,7 @@ class IPAdmin(SimpleLDAPObject):
 
         # Some attributes, like those in cn=config, need to be replaced
         # not deleted/added.
-        FORCE_REPLACE_ON_UPDATE_ATTRS = ('nsslapd-ssl-check-hostname', 'nsslapd-lookthroughlimit', 'nsslapd-idlistscanlimit')
+        FORCE_REPLACE_ON_UPDATE_ATTRS = ('nsslapd-ssl-check-hostname', 'nsslapd-lookthroughlimit', 'nsslapd-idlistscanlimit', 'nsslapd-anonlimitsdn', 'nsslapd-minssf-exclude-rootdse')
         modlist = []
 
         old_entry = ipautil.CIDict(old_entry)
@@ -519,16 +580,17 @@ class IPAdmin(SimpleLDAPObject):
             if not(isinstance(new_values,list) or isinstance(new_values,tuple)):
                 new_values = [new_values]
             new_values = filter(lambda value:value!=None, new_values)
-            new_values = set(new_values)
 
             old_values = old_entry.get(key, [])
             if not(isinstance(old_values,list) or isinstance(old_values,tuple)):
                 old_values = [old_values]
             old_values = filter(lambda value:value!=None, old_values)
-            old_values = set(old_values)
 
-            adds = list(new_values.difference(old_values))
-            removes = list(old_values.difference(new_values))
+            # We used to convert to sets and use difference to calculate
+            # the changes but this did not preserve order which is important
+            # particularly for schema
+            adds = [x for x in new_values if x not in old_values]
+            removes = [x for x in old_values if x not in new_values]
 
             if len(adds) == 0 and len(removes) == 0:
                 continue
@@ -540,7 +602,7 @@ class IPAdmin(SimpleLDAPObject):
 
             # You can't remove schema online. An add will automatically
             # replace any existing schema.
-            if old_entry.get('dn') == 'cn=schema':
+            if old_entry.get('dn', DN()) == DN(('cn', 'schema')):
                 if len(adds) > 0:
                     modlist.append((ldap.MOD_ADD, key, adds))
             else:
@@ -555,11 +617,12 @@ class IPAdmin(SimpleLDAPObject):
 
         return modlist
 
-    def inactivateEntry(self,dn,has_key):
+    def inactivateEntry(self,dn, has_key):
         """Rather than deleting entries we mark them as inactive.
            has_key defines whether the entry already has nsAccountlock
            set so we can determine which type of mod operation to run."""
 
+        assert isinstance(dn, DN)
         sctrl = self.__get_server_controls()
         modlist=[]
 
@@ -575,24 +638,25 @@ class IPAdmin(SimpleLDAPObject):
                 self.set_option(ldap.OPT_SERVER_CONTROLS, sctrl)
             self.modify_s(dn, modlist)
         except ldap.LDAPError, e:
-            self.__handle_errors(e, **{})
+            self.__handle_errors(e)
         return True
 
-    def deleteEntry(self,*args):
+    def deleteEntry(self, dn):
         """This wraps the delete function. Use with caution."""
 
+        assert isinstance(dn, DN)
         sctrl = self.__get_server_controls()
 
         try:
             if sctrl is not None:
                 self.set_option(ldap.OPT_SERVER_CONTROLS, sctrl)
-            self.delete_s(*args)
+            self.delete_s(dn)
         except ldap.LDAPError, e:
-            kw = {'args': args}
-            self.__handle_errors(e, **kw)
+            arg_desc = 'dn=%s' % (dn)
+            self.__handle_errors(e, arg_desc=arg_desc)
         return True
 
-    def modifyPassword(self,dn,oldpass,newpass):
+    def modifyPassword(self, dn, oldpass, newpass):
         """Set the user password using RFC 3062, LDAP Password Modify Extended
            Operation. This ends up calling the IPA password slapi plugin
            handler so the Kerberos password gets set properly.
@@ -600,6 +664,7 @@ class IPAdmin(SimpleLDAPObject):
            oldpass is not mandatory
         """
 
+        assert isinstance(dn, DN)
         sctrl = self.__get_server_controls()
 
         try:
@@ -607,18 +672,8 @@ class IPAdmin(SimpleLDAPObject):
                 self.set_option(ldap.OPT_SERVER_CONTROLS, sctrl)
             self.passwd_s(dn, oldpass, newpass)
         except ldap.LDAPError, e:
-            self.__handle_errors(e, **{})
+            self.__handle_errors(e)
         return True
-
-    def __wrapmethods(self):
-        """This wraps all methods of SimpleLDAPObject, so that we can intercept
-        the methods that deal with entries.  Instead of using a raw list of tuples
-        of lists of hashes of arrays as the entry object, we want to wrap entries
-        in an Entry class that provides some useful methods"""
-        for name in dir(self.__class__.__bases__[0]):
-            attr = getattr(self, name)
-            if callable(attr):
-                setattr(self, name, wrapper(attr, name))
 
     def waitForEntry(self, dn, timeout=7200, attr='', quiet=True):
         scope = ldap.SCOPE_BASE
@@ -631,6 +686,7 @@ class IPAdmin(SimpleLDAPObject):
 
         if isinstance(dn,Entry):
             dn = dn.dn
+        assert isinstance(dn, DN)
 
         # wait for entry and/or attr to show up
         if not quiet:
@@ -666,6 +722,7 @@ class IPAdmin(SimpleLDAPObject):
            running, true if done - if true, second is the exit code - if dowait
            is True, this function will block until the task is complete
         """
+        assert isinstance(dn, DN)
         attrlist = ['nsTaskLog', 'nsTaskStatus', 'nsTaskExitCode', 'nsTaskCurrentItem', 'nsTaskTotalItems']
         done = False
         exitCode = 0
@@ -676,25 +733,12 @@ class IPAdmin(SimpleLDAPObject):
                 break
             if verbose:
                 print entry
-            if entry.nsTaskExitCode:
-                exitCode = int(entry.nsTaskExitCode)
+            if entry.getValue('nsTaskExitCode'):
+                exitCode = int(entry.getValue('nsTaskExitCode'))
                 done = True
             if dowait: time.sleep(1)
             else: break
         return (done, exitCode)
-
-    def get_schema(self):
-        """
-        Retrieve cn=schema and convert it into a python-ldap schema
-        object.
-        """
-        if self.schema:
-            return self.schema
-        schema = self.getEntry('cn=schema', ldap.SCOPE_BASE,
-            '(objectclass=*)', ['attributetypes', 'objectclasses'])
-        schema = schema.toDict()
-        self.schema = ldap.schema.SubSchema(schema)
-        return self.schema
 
     def get_single_value(self, attr):
         """
@@ -705,8 +749,6 @@ class IPAdmin(SimpleLDAPObject):
         If there is a problem loading the schema or the attribute is
         not in the schema return None
         """
-        if not self.schema:
-            self.get_schema()
         obj = self.schema.get_obj(ldap.schema.AttributeType, attr)
         return obj and obj.single_value
 
@@ -719,40 +761,29 @@ class IPAdmin(SimpleLDAPObject):
         starting from the leafs and go up to delete nodes only when all its
         leafs are removed.
 
-        Returns a "sorted" dict keyed by dn lengths and corresponding list
-        of DNs.
-        {'1': [dn1, dn2, dn3], '2': [dn4, dn5], ..}
+        Returns a list of list of dn's. Every dn in the dn list has
+        the same number of RDN's. The outer list is sorted according
+        to the number of RDN's in each inner list.
+
+        Example:
+
+        [['cn=bob', cn=tom], ['cn=bob,ou=people', cn=tom,ou=people]]
+
+        dn's in list[0] have 1 RDN
+        dn's in list[1] have 2 RDN's
         """
 
         res = dict()
 
         for e in entries:
-            sdn = ldap.dn.str2dn(e.dn)
-            l = len(sdn)
-            if not l in res:
-                res[l] = []
-            res[l].append(e.dn)
+            dn = e.dn
+            assert isinstance(dn, DN)
+            rdn_count = len(dn)
+            rdn_count_list = res.setdefault(rdn_count, [])
+            if dn not in rdn_count_list:
+                rdn_count_list.append(dn)
 
         keys = res.keys()
         keys.sort(reverse=reverse)
 
         return map(res.get, keys)
-
-
-def notfound(args):
-    """Return a string suitable for displaying as an error when a
-       search returns no results.
-
-       This just returns whatever is after the equals sign"""
-    if len(args) > 2:
-        searchfilter = args[2]
-        try:
-            # Python re doesn't do paren counting so the string could
-            # have a trailing paren "foo)"
-            target = re.match(r'\(.*=(.*)\)', searchfilter).group(1)
-            target = target.replace(")","")
-        except:
-            target = searchfilter
-        return "%s not found" % str(target)
-    else:
-        return args[0]

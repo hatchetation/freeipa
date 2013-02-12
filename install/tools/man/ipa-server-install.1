@@ -16,13 +16,14 @@
 .\"
 .\" Author: Rob Crittenden <rcritten@redhat.com>
 .\"
-.TH "ipa-server-install" "1" "Sep 5 2011" "FreeIPA" "FreeIPA Manual Pages"
+.TH "ipa-server-install" "1" "Jun 28 2012" "FreeIPA" "FreeIPA Manual Pages"
 .SH "NAME"
 ipa\-server\-install \- Configure an IPA server
 .SH "SYNOPSIS"
 ipa\-server\-install [\fIOPTION\fR]...
 .SH "DESCRIPTION"
-Configures the services needed by an IPA server. This includes setting up a Kerberos Key Distribution Center (KDC) with an LDAP back\-end, configuring Apache, configuring NTP and starting the ipa_kpasswd service provided by IPA. By default a dogtag\-based CA will be configured to issue server certificates.
+Configures the services needed by an IPA server. This includes setting up a Kerberos Key Distribution Center (KDC) and a Kadmin daemon with an LDAP back\-end, configuring Apache, configuring NTP and optionally configuring and starting an LDAP-backed DNS server. By default a dogtag\-based CA will be configured to issue server certificates.
+
 .SH "OPTIONS"
 .SS "BASIC OPTIONS"
 .TP
@@ -45,7 +46,7 @@ The password for the IPA admin user
 The fully\-qualified DNS name of this server. If the hostname does not match system hostname, the system hostname will be updated accordingly to prevent service failures.
 .TP
 \fB\-\-ip\-address\fR=\fIIP_ADDRESS\fR
-The IP address of this server. If this address does not match the address the host resolves to and --setup-dns is not selected the installation will fail.
+The IP address of this server. If this address does not match the address the host resolves to and --setup-dns is not selected the installation will fail. If the server hostname is not resolvable, a record for the hostname and IP_ADDRESS is added to /etc/hosts.
 .TP
 \fB\-N\fR, \fB\-\-no\-ntp\fR
 Do not configure NTP
@@ -61,6 +62,15 @@ Don't install allow_all HBAC rule. This rule lets any user from any host access 
 .TP
 \fB\-\-no\-ui\-redirect\fR
 Do not automatically redirect to the Web UI.
+.TP
+\fB\-\-ssh\-trust\-dns\fR
+Configure OpenSSH client to trust DNS SSHFP records.
+.TP
+\fB\-\-no\-ssh\fR
+Do not configure OpenSSH client.
+.TP
+\fB\-\-no\-sshd\fR
+Do not configure OpenSSH server.
 .TP
 \fB\-d\fR, \fB\-\-debug\fR
 Enable debug logging when more verbose output is needed
@@ -136,16 +146,22 @@ The reverse DNS zone to use
 Do not create reverse DNS zone
 .TP
 \fB\-\-zonemgr\fR
-The e\-mail address of the DNS zone manager. Defaults to root@host.domain
+The e\-mail address of the DNS zone manager. Defaults to hostmaster@DOMAIN
 .TP
-\fB\-\-zone\-notif\fR
-Let name server receive notifications when a new zone is added. New zone is then immediately loaded by the name server. This feature uses an LDAP Persistent Search mechanism to receive the data. Zone refresh is turned off when zone notifications are enabled.
+\fB\-\-no\-persistent\-search\fR
+Do not enable persistent search mechanism for updating the list of DNS zones in the name server. When persistent search is disabled and \fB\-\-zone\-refresh\fR option is not set to non-zero value, new zones won't be resolvable until the name server is reloaded.
 .TP
 \fB\-\-zone\-refresh=\fIZONE_REFRESH\fR
-Number of seconds between regular checks for new DNS zones. When set to 0 the name server does not check for new zones and it needs to be reloaded when a new DNS zone is added.
+When set to non-zero value, persistent search zone update mechanism will be disabled and the name server will use a polling mechanism to load new DNS zones every \fIZONE_REFRESH\fR seconds.
 .TP
 \fB\-\-no\-host\-dns\fR
 Do not use DNS for hostname lookup during installation
+.TP
+\fB\-\-no\-dns\-sshfp\fR
+Do not automatically create DNS SSHFP records.
+.TP
+\fB\-\-no\-serial\-autoincrement\fR
+Do not enable SOA serial autoincrement feature. SOA serial will have to be updated automatically or other DNS features like zone transfer od DNSSEC will not function properly. This feature requires persistent search zone update mechanism.
 
 .SS "UNINSTALL OPTIONS"
 .TP

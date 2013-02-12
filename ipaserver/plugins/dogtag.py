@@ -203,7 +203,7 @@ name begins with 'chapter' it's a match. Here is how you can do that.
 
     >>> doc.xpath("//book/*[starts-with(name(), 'chapter')]/section[2]")
 
-The built-in starts-with() returns true if it's first argument starts with it's
+The built-in starts-with() returns true if its first argument starts with its
 second argument. Thus the example above says if the node name of the second
 location step begins with 'chapter' consider it a match and the search
 proceeds to the next location step, which in this example is any node named
@@ -214,7 +214,7 @@ the test against the node name? In this case we can use the EXSLT regular
 expression extension. EXSLT extensions are accessed by using XML
 namespaces. The regular expression name space identifier is 're:' In lxml we
 need to pass a set of namespaces to XPath object constructor in order to allow
-it to bind to those namespaces during it's evaluation. Then we just use the
+it to bind to those namespaces during its evaluation. Then we just use the
 EXSLT regular expression match() function on the node name. Here is how this is
 done:
 
@@ -227,8 +227,8 @@ What is happening here is that etree.XPath() has returned us an evaluator
 function which we bind to the name 'find'. We've passed it a set of namespaces
 as a dict via the 'namespaces' keyword parameter of etree.XPath(). The predicate
 for the second location step uses the 're:' namespace to find the function name
-'match'. The re:match() takes a string to search as it's first argument and a
-regular expression pattern as it's second argument. In this example the string
+'match'. The re:match() takes a string to search as its first argument and a
+regular expression pattern as its second argument. In this example the string
 to seach is the node name of the location step because we called the built-in
 node() function of XPath. The regular expression pattern we've passed says it's
 a match if the string begins with 'chapter' is followed by any number of
@@ -238,6 +238,8 @@ digits and nothing else follows.
 
 from lxml import etree
 import datetime
+from ipapython.dn import DN
+from ldap.filter import escape_filter_chars
 
 # These are general status return values used when
 # CMSServlet.outputError() is invoked.
@@ -609,6 +611,7 @@ def parse_profile_submit_result_xml(doc):
         if len(serial_number) == 1:
             serial_number = int(serial_number[0].text, 16) # parse as hex
             response_request['serial_number'] = serial_number
+            response['serial_number_hex'] = u'0x%X' % serial_number
 
         certificate = request.xpath('b64[1]')
         if len(certificate) == 1:
@@ -834,6 +837,7 @@ def parse_display_cert_xml(doc):
     if len(serial_number) == 1:
         serial_number = int(serial_number[0].text, 16) # parse as hex
         response['serial_number'] = serial_number
+        response['serial_number_hex'] = u'0x%X' % serial_number
 
     pkcs7_chain = doc.xpath('//xml/header/pkcs7ChainBase64[1]')
     if len(pkcs7_chain) == 1:
@@ -1026,6 +1030,7 @@ def parse_revoke_cert_xml(doc):
         if len(serial_number) == 1:
             serial_number = int(serial_number[0].text, 16) # parse as hex
             response_record['serial_number'] = serial_number
+            response['serial_number_hex'] = u'0x%X' % serial_number
 
         error_string = record.xpath('error[1]')
         if len(error_string) == 1:
@@ -1187,6 +1192,7 @@ def parse_unrevoke_cert_xml(doc):
     if len(serial_number) == 1:
         serial_number = int(serial_number[0].text, 16) # parse as hex
         response['serial_number'] = serial_number
+        response['serial_number_hex'] = u'0x%X' % serial_number
 
     return response
 
@@ -1200,6 +1206,7 @@ import os, random, ldap
 from ipaserver.plugins import rabase
 from ipalib.errors import NetworkError, CertificateOperationError
 from ipalib.constants import TYPE_ERROR
+from ipalib.util import cachedproperty
 from ipapython import dogtag
 from ipalib import _
 
@@ -1218,7 +1225,6 @@ class ra(rabase.rabase):
         self.ipa_key_size = "2048"
         self.ipa_certificate_nickname = "ipaCert"
         self.ca_certificate_nickname = "caCert"
-        self.ca_host = None
         try:
             f = open(self.pwd_file, "r")
             self.password = f.readline().strip()
@@ -1226,6 +1232,27 @@ class ra(rabase.rabase):
         except IOError:
             self.password = ''
         super(ra, self).__init__()
+
+    def raise_certificate_operation_error(self, func_name, err_msg=None, detail=None):
+        """
+        :param func_name: function name where error occurred
+
+        :param err_msg:   diagnostic error message, if not supplied it will be
+                          'Unable to communicate with CMS'
+        :param detail:    extra information that will be appended to err_msg
+                          inside a parenthesis
+
+        Raise a CertificateOperationError and log the error message.
+        """
+
+        if err_msg is None:
+            err_msg = _('Unable to communicate with CMS')
+
+        if detail is not None:
+            err_msg = u'%s (%s)' % (err_msg, detail)
+
+        self.error('%s.%s(): %s', self.fullname, func_name, err_msg)
+        raise CertificateOperationError(error=err_msg)
 
     def _host_has_service(self, host, service='CA'):
         """
@@ -1235,8 +1262,8 @@ class ra(rabase.rabase):
 
         Check if a specified host is a master for a specified service.
         """
-        base_dn = 'cn=%s,cn=masters,cn=ipa,cn=etc,%s' % (host, api.env.basedn)
-        filter = '(&(objectClass=ipaConfigObject)(cn=%s)(ipaConfigString=enabledService))' % service
+        base_dn = DN(('cn', host), ('cn', 'masters'), ('cn', 'ipa'), ('cn', 'etc'), api.env.basedn)
+        filter = '(&(objectClass=ipaConfigObject)(cn=%s)(ipaConfigString=enabledService))' % escape_filter_chars(service)
         try:
             ldap2 = self.api.Backend.ldap2
             ent,trunc = ldap2.find_entries(filter=filter, base_dn=base_dn)
@@ -1254,19 +1281,22 @@ class ra(rabase.rabase):
 
         Select any host which is a master for a specified service.
         """
-        base_dn = 'cn=masters,cn=ipa,cn=etc,%s' % api.env.basedn
-        filter = '(&(objectClass=ipaConfigObject)(cn=%s)(ipaConfigString=enabledService))' % service
+        base_dn = DN(('cn', 'masters'), ('cn', 'ipa'), ('cn', 'etc'), api.env.basedn)
+        filter = '(&(objectClass=ipaConfigObject)(cn=%s)(ipaConfigString=enabledService))' % escape_filter_chars(service)
         try:
             ldap2 = self.api.Backend.ldap2
             ent,trunc = ldap2.find_entries(filter=filter, base_dn=base_dn)
             if len(ent):
                 entry = random.choice(ent)
-                return ldap.explode_dn(dn=entry[0],notypes=True)[1]
+                dn = entry[0]
+                assert isinstance(dn, DN)
+                return dn[1].value
         except Exception, e:
             pass
         return None
 
-    def _select_ca(self):
+    @cachedproperty
+    def ca_host(self):
         """
         :return:   host
                    as str
@@ -1293,8 +1323,6 @@ class ra(rabase.rabase):
 
         Perform an HTTP request.
         """
-        if self.ca_host == None:
-            self.ca_host = self._select_ca()
         return dogtag.http_request(self.ca_host, port, url, **kw)
 
     def _sslget(self, url, port, **kw):
@@ -1306,9 +1334,6 @@ class ra(rabase.rabase):
 
         Perform an HTTPS request
         """
-
-        if self.ca_host == None:
-            self.ca_host = self._select_ca()
         return dogtag.https_request(self.ca_host, port, url, self.sec_dir, self.password, self.ipa_certificate_nickname, **kw)
 
     def get_parse_result_xml(self, xml_text, parse_func):
@@ -1372,14 +1397,15 @@ class ra(rabase.rabase):
 
         # Parse and handle errors
         if (http_status != 200):
-            raise CertificateOperationError(error=_('Unable to communicate with CMS (%s)') % \
-                      http_reason_phrase)
+            self.raise_certificate_operation_error('check_request_status',
+                                                   detail=http_reason_phrase)
 
         parse_result = self.get_parse_result_xml(http_body, parse_check_request_result_xml)
         request_status = parse_result['request_status']
         if request_status != CMS_STATUS_SUCCESS:
-            raise CertificateOperationError(error='%s (%s)' % \
-                      (cms_request_status_to_string(request_status), parse_result.get('error_string')))
+            self.raise_certificate_operation_error('check_request_status',
+                                                   cms_request_status_to_string(request_status),
+                                                   parse_result.get('error_string'))
 
         # Return command result
         cmd_result = {}
@@ -1457,14 +1483,15 @@ class ra(rabase.rabase):
 
         # Parse and handle errors
         if (http_status != 200):
-            raise CertificateOperationError(error=_('Unable to communicate with CMS (%s)') % \
-                      http_reason_phrase)
+            self.raise_certificate_operation_error('get_certificate',
+                                                   detail=http_reason_phrase)
 
         parse_result = self.get_parse_result_xml(http_body, parse_display_cert_xml)
         request_status = parse_result['request_status']
         if request_status != CMS_STATUS_SUCCESS:
-            raise CertificateOperationError(error='%s (%s)' % \
-                      (cms_request_status_to_string(request_status), parse_result.get('error_string')))
+            self.raise_certificate_operation_error('get_certificate',
+                                                   cms_request_status_to_string(request_status),
+                                                   parse_result.get('error_string'))
 
         # Return command result
         cmd_result = {}
@@ -1475,6 +1502,7 @@ class ra(rabase.rabase):
         if parse_result.has_key('serial_number'):
             # see module documentation concerning serial numbers and XMLRPC
             cmd_result['serial_number'] = unicode(parse_result['serial_number'])
+            cmd_result['serial_number_hex'] = u'0x%X' % int(cmd_result['serial_number'])
 
         if parse_result.has_key('revocation_reason'):
             cmd_result['revocation_reason'] = parse_result['revocation_reason']
@@ -1522,15 +1550,17 @@ class ra(rabase.rabase):
                          xml='true')
         # Parse and handle errors
         if (http_status != 200):
-            raise CertificateOperationError(error=_('Unable to communicate with CMS (%s)') % \
-                      http_reason_phrase)
+            self.raise_certificate_operation_error('request_certificate',
+                                                   detail=http_reason_phrase)
 
         parse_result = self.get_parse_result_xml(http_body, parse_profile_submit_result_xml)
         # Note different status return, it's not request_status, it's error_code
         error_code = parse_result['error_code']
         if error_code != CMS_SUCCESS:
-            raise CertificateOperationError(error='%s (%s)' % \
-                      (cms_error_code_to_string(error_code), parse_result.get('error_string')))
+            self.raise_certificate_operation_error('request_certificate',
+                                                   cms_error_code_to_string(error_code),
+                                                   parse_result.get('error_string'))
+
 
         # Return command result
         cmd_result = {}
@@ -1543,6 +1573,7 @@ class ra(rabase.rabase):
         if request.has_key('serial_number'):
             # see module documentation concerning serial numbers and XMLRPC
             cmd_result['serial_number'] = unicode(request['serial_number'])
+            cmd_result['serial_number_hex'] = u'0x%X' % request['serial_number']
 
         if request.has_key('certificate'):
             cmd_result['certificate'] = request['certificate']
@@ -1600,14 +1631,15 @@ class ra(rabase.rabase):
 
         # Parse and handle errors
         if (http_status != 200):
-            raise CertificateOperationError(error=_('Unable to communicate with CMS (%s)') % \
-                      http_reason_phrase)
+            self.raise_certificate_operation_error('revoke_certificate',
+                                                   detail=http_reason_phrase)
 
         parse_result = self.get_parse_result_xml(http_body, parse_revoke_cert_xml)
         request_status = parse_result['request_status']
         if request_status != CMS_STATUS_SUCCESS:
-            raise CertificateOperationError(error='%s (%s)' % \
-                      (cms_request_status_to_string(request_status), parse_result.get('error_string')))
+            self.raise_certificate_operation_error('revoke_certificate',
+                                                   cms_request_status_to_string(request_status),
+                                                   parse_result.get('error_string'))
 
         # Return command result
         cmd_result = {}
@@ -1659,14 +1691,16 @@ class ra(rabase.rabase):
 
         # Parse and handle errors
         if (http_status != 200):
-            raise CertificateOperationError(error=_('Unable to communicate with CMS (%s)') % \
-                      http_reason_phrase)
+            self.raise_certificate_operation_error('take_certificate_off_hold',
+                                                   detail=http_reason_phrase)
+
 
         parse_result = self.get_parse_result_xml(http_body, parse_unrevoke_cert_xml)
         request_status = parse_result['request_status']
         if request_status != CMS_STATUS_SUCCESS:
-            raise CertificateOperationError(error='%s (%s)' % \
-                      (cms_request_status_to_string(request_status), parse_result.get('error_string')))
+            self.raise_certificate_operation_error('take_certificate_off_hold',
+                                                   cms_request_status_to_string(request_status),
+                                                   parse_result.get('error_string'))
 
         # Return command result
         cmd_result = {}

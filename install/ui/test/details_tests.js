@@ -25,15 +25,12 @@ module('details', {
     setup: function() {
         IPA.ajax_options.async = false;
 
-        IPA.init(
-            "data",
-            true,
-            function(data, text_status, xhr) {
-            },
-            function(xhr, text_status, error_thrown) {
+        IPA.init({
+            url: 'data',
+            on_error: function(xhr, text_status, error_thrown) {
                 ok(false, "ipa_init() failed: "+error_thrown);
             }
-        );
+        });
 
         IPA.nav = {};
 
@@ -43,12 +40,13 @@ module('details', {
 
         details_container = $('<div id="details"/>').appendTo(document.body);
 
-        var obj_name = 'user';
-        IPA.entity_factories.user=
-            function(){
-                return IPA.entity({name:obj_name,
-                                   metadata:IPA.metadata.objects.user});
-            };
+        IPA.register('user', function(spec) {
+
+            return IPA.entity({
+                name: 'user',
+                metadata: IPA.metadata.objects.user
+            });
+        });
     },
     teardown: function() {
         details_container.remove();
@@ -58,16 +56,24 @@ module('details', {
 
 test("Testing IPA.details_section.create().", function() {
 
-    var section = IPA.details_table_section({
+    var facet = IPA.details_facet({
         entity: IPA.get_entity('user'),
-        name:'IDIDID', label:'NAMENAMENAME'}).
-        text({name:'cn'}).
-        text({name:'uid'}).
-        text({name:'mail'});
+        sections: [
+            {
+                name:'IDIDID',
+                label:'NAMENAMENAME',
+                fields: [
+                    'cn', 'uid', 'mail'
+                ]
+            }
+        ]
+    });
 
-    section.entity_name = 'user';
+    var section = facet.widgets.get_widget('IDIDID');
 
-    var fields = section.fields.values;
+    ok(section !== null, 'Verifying section existence.');
+
+    var fields = section.widgets.get_widgets();
     var container = $("<div/>");
     section.create(container);
 
@@ -75,14 +81,12 @@ test("Testing IPA.details_section.create().", function() {
 
     same(
         table.length, 1,
-        'Verifying table'
-    );
+        'Verifying table');
 
     var rows = $('tr', table);
     same(
         rows.length, fields.length,
-        'Verifying table rows'
-    );
+        'Verifying table rows');
 
     for (var i=0; i<fields.length; i++) {
         var field = fields[i];
@@ -90,20 +94,17 @@ test("Testing IPA.details_section.create().", function() {
         var field_label = $('.field-label[name='+field.name+']', container);
         same(
             field_label.text(), field.label+':',
-            'Verifying label for field '+field.name
-        );
+            'Verifying label for field '+field.name);
 
         var field_container = $('.field[name='+field.name+']', container);
 
         ok(
             field_container.length,
-            'Verifying container for field '+field.name
-        );
+            'Verifying container for field '+field.name);
 
         ok(
             field_container.hasClass('widget'),
-            'Verifying field '+field.name+' was created'
-        );
+            'Verifying field '+field.name+' was created');
     }
 });
 
@@ -111,14 +112,15 @@ test("Testing IPA.details_section.create().", function() {
 
 test("Testing details lifecycle: create, load.", function(){
 
-    var result = {};
+    var data = {};
+    data.result = {};
+    data.result.result = {};
 
     IPA.command({
         entity: 'user',
         method: 'show',
         args: ['kfrog'],
         on_success: function(data, text_status, xhr) {
-            result = data.result.result;
             ok(true, "IPA.command() succeeded.");
         },
         on_error: function(xhr, text_status, error_thrown) {
@@ -144,45 +146,85 @@ test("Testing details lifecycle: create, load.", function(){
         load_called = true;
     }
 
-    function test_widget(spec){
-        var widget = IPA.widget(spec);
+    function test_field(spec) {
+        var that = IPA.field(spec);
 
-        widget.load = function(record) {
+        that.load = function(record) {
             load_called = true;
-            widget.widget_load(record);
+            that.field_load(record);
         };
 
-        widget.save = function() {
-            save_called = true;
-            return widget.widget_save();
-        };
-        return widget;
+        return that;
     }
 
-    var entity =   IPA.
-        entity_builder().
-        entity('user').
-        details_facet({sections:[
-            {
-                name: 'identity',
-                label: IPA.messages.details.identity,
-                fields:['title','givenname','sn','cn','displayname', 'initials']
-            },
-            {
-                name: 'contact',
-                label:'contact',
-                fields:
-                [  {factory: test_widget,name:'test'},
-                   {factory: IPA.multivalued_text_widget, name:'mail'},
-                   {factory: IPA.multivalued_text_widget,
-                    name:'telephonenumber'},
-                   {factory: IPA.multivalued_text_widget, name:'pager'},
-                   {factory: IPA.multivalued_text_widget, name:'mobile'},
-                   {factory: IPA.multivalued_text_widget,
-                    name:'facsimiletelephonenumber'}]
-            }
-        ]}).build();
+    function test_widget(spec) {
+        var that = IPA.input_widget(spec);
 
+        that.widget_save = that.save;
+
+        that.save = function() {
+            save_called = true;
+            return that.widget_save();
+        };
+
+        return that;
+    }
+
+    IPA.field_factories['test'] = test_field;
+    IPA.widget_factories['test'] = test_widget;
+
+    IPA.register('user', function(spec) {
+
+        var that = IPA.entity(spec);
+
+        that.init = function() {
+            that.entity_init();
+
+            that.builder.details_facet({
+                sections: [
+                    {
+                        name: 'identity',
+                        label: IPA.messages.details.identity,
+                        fields: [ 'title', 'givenname', 'sn', 'cn', 'displayname', 'initials' ]
+                    },
+                    {
+                        name: 'contact',
+                        label: 'contact',
+                        fields: [
+                            {
+                                type: 'test',
+                                name:'test'
+                            },
+                            {
+                                type: 'multivalued',
+                                name:'mail'
+                            },
+                            {
+                                type: 'multivalued',
+                                name:'telephonenumber'
+                            },
+                            {
+                                type: 'multivalued',
+                                name:'pager'
+                            },
+                            {
+                                type: 'multivalued',
+                                name:'mobile'
+                            },
+                            {
+                                type: 'multivalued',
+                                name:'facsimiletelephonenumber'
+                            }
+                        ]
+                    }
+                ]
+            });
+        };
+
+        return that;
+    });
+
+    var entity = IPA.get_entity('user');
 
     var entity_container = $('<div/>', {
         name: 'user',
@@ -201,41 +243,36 @@ test("Testing details lifecycle: create, load.", function(){
 
     facet.create(facet_container);
 
-    facet.load(result);
+    facet.load(data);
 
     var contact = $('.details-section[name=contact]', facet_container);
 
     ok(
         contact.length,
-        'Verifying section for contact is created'
-    );
+        'Verifying section for contact is created');
 
     var identity = $('.details-section[name=identity]', facet_container);
 
     ok(
         identity.length,
-        'Verifying section for identity is created'
-    );
+        'Verifying section for identity is created');
 
     var rows = $('tr', identity);
 
     same(
         rows.length, 6,
-        'Verifying rows for identity'
-    );
+        'Verifying rows for identity');
 
     facet_container.attr('id','user');
 
     ok (load_called, 'load manager called');
 
-    var section = facet.sections.get('contact');
-    var field = section.fields.get('test');
+    var field = facet.fields.get_field('test');
     field.set_dirty(true);
 
     facet.update(
-        function(){update_success_called = true},
-        function(){update_failure_called = true}
-    );
+        function(){update_success_called = true;},
+        function(){update_failure_called = true;});
 
     ok (update_success_called,'update success called');
     ok (!update_failure_called,'update failure not called');
@@ -244,35 +281,57 @@ test("Testing details lifecycle: create, load.", function(){
 });
 
 
-test("Testing IPA.details_section_create again()",function(){
+test("Testing IPA.details_section_create again()",function() {
 
-    var section = IPA.details_table_section({
-        name: 'IDIDID', label: 'NAMENAMENAME',entity: IPA.get_entity('user')}).
-        text({name:'cn', label:'Entity Name'}).
-        text({name:'description', label:'Description'}).
-        text({name:'number', label:'Entity ID'});
-    var fields = section.fields.values;
+    var facet = IPA.details_facet({
+        entity: IPA.get_entity('user'),
+        sections: [
+            {
+                name:'IDIDID',
+                label:'NAMENAMENAME',
+                fields: [
+                    {
+                        name: 'cn',
+                        label: 'Entity Name'
+                    },
+                    {
+                        name: 'description',
+                        label: 'Description'
+                    },
+                    {
+                        name: 'number',
+                        label: 'Entity ID'
+                    }
+                ]
+            }
+        ]
+    });
+
+    var section = facet.widgets.get_widget('IDIDID');
+    ok(section !== null, 'Verifying section existence.');
+    var fields = section.widgets.get_widgets();
+
     var container = $("<div title='entity'/>");
     var details = $("<div/>");
     container.append(details);
 
-    var result = {};
+    var data = {};
+    data.result = {};
+    data.result.result = {};
 
     section.create(container);
-    section.load(result);
+    facet.load(data);
 
     var table = $('table', container);
 
     same(
         table.length, 1,
-        'Verifying table'
-    );
+        'Verifying table');
 
     var rows = $('tr', table);
     same(
         rows.length, fields.length,
-        'Verifying table rows'
-    );
+        'Verifying table rows');
 
     for (var i=0; i<fields.length; i++) {
         var field = fields[i];
@@ -280,19 +339,16 @@ test("Testing IPA.details_section_create again()",function(){
         var field_label = $('.field-label[name='+field.name+']', container);
         same(
             field_label.text(), field.label+':',
-            'Verifying label for field '+field.name
-        );
+            'Verifying label for field '+field.name);
 
         var field_container = $('.field[name='+field.name+']', container);
 
         ok(
             field_container.length,
-            'Verifying container for field '+field.name
-        );
+            'Verifying container for field '+field.name);
 
         ok(
             field_container.hasClass('widget'),
-            'Verifying field '+field.name+' was created'
-        );
+            'Verifying field '+field.name+' was created');
     }
 });

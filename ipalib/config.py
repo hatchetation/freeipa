@@ -35,6 +35,7 @@ import os
 from os import path
 import sys
 from socket import getfqdn
+from ipapython.dn import DN
 
 from base import check_name
 from constants import CONFIG_SECTION
@@ -256,12 +257,14 @@ class Env(object):
                 value = m[value]
             elif value.isdigit():
                 value = int(value)
+            elif key in ('basedn'):
+                value = DN(value)
             else:
                 try:
                     value = float(value)
                 except (TypeError, ValueError):
                     pass
-        assert type(value) in (unicode, int, float, bool, NoneType)
+        assert type(value) in (unicode, int, float, bool, NoneType, DN)
         object.__setattr__(self, key, value)
         self.__d[key] = value
 
@@ -491,6 +494,10 @@ class Env(object):
         # Set conf_default (default base config used in all contexts):
         if 'conf_default' not in self:
             self.conf_default = self._join('confdir', 'default.conf')
+
+        # Set plugins_on_demand:
+        if 'plugins_on_demand' not in self:
+            self.plugins_on_demand = (self.context == 'cli')
 
     def _finalize_core(self, **defaults):
         """

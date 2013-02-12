@@ -44,6 +44,8 @@ ifneq ($(DEVELOPER_MODE),0)
 LINT_OPTIONS=--no-fail
 endif
 
+PYTHON ?= $(shell rpm -E %__python)
+
 all: bootstrap-autogen server
 	@for subdir in $(SUBDIRS); do \
 		(cd $$subdir && $(MAKE) $@) || exit 1; \
@@ -68,22 +70,32 @@ install: all server-install
 		(cd $$subdir && $(MAKE) $@) || exit 1; \
 	done
 
-client-install: client
+client-install: client client-dirs
 	@for subdir in $(CLIENTDIRS); do \
 		(cd $$subdir && $(MAKE) install) || exit 1; \
 	done
 	cd install/po && $(MAKE) install || exit 1;
 	if [ "$(DESTDIR)" = "" ]; then \
-		python setup-client.py install; \
+		$(PYTHON) setup-client.py install; \
 	else \
-		python setup-client.py install --root $(DESTDIR); \
+		$(PYTHON) setup-client.py install --root $(DESTDIR); \
 	fi
 
-lint:
+client-dirs:
+	@if [ "$(DESTDIR)" != "" ] ; then \
+		mkdir -p $(DESTDIR)/etc/ipa ; \
+		mkdir -p $(DESTDIR)/var/lib/ipa-client/sysrestore ; \
+	else \
+		echo "DESTDIR was not set, please create /etc/ipa and /var/lib/ipa-client/sysrestore" ; \
+		echo "Without those directories ipa-client-install will fail" ; \
+	fi
+
+lint: bootstrap-autogen
 	./make-lint $(LINT_OPTIONS)
+	$(MAKE) -C install/po validate-src-strings
+
 
 test:
-	$(MAKE) -C install/po test_lang
 	./make-testcert
 	./make-test
 
@@ -111,24 +123,24 @@ version-update: release-update
 		ipa-client/ipa-client.spec.in > ipa-client/ipa-client.spec
 	sed -e s/__VERSION__/$(IPA_VERSION)/ ipa-client/version.m4.in \
 		> ipa-client/version.m4
-	
+
 	if [ "$(SUPPORTED_PLATFORM)" != "" ]; then \
 		sed -e s/SUPPORTED_PLATFORM/$(SUPPORTED_PLATFORM)/ ipapython/services.py.in \
 			> ipapython/services.py; \
 	fi
-	
+
 	if [ "$(SKIP_API_VERSION_CHECK)" != "yes" ]; then \
 		./makeapi --validate; \
 	fi
 
 server: version-update
-	python setup.py build
+	$(PYTHON) setup.py build
 
 server-install: server
 	if [ "$(DESTDIR)" = "" ]; then \
-		python setup.py install; \
+		$(PYTHON) setup.py install; \
 	else \
-		python setup.py install --root $(DESTDIR); \
+		$(PYTHON) setup.py install --root $(DESTDIR); \
 	fi
 
 archive:
@@ -152,6 +164,7 @@ tarballs: local-archive
 	rm -rf dist/$(TARBALL_PREFIX)
 
 rpmroot:
+	rm -rf $(RPMBUILD)
 	mkdir -p $(RPMBUILD)/BUILD
 	mkdir -p $(RPMBUILD)/RPMS
 	mkdir -p $(RPMBUILD)/SOURCES
@@ -165,22 +178,22 @@ rpmdistdir:
 rpms: rpmroot rpmdistdir version-update lint tarballs
 	cp dist/sources/$(TARBALL) $(RPMBUILD)/SOURCES/.
 	rpmbuild --define "_topdir $(RPMBUILD)" -ba freeipa.spec
-	cp rpmbuild/RPMS/*/$(PRJ_PREFIX)-*-$(IPA_VERSION)-*.rpm dist/rpms/
-	cp rpmbuild/SRPMS/$(PRJ_PREFIX)-$(IPA_VERSION)-*.src.rpm dist/srpms/
-	rm -rf rpmbuild
+	cp $(RPMBUILD)/RPMS/*/$(PRJ_PREFIX)-*-$(IPA_VERSION)-*.rpm dist/rpms/
+	cp $(RPMBUILD)/SRPMS/$(PRJ_PREFIX)-$(IPA_VERSION)-*.src.rpm dist/srpms/
+	rm -rf $(RPMBUILD)
 
 client-rpms: rpmroot rpmdistdir version-update lint tarballs
 	cp dist/sources/$(TARBALL) $(RPMBUILD)/SOURCES/.
 	rpmbuild --define "_topdir $(RPMBUILD)" --define "ONLY_CLIENT 1" -ba freeipa.spec
-	cp rpmbuild/RPMS/*/$(PRJ_PREFIX)-*-$(IPA_VERSION)-*.rpm dist/rpms/
-	cp rpmbuild/SRPMS/$(PRJ_PREFIX)-$(IPA_VERSION)-*.src.rpm dist/srpms/
-	rm -rf rpmbuild
+	cp $(RPMBUILD)/RPMS/*/$(PRJ_PREFIX)-*-$(IPA_VERSION)-*.rpm dist/rpms/
+	cp $(RPMBUILD)/SRPMS/$(PRJ_PREFIX)-$(IPA_VERSION)-*.src.rpm dist/srpms/
+	rm -rf $(RPMBUILD)
 
 srpms: rpmroot rpmdistdir version-update lint tarballs
 	cp dist/sources/$(TARBALL) $(RPMBUILD)/SOURCES/.
 	rpmbuild --define "_topdir $(RPMBUILD)" -bs freeipa.spec
-	cp rpmbuild/SRPMS/$(PRJ_PREFIX)-$(IPA_VERSION)-*.src.rpm dist/srpms/
-	rm -rf rpmbuild
+	cp $(RPMBUILD)/SRPMS/$(PRJ_PREFIX)-$(IPA_VERSION)-*.src.rpm dist/srpms/
+	rm -rf $(RPMBUILD)
 
 
 repodata:
@@ -203,12 +216,12 @@ distclean: version-update
 	@for subdir in $(SUBDIRS); do \
 		(cd $$subdir && $(MAKE) $@) || exit 1; \
 	done
-	rm -fr rpmbuild dist build
+	rm -fr $(RPMBUILD) dist build
 	rm -f daemons/NEWS daemons/README daemons/AUTHORS daemons/ChangeLog
 	rm -f install/NEWS install/README install/AUTHORS install/ChangeLog
 
 maintainer-clean: clean
-	rm -fr rpmbuild dist build
+	rm -fr $(RPMBUILD) dist build
 	cd selinux && $(MAKE) maintainer-clean
 	cd daemons && $(MAKE) maintainer-clean
 	cd install && $(MAKE) maintainer-clean

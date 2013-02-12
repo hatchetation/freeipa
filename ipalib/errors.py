@@ -65,7 +65,9 @@ current block assignments:
 
             - **1100 - 1199**  `KerberosError` and its subclasses
 
-            - **1200 - 1999**  *Reserved for future use*
+            - **1200 - 1299**  `SessionError` and its subclasses
+
+            - **1300 - 1999**  *Reserved for future use*
 
         - **2000 - 2999**  `AuthorizationError` and its subclasses
 
@@ -268,6 +270,15 @@ class PublicError(StandardError):
                 self.strerror = ugettext(self.format) % kw
             else:
                 self.strerror = self.format % kw
+            if 'instructions' in kw:
+                def convert_instructions(value):
+                    if isinstance(value, list):
+                        result=u'\n'.join(map(lambda line: unicode(line), value))
+                        return result
+                    return value
+                instructions = u'\n'.join((unicode(_('Additional instructions:')),
+                                          convert_instructions(kw['instructions'])))
+                self.strerror = u'\n'.join((self.strerror, instructions))
         else:
             if isinstance(message, (Gettext, NGettext)):
                 message = unicode(message)
@@ -398,7 +409,7 @@ class NetworkError(PublicError):
 
     For example:
 
-    >>> raise NetworkError(uri='ldap://localhost:389', error=u'Connection refused')
+    >>> raise NetworkError(uri='ldap://localhost:389', error=_(u'Connection refused'))
     Traceback (most recent call last):
       ...
     NetworkError: cannot connect to 'ldap://localhost:389': Connection refused
@@ -432,7 +443,7 @@ class XMLRPCMarshallError(PublicError):
 
     For example:
 
-    >>> raise XMLRPCMarshallError(error='int exceeds XML-RPC limits')
+    >>> raise XMLRPCMarshallError(error=_('int exceeds XML-RPC limits'))
     Traceback (most recent call last):
       ...
     XMLRPCMarshallError: error marshalling data for XML-RPC transport: int exceeds XML-RPC limits
@@ -444,14 +455,14 @@ class XMLRPCMarshallError(PublicError):
 
 class RefererError(PublicError):
     """
-    **911** Raised when the the request does not contain an HTTP referer
+    **911** Raised when the request does not contain an HTTP referer
 
     For example:
 
-    >>> raise RefererError()
+    >>> raise RefererError(referer='referer')
     Traceback (most recent call last):
       ...
-    RefererError: Missing or invalid HTTP Referer
+    RefererError: Missing or invalid HTTP Referer, referer
     """
 
     errno = 911
@@ -474,7 +485,7 @@ class KerberosError(AuthenticationError):
 
     For example:
 
-    >>> raise KerberosError(major='Unspecified GSS failure.  Minor code may provide more information', minor='No credentials cache found')
+    >>> raise KerberosError(major=_('Unspecified GSS failure.  Minor code may provide more information'), minor=_('No credentials cache found'))
     Traceback (most recent call last):
       ...
     KerberosError: Kerberos error: Unspecified GSS failure.  Minor code may provide more information/No credentials cache found
@@ -597,6 +608,25 @@ class CannotResolveKDC(KerberosError):
     errno = 1107
     format = _('Cannot resolve KDC for requested realm')
 
+
+class SessionError(AuthenticationError):
+    """
+    **1200** Base class for Session errors (*1200 - 1299*).
+
+    For example:
+
+    """
+
+    errno = 1200
+    format= _('Session error')
+
+
+class InvalidSessionPassword(SessionError):
+    """
+    **1201** Raised when we cannot obtain a TGT for a principal.
+    """
+    errno = 1201
+    format= _('Principal %(principal)s cannot be authenticated: %(message)s')
 
 ##############################################################################
 # 2000 - 2999: Authorization errors
@@ -733,7 +763,7 @@ class ConversionError(InvocationError):
 
     For example:
 
-    >>> raise ConversionError(name='age', error=u'must be an integer')
+    >>> raise ConversionError(name='age', error=_(u'must be an integer'))
     Traceback (most recent call last):
       ...
     ConversionError: invalid 'age': must be an integer
@@ -749,7 +779,7 @@ class ValidationError(InvocationError):
 
     For example:
 
-    >>> raise ValidationError(name='sn', error=u'can be at most 128 characters')
+    >>> raise ValidationError(name='sn', error=_(u'can be at most 128 characters'))
     Traceback (most recent call last):
       ...
     ValidationError: invalid 'sn': can be at most 128 characters
@@ -800,6 +830,15 @@ class NotConfiguredError(InvocationError):
 
     errno = 3013
     format = _('Client is not configured. Run ipa-client-install.')
+
+
+class PromptFailed(InvocationError):
+    """
+    **3014** Raise when an interactive prompt failed.
+    """
+
+    errno = 3014
+    format = _('Could not get %(name)s interactively')
 
 
 ##############################################################################
@@ -867,7 +906,7 @@ class MalformedServicePrincipal(ExecutionError):
 
     For example:
 
-    >>> raise MalformedServicePrincipal(reason='missing service')
+    >>> raise MalformedServicePrincipal(reason=_('missing service'))
     Traceback (most recent call last):
       ...
     MalformedServicePrincipal: Service principal is not of the form: service/fully-qualified host name: missing service
@@ -1043,7 +1082,7 @@ class Base64DecodeError(ExecutionError):
 
     For example:
 
-    >>> raise Base64DecodeError(reason='Incorrect padding')
+    >>> raise Base64DecodeError(reason=_('Incorrect padding'))
     Traceback (most recent call last):
       ...
     Base64DecodeError: Base64 decoding failed: Incorrect padding
@@ -1059,10 +1098,10 @@ class RemoteRetrieveError(ExecutionError):
 
     For example:
 
-    >>> raise RemoteRetrieveError(reason="Error: Failed to get certificate chain.")
+    >>> raise RemoteRetrieveError(reason=_("Failed to get certificate chain."))
     Traceback (most recent call last):
       ...
-    RemoteRetrieveError: Error: Failed to get certificate chain.
+    RemoteRetrieveError: Failed to get certificate chain.
 
     """
 
@@ -1154,7 +1193,7 @@ class FileError(ExecutionError):
 
     For example:
 
-    >>> raise FileError(reason="cannot write file \'test\'")
+    >>> raise FileError(reason=_("cannot write file \'test\'"))
     Traceback (most recent call last):
       ...
     FileError: cannot write file 'test'
@@ -1202,7 +1241,7 @@ class ReverseMemberError(ExecutionError):
 
     For example:
 
-    >>> raise ReverseMemberError(verb='added', exc="Group 'foo' not found.")
+    >>> raise ReverseMemberError(verb=_('added'), exc=_("Group 'foo' not found."))
     Traceback (most recent call last):
       ...
     ReverseMemberError: A problem was encountered when verifying that all members were added: Group 'foo' not found.
@@ -1246,6 +1285,56 @@ class SingleMatchExpected(ExecutionError):
     rval = 1
     format = _('The search criteria was not specific enough. Expected 1 and found %(found)d.')
 
+
+class AlreadyExternalGroup(ExecutionError):
+    """
+    **4028** Raised when a group is already an external member group
+
+    For example:
+
+    >>> raise AlreadyExternalGroup
+    Traceback (most recent call last):
+      ...
+    AlreadyExternalGroup: This group already allows external members
+
+    """
+
+    errno = 4028
+    format = _('This group already allows external members')
+
+class ExternalGroupViolation(ExecutionError):
+    """
+    **4029** Raised when a group is already an external member group
+             and an attempt is made to use it as posix group
+
+    For example:
+
+    >>> raise ExternalGroupViolation
+    Traceback (most recent call last):
+      ...
+    ExternalGroupViolation: This group cannot be posix because it is external
+
+    """
+
+    errno = 4029
+    format = _('This group cannot be posix because it is external')
+
+class PosixGroupViolation(ExecutionError):
+    """
+    **4030** Raised when a group is already a posix group
+             and cannot be converted to external
+
+    For example:
+
+    >>> raise PosixGroupViolation
+    Traceback (most recent call last):
+      ...
+    PosixGroupViolation: This is already a posix group and cannot be converted to external one
+
+    """
+
+    errno = 4030
+    format = _('This is already a posix group and cannot be converted to external one')
 
 class BuiltinError(ExecutionError):
     """
@@ -1317,7 +1406,7 @@ class DatabaseError(ExecutionError):
 
     For example:
 
-    >>> raise DatabaseError(desc="Can't contact LDAP server", info='Info goes here')
+    >>> raise DatabaseError(desc=_("Can't contact LDAP server"), info=_('Info goes here'))
     Traceback (most recent call last):
       ...
     DatabaseError: Can't contact LDAP server: Info goes here
@@ -1348,7 +1437,7 @@ class ObjectclassViolation(ExecutionError):
 
     For example:
 
-    >>> raise ObjectclassViolation(info='attribute "krbPrincipalName" not allowed')
+    >>> raise ObjectclassViolation(info=_('attribute "krbPrincipalName" not allowed'))
     Traceback (most recent call last):
       ...
     ObjectclassViolation: attribute "krbPrincipalName" not allowed
@@ -1411,7 +1500,7 @@ class BadSearchFilter(ExecutionError):
 
     For example:
 
-    >>> raise BadSearchFilter(info='invalid syntax')
+    >>> raise BadSearchFilter(info=_('invalid syntax'))
     Traceback (most recent call last):
       ...
     BadSearchFilter: Bad search filter invalid syntax
@@ -1419,6 +1508,22 @@ class BadSearchFilter(ExecutionError):
 
     errno = 4209
     format = _('Bad search filter %(info)s')
+
+
+class NotAllowedOnNonLeaf(ExecutionError):
+    """
+    **4210** Raised when operation is not allowed on a non-leaf entry
+
+    For example:
+
+    >>> raise NotAllowedOnNonLeaf()
+    Traceback (most recent call last):
+      ...
+    NotAllowedOnNonLeaf: Not allowed on non-leaf entry
+    """
+
+    errno = 4210
+    format = _('Not allowed on non-leaf entry')
 
 
 class CertificateError(ExecutionError):
@@ -1435,7 +1540,7 @@ class CertificateOperationError(CertificateError):
 
     For example:
 
-    >>> raise CertificateOperationError(error=u'bad serial number')
+    >>> raise CertificateOperationError(error=_(u'bad serial number'))
     Traceback (most recent call last):
       ...
     CertificateOperationError: Certificate operation cannot be completed: bad serial number
@@ -1451,7 +1556,7 @@ class CertificateFormatError(CertificateError):
 
     For example:
 
-    >>> raise CertificateFormatError(error=u'improperly formated DER-encoded certificate')
+    >>> raise CertificateFormatError(error=_(u'improperly formated DER-encoded certificate'))
     Traceback (most recent call last):
       ...
     CertificateFormatError: Certificate format error: improperly formated DER-encoded certificate
@@ -1468,7 +1573,7 @@ class MutuallyExclusiveError(ExecutionError):
 
     For example:
 
-    >>> raise MutuallyExclusiveError(reason=u'hosts may not be added when hostcategory=all')
+    >>> raise MutuallyExclusiveError(reason=_(u'hosts may not be added when hostcategory=all'))
     Traceback (most recent call last):
       ...
     MutuallyExclusiveError: hosts may not be added when hostcategory=all
@@ -1485,7 +1590,7 @@ class NonFatalError(ExecutionError):
 
     For example:
 
-    >>> raise NonFatalError(reason=u'The host was added but the DNS update failed')
+    >>> raise NonFatalError(reason=_(u'The host was added but the DNS update failed'))
     Traceback (most recent call last):
       ...
     NonFatalError: The host was added but the DNS update failed
@@ -1529,6 +1634,71 @@ class NotRegisteredError(ExecutionError):
     format = _('Not registered yet')
 
 
+class DependentEntry(ExecutionError):
+    """
+    **4307** Raised when an entry being deleted has dependencies
+
+    For example:
+    >>> raise DependentEntry(label=u'SELinux User Map', key=u'test', dependent=u'test1')
+    Traceback (most recent call last):
+      ...
+    DependentEntry: test cannot be deleted because SELinux User Map test1 requires it
+
+    """
+
+    errno = 4307
+    format = _('%(key)s cannot be deleted because %(label)s %(dependent)s requires it')
+
+
+class LastMemberError(ExecutionError):
+    """
+    **4308** Raised when an entry being deleted or disabled is last member of a protected group
+
+    For example:
+    >>> raise LastMemberError(key=u'admin', label=u'group', container=u'admins')
+    Traceback (most recent call last):
+      ...
+    LastMemberError: admin cannot be deleted or disabled because it is the last member of group admins
+
+    """
+
+    errno = 4308
+    format = _('%(key)s cannot be deleted or disabled because it is the last member of %(label)s %(container)s')
+
+
+class ProtectedEntryError(ExecutionError):
+    """
+    **4309** Raised when an entry being deleted or modified in a forbidden way is protected
+
+    For example:
+    >>> raise ProtectedEntryError(label=u'group', key=u'admins', reason=_(u'privileged group'))
+    Traceback (most recent call last):
+      ...
+    ProtectedEntryError: group admins cannot be deleted/modified: privileged group
+
+    """
+
+    errno = 4309
+    format = _('%(label)s %(key)s cannot be deleted/modified: %(reason)s')
+
+
+class CertificateInvalidError(CertificateError):
+    """
+    **4310** Raised when a certificate is not valid
+
+    For example:
+
+    >>> raise CertificateInvalidError(name=_(u'CA'))
+    Traceback (most recent call last):
+      ...
+    CertificateInvalidError: CA certificate is not valid
+
+    """
+
+    errno = 4310
+    format = _('%(name)s certificate is not valid')
+
+
 ##############################################################################
 # 5000 - 5999: Generic errors
 
@@ -1557,5 +1727,5 @@ public_errors = tuple(
 
 if __name__ == '__main__':
     for klass in public_errors:
-        print '%d\t%s' % (klass.code, klass.__name__)
+        print '%d\t%s' % (klass.errno, klass.__name__)
     print '(%d public errors)' % len(public_errors)

@@ -26,7 +26,7 @@
 import os
 import os.path
 import shutil
-import logging
+from ipapython.ipa_log_manager import *
 import ConfigParser
 import random
 import string
@@ -41,7 +41,7 @@ SYSRESTORE_STATEFILE = "sysrestore.state"
 class FileStore:
     """Class for handling backup and restore of files"""
 
-    def __init__(self, path = SYSRESTORE_PATH):
+    def __init__(self, path = SYSRESTORE_PATH, index_file = SYSRESTORE_INDEXFILE):
         """Create a _StoreFiles object, that uses @path as the
         base directory.
 
@@ -49,7 +49,7 @@ class FileStore:
         about the original location of the saved files.
         """
         self._path = path
-        self._index = self._path + "/" + SYSRESTORE_INDEXFILE
+        self._index = os.path.join(self._path, index_file)
 
         self.random = random.Random()
 
@@ -61,7 +61,7 @@ class FileStore:
         be an empty dictionary if the file doesn't exist.
         """
 
-        logging.debug("Loading Index file from '%s'", self._index)
+        root_logger.debug("Loading Index file from '%s'", self._index)
 
         self.files = {}
 
@@ -78,10 +78,10 @@ class FileStore:
         """Save the file list to @_index. If @files is an empty
         dict, then @_index should be removed.
         """
-        logging.debug("Saving Index File to '%s'", self._index)
+        root_logger.debug("Saving Index File to '%s'", self._index)
 
         if len(self.files) == 0:
-            logging.debug("  -> no files, removing file")
+            root_logger.debug("  -> no files, removing file")
             if os.path.exists(self._index):
                 os.remove(self._index)
             return
@@ -101,13 +101,13 @@ class FileStore:
         does not already exist - which will be restored to its
         original location by restore_files().
         """
-        logging.debug("Backing up system configuration file '%s'", path)
+        root_logger.debug("Backing up system configuration file '%s'", path)
 
         if not os.path.isabs(path):
             raise ValueError("Absolute path required")
 
         if not os.path.isfile(path):
-            logging.debug("  -> Not backing up - '%s' doesn't exist", path)
+            root_logger.debug("  -> Not backing up - '%s' doesn't exist", path)
             return
 
         (reldir, backupfile) = os.path.split(path)
@@ -120,7 +120,7 @@ class FileStore:
 
         backup_path = os.path.join(self._path, filename)
         if os.path.exists(backup_path):
-            logging.debug("  -> Not backing up - already have a copy of '%s'", path)
+            root_logger.debug("  -> Not backing up - already have a copy of '%s'", path)
             return
 
         shutil.copy2(path, backup_path)
@@ -143,18 +143,26 @@ class FileStore:
                 break
         return result
 
-    def restore_file(self, path):
+    def restore_file(self, path, new_path = None):
         """Restore the copy of a file at @path to its original
         location and delete the copy.
+
+        Takes optional parameter @new_path which specifies the
+        location where the file is to be restored.
 
         Returns #True if the file was restored, #False if there
         was no backup file to restore
         """
 
-        logging.debug("Restoring system configuration file '%s'", path)
+        if new_path is None:
+            root_logger.debug("Restoring system configuration file '%s'", path)
+        else:
+            root_logger.debug("Restoring system configuration file '%s' to '%s'", path, new_path)
 
         if not os.path.isabs(path):
             raise ValueError("Absolute path required")
+        if new_path is not None and not os.path.isabs(new_path):
+            raise ValueError("Absolute new path required")
 
         mode = None
         uid = None
@@ -172,8 +180,11 @@ class FileStore:
 
         backup_path = os.path.join(self._path, filename)
         if not os.path.exists(backup_path):
-            logging.debug("  -> Not restoring - '%s' doesn't exist", backup_path)
+            root_logger.debug("  -> Not restoring - '%s' doesn't exist", backup_path)
             return False
+
+        if new_path is not None:
+            path = new_path
 
         shutil.move(backup_path, path)
         os.chown(path, int(uid), int(gid))
@@ -203,7 +214,7 @@ class FileStore:
 
             backup_path = os.path.join(self._path, filename)
             if not os.path.exists(backup_path):
-                logging.debug("  -> Not restoring - '%s' doesn't exist", backup_path)
+                root_logger.debug("  -> Not restoring - '%s' doesn't exist", backup_path)
                 continue
 
             shutil.move(backup_path, path)
@@ -226,6 +237,49 @@ class FileStore:
 
         return len(self.files) > 0
 
+    def untrack_file(self, path):
+        """Remove file at path @path from list of backed up files.
+
+        Does not remove any files from the filesystem.
+
+        Returns #True if the file was untracked, #False if there
+        was no backup file to restore
+        """
+
+        root_logger.debug("Untracking system configuration file '%s'", path)
+
+        if not os.path.isabs(path):
+            raise ValueError("Absolute path required")
+
+        mode = None
+        uid = None
+        gid = None
+        filename = None
+
+        for (key, value) in self.files.items():
+            (mode,uid,gid,filepath) = string.split(value, ',', 3)
+            if (filepath == path):
+                filename = key
+                break
+
+        if not filename:
+            raise ValueError("No such file name in the index")
+
+        backup_path = os.path.join(self._path, filename)
+        if not os.path.exists(backup_path):
+            root_logger.debug("  -> Not restoring - '%s' doesn't exist", backup_path)
+            return False
+
+        try:
+            os.unlink(backup_path)
+        except Exception, e:
+            root_logger.error('Error removing %s: %s' % (backup_path, str(e)))
+
+        del self.files[filename]
+        self.save()
+
+        return True
+
 class StateFile:
     """A metadata file for recording system state which can
     be backed up and later restored. The format is something
@@ -236,7 +290,7 @@ class StateFile:
     enabled=False
     """
 
-    def __init__(self, path = SYSRESTORE_PATH):
+    def __init__(self, path = SYSRESTORE_PATH, state_file = SYSRESTORE_STATEFILE):
         """Create a StateFile object, loading from @path.
 
         The dictionary @modules, a member of the returned object,
@@ -247,7 +301,7 @@ class StateFile:
         The keys in these latter dictionaries are arbitrary strings
         and the values may either be strings or booleans.
         """
-        self._path = path+"/"+SYSRESTORE_STATEFILE
+        self._path = os.path.join(path, state_file)
 
         self.modules = {}
 
@@ -257,7 +311,7 @@ class StateFile:
         """Load the modules from the file @_path. @modules will
         be an empty dictionary if the file doesn't exist.
         """
-        logging.debug("Loading StateFile from '%s'", self._path)
+        root_logger.debug("Loading StateFile from '%s'", self._path)
 
         self.modules = {}
 
@@ -277,14 +331,14 @@ class StateFile:
         """Save the modules to @_path. If @modules is an empty
         dict, then @_path should be removed.
         """
-        logging.debug("Saving StateFile to '%s'", self._path)
+        root_logger.debug("Saving StateFile to '%s'", self._path)
 
         for module in self.modules.keys():
             if len(self.modules[module]) == 0:
                 del self.modules[module]
 
         if len(self.modules) == 0:
-            logging.debug("  -> no modules, removing file")
+            root_logger.debug("  -> no modules, removing file")
             if os.path.exists(self._path):
                 os.remove(self._path)
             return
@@ -316,6 +370,31 @@ class StateFile:
 
         self.save()
 
+    def get_state(self, module, key):
+        """Return the value of an item of system state from @module,
+        identified by the string @key.
+
+        If the item doesn't exist, #None will be returned, otherwise
+        the original string or boolean value is returned.
+        """
+        if not self.modules.has_key(module):
+            return None
+
+        return self.modules[module].get(key, None)
+
+    def delete_state(self, module, key):
+        """Delete system state from @module, identified by the string
+        @key.
+
+        If the item doesn't exist, no change is done.
+        """
+        try:
+            del self.modules[module][key]
+        except KeyError:
+            pass
+        else:
+            self.save()
+
     def restore_state(self, module, key):
         """Return the value of an item of system state from @module,
         identified by the string @key, and remove it from the backed
@@ -325,16 +404,10 @@ class StateFile:
         the original string or boolean value is returned.
         """
 
-        if not self.modules.has_key(module):
-            return None
+        value = self.get_state(module, key)
 
-        if not self.modules[module].has_key(key):
-            return None
-
-        value = self.modules[module][key]
-        del self.modules[module][key]
-
-        self.save()
+        if value is not None:
+            self.delete_state(module, key)
 
         return value
 

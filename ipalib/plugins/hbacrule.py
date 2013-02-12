@@ -18,7 +18,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 from ipalib import api, errors
-from ipalib import AccessTime, Password, Str, StrEnum
+from ipalib import AccessTime, Password, Str, StrEnum, Bool
 from ipalib.plugins.baseldap import *
 from ipalib import _, ngettext
 
@@ -96,10 +96,13 @@ def is_all(options, attribute):
     """
     See if options[attribute] is lower-case 'all' in a safe way.
     """
-    if attribute in options and \
-        options[attribute] is not None and \
-        options[attribute].lower() == 'all':
-        return True
+    if attribute in options and options[attribute] is not None:
+        if type(options[attribute]) in (list, tuple):
+            value = options[attribute][0].lower()
+        else:
+            value = options[attribute].lower()
+        if value == 'all':
+            return True
     else:
         return False
 
@@ -180,9 +183,9 @@ class hbacrule(LDAPObject):
             cli_name='desc',
             label=_('Description'),
         ),
-        Flag('ipaenabledflag?',
+        Bool('ipaenabledflag?',
              label=_('Enabled'),
-             flags=['no_create', 'no_update', 'no_search'],
+             flags=['no_option'],
         ),
         Str('memberuser_user?',
             label=_('Users'),
@@ -216,6 +219,7 @@ class hbacrule(LDAPObject):
             label=_('Service Groups'),
             flags=['no_create', 'no_update', 'no_search'],
         ),
+        external_host_param,
     )
 
 api.register(hbacrule)
@@ -227,6 +231,7 @@ class hbacrule_add(LDAPCreate):
     msg_summary = _('Added HBAC rule "%(value)s"')
 
     def pre_callback(self, ldap, dn, entry_attrs, attrs_list, *keys, **options):
+        assert isinstance(dn, DN)
         # HBAC rules are enabled by default
         entry_attrs['ipaenabledflag'] = 'TRUE'
         return dn
@@ -239,6 +244,15 @@ class hbacrule_del(LDAPDelete):
 
     msg_summary = _('Deleted HBAC rule "%(value)s"')
 
+    def pre_callback(self, ldap, dn, *keys, **options):
+        assert isinstance(dn, DN)
+        kw = dict(seealso=keys[0])
+        _entries = api.Command.selinuxusermap_find(None, **kw)
+        if _entries['count']:
+            raise errors.DependentEntry(key=keys[0], label=self.api.Object['selinuxusermap'].label_singular, dependent=_entries['result'][0]['cn'][0])
+
+        return dn
+
 api.register(hbacrule_del)
 
 
@@ -248,19 +262,20 @@ class hbacrule_mod(LDAPUpdate):
     msg_summary = _('Modified HBAC rule "%(value)s"')
 
     def pre_callback(self, ldap, dn, entry_attrs, attrs_list, *keys, **options):
+        assert isinstance(dn, DN)
         try:
             (dn, entry_attrs) = ldap.get_entry(dn, attrs_list)
         except errors.NotFound:
             self.obj.handle_not_found(*keys)
 
         if is_all(options, 'usercategory') and 'memberuser' in entry_attrs:
-            raise errors.MutuallyExclusiveError(reason="user category cannot be set to 'all' while there are allowed users")
+            raise errors.MutuallyExclusiveError(reason=_("user category cannot be set to 'all' while there are allowed users"))
         if is_all(options, 'hostcategory') and 'memberhost' in entry_attrs:
-            raise errors.MutuallyExclusiveError(reason="host category cannot be set to 'all' while there are allowed hosts")
+            raise errors.MutuallyExclusiveError(reason=_("host category cannot be set to 'all' while there are allowed hosts"))
         if is_all(options, 'sourcehostcategory') and 'sourcehost' in entry_attrs:
-            raise errors.MutuallyExclusiveError(reason="sourcehost category cannot be set to 'all' while there are allowed source hosts")
+            raise errors.MutuallyExclusiveError(reason=_("sourcehost category cannot be set to 'all' while there are allowed sourcehosts"))
         if is_all(options, 'servicecategory') and 'memberservice' in entry_attrs:
-            raise errors.MutuallyExclusiveError(reason="service category cannot be set to 'all' while there are allowed services")
+            raise errors.MutuallyExclusiveError(reason=_("service category cannot be set to 'all' while there are allowed services"))
         return dn
 
 api.register(hbacrule_mod)
@@ -424,13 +439,15 @@ class hbacrule_add_user(LDAPAddMember):
     member_count_out = ('%i object added.', '%i objects added.')
 
     def pre_callback(self, ldap, dn, found, not_found, *keys, **options):
+        assert isinstance(dn, DN)
         try:
             (dn, entry_attrs) = ldap.get_entry(dn, self.obj.default_attributes)
         except errors.NotFound:
             self.obj.handle_not_found(*keys)
         if 'usercategory' in entry_attrs and \
             entry_attrs['usercategory'][0].lower() == 'all':
-            raise errors.MutuallyExclusiveError(reason="users cannot be added when user category='all'")
+            raise errors.MutuallyExclusiveError(
+                reason=_("users cannot be added when user category='all'"))
         return dn
 
 api.register(hbacrule_add_user)
@@ -452,13 +469,15 @@ class hbacrule_add_host(LDAPAddMember):
     member_count_out = ('%i object added.', '%i objects added.')
 
     def pre_callback(self, ldap, dn, found, not_found, *keys, **options):
+        assert isinstance(dn, DN)
         try:
             (dn, entry_attrs) = ldap.get_entry(dn, self.obj.default_attributes)
         except errors.NotFound:
             self.obj.handle_not_found(*keys)
         if 'hostcategory' in entry_attrs and \
             entry_attrs['hostcategory'][0].lower() == 'all':
-            raise errors.MutuallyExclusiveError(reason="hosts cannot be added when host category='all'")
+            raise errors.MutuallyExclusiveError(
+                reason=_("hosts cannot be added when host category='all'"))
         return dn
 
 api.register(hbacrule_add_host)
@@ -480,42 +499,20 @@ class hbacrule_add_sourcehost(LDAPAddMember):
     member_count_out = ('%i object added.', '%i objects added.')
 
     def pre_callback(self, ldap, dn, found, not_found, *keys, **options):
+        assert isinstance(dn, DN)
         try:
             (dn, entry_attrs) = ldap.get_entry(dn, self.obj.default_attributes)
         except errors.NotFound:
             self.obj.handle_not_found(*keys)
         if 'sourcehostcategory' in entry_attrs and \
             entry_attrs['sourcehostcategory'][0].lower() == 'all':
-            raise errors.MutuallyExclusiveError(reason="source hosts cannot be added when sourcehost category='all'")
-        return dn
+            raise errors.MutuallyExclusiveError(reason=_(
+                "source hosts cannot be added when sourcehost category='all'"))
+        return add_external_pre_callback('host', ldap, dn, keys, options)
 
     def post_callback(self, ldap, completed, failed, dn, entry_attrs, *keys, **options):
-        completed_external = 0
-        # Sift through the host failures. We assume that these are all
-        # hosts that aren't stored in IPA, aka external hosts.
-        if 'sourcehost' in failed and 'host' in failed['sourcehost']:
-            (dn, entry_attrs_) = ldap.get_entry(dn, ['externalhost'])
-            members = entry_attrs.get('sourcehost', [])
-            external_hosts = entry_attrs_.get('externalhost', [])
-            failed_hosts = []
-            for host in failed['sourcehost']['host']:
-                hostname = host[0].lower()
-                host_dn = self.api.Object['host'].get_dn(hostname)
-                if hostname in external_hosts:
-                    failed_hosts.append((hostname, unicode(errors.AlreadyGroupMember())))
-                elif hostname not in external_hosts and host_dn not in members:
-                    external_hosts.append(hostname)
-                    completed_external += 1
-                else:
-                    failed_hosts.append((hostname, unicode(errors.NotFound())))
-            if completed_external:
-                try:
-                    ldap.update_entry(dn, {'externalhost': external_hosts})
-                except errors.EmptyModlist:
-                    pass
-                entry_attrs['externalhost'] = external_hosts
-            failed['sourcehost']['host'] = failed_hosts
-        return (completed + completed_external, dn)
+        assert isinstance(dn, DN)
+        return add_external_post_callback('sourcehost', 'host', 'externalhost', ldap, completed, failed, dn, entry_attrs, keys, options)
 
 api.register(hbacrule_add_sourcehost)
 
@@ -527,29 +524,8 @@ class hbacrule_remove_sourcehost(LDAPRemoveMember):
     member_count_out = ('%i object removed.', '%i objects removed.')
 
     def post_callback(self, ldap, completed, failed, dn, entry_attrs, *keys, **options):
-        # Run through the host failures and gracefully remove any defined as
-        # as an externalhost.
-        if 'sourcehost' in failed and 'host' in failed['sourcehost']:
-            (dn, entry_attrs_) = ldap.get_entry(dn, ['externalhost'])
-            external_hosts = entry_attrs_.get('externalhost', [])
-            failed_hosts = []
-            completed_external = 0
-            for host in failed['sourcehost']['host']:
-                hostname = host[0].lower()
-                if hostname in external_hosts:
-                    external_hosts.remove(hostname)
-                    completed_external += 1
-                else:
-                    failed_hosts.append(hostname)
-            if completed_external:
-                try:
-                    ldap.update_entry(dn, {'externalhost': external_hosts})
-                except errors.EmptyModlist:
-                    pass
-                failed['sourcehost']['host'] = failed_hosts
-                entry_attrs['externalhost'] = external_hosts
-        return (completed + completed_external, dn)
-
+        assert isinstance(dn, DN)
+        return remove_external_post_callback('sourcehost', 'host', 'externalhost', ldap, completed, failed, dn, entry_attrs, keys, options)
 
 api.register(hbacrule_remove_sourcehost)
 
@@ -561,13 +537,15 @@ class hbacrule_add_service(LDAPAddMember):
     member_count_out = ('%i object added.', '%i objects added.')
 
     def pre_callback(self, ldap, dn, found, not_found, *keys, **options):
+        assert isinstance(dn, DN)
         try:
             (dn, entry_attrs) = ldap.get_entry(dn, self.obj.default_attributes)
         except errors.NotFound:
             self.obj.handle_not_found(*keys)
         if 'servicecategory' in entry_attrs and \
             entry_attrs['servicecategory'][0].lower() == 'all':
-            raise errors.MutuallyExclusiveError(reason="services cannot be added when service category='all'")
+            raise errors.MutuallyExclusiveError(reason=_(
+                "services cannot be added when service category='all'"))
         return dn
 
 api.register(hbacrule_add_service)

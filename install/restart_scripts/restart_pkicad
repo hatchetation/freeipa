@@ -1,0 +1,57 @@
+#!/usr/bin/python -E
+#
+# Authors:
+#   Rob Crittenden <rcritten@redhat.com>
+#
+# Copyright (C) 2012  Red Hat
+# see file 'COPYING' for use and warranty information
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+import sys
+import syslog
+from ipapython import services as ipaservices
+from ipapython import dogtag
+from ipaserver.install import certs
+from ipalib import api
+
+nickname = sys.argv[1]
+
+api.bootstrap(context='restart')
+api.finalize()
+
+configured_constants = dogtag.configured_constants(api)
+alias_dir = configured_constants.ALIAS_DIR
+dogtag_instance = configured_constants.PKI_INSTANCE_NAME
+
+syslog.syslog(syslog.LOG_NOTICE, "certmonger restarted %sd, nickname '%s'" %
+              (dogtag_instance, nickname))
+
+# Fix permissions on the audit cert if we're updating it
+if nickname == 'auditSigningCert cert-pki-ca':
+    db = certs.CertDB(api.env.realm, nssdir=alias_dir)
+    args = ['-M',
+            '-n', nickname,
+            '-t', 'u,u,Pu',
+           ]
+    db.run_certutil(args)
+
+try:
+    # I've seen times where systemd restart does not actually restart
+    # the process. A full stop/start is required. This works around that
+    ipaservices.knownservices.pki_cad.stop(dogtag_instance)
+    ipaservices.knownservices.pki_cad.start(dogtag_instance)
+except Exception, e:
+    syslog.syslog(syslog.LOG_ERR, "Cannot restart %sd: %s" %
+                  (dogtag_instance, str(e)))

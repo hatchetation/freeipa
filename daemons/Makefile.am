@@ -13,8 +13,9 @@ endif
 export AM_CFLAGS
 
 SUBDIRS =			\
-	ipa-kpasswd		\
+	ipa-kdb			\
 	ipa-slapi-plugins	\
+	ipa-sam			\
 	$(NULL)
 
 DISTCLEANFILES =		\

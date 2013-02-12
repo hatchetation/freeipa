@@ -20,33 +20,94 @@
 
 
 var target_container;
-var target_section;
-var entity = {name:'bogus'};
+var target_widget;
+var target_facet;
+var entity = IPA.entity({ name: 'bogus', redirect_facet: 'details' });
+var group_entity = IPA.entity({ name: 'group' });
 
-module('aci',{
-       setup: function() {
-           IPA.ajax_options.async = false;
-           IPA.init(
-               "data",
-               true,
-               function(data, text_status, xhr) {
-               },
-               function(xhr, text_status, error_thrown) {
-                   ok(false, "ipa_init() failed: "+error_thrown);
-               }
-           );
+module('aci', {
+        setup: function() {
+            IPA.ajax_options.async = false;
+            IPA.init({
+                url: 'data',
+                on_error: function(xhr, text_status, error_thrown) {
+                    ok(false, "ipa_init() failed: "+error_thrown);
+                }
+            });
 
-           target_container = $('<div id="target"/>').appendTo(document.body);
-           target_section = IPA.target_section({
-               name: 'target',
-               label: 'Target',
-               entity:entity
-           });
-           target_section.create(target_container);
-       },
-       teardown: function() {
-           target_container.remove();
-       }}
+           target_facet = IPA.details_facet({
+                entity: entity,
+                fields: [
+                    {
+                        type: 'select',
+                        name: 'target',
+                        widget: 'target.target',
+                        enabled: false
+                    },
+                    {
+                        name: 'filter',
+                        widget: 'target.filter',
+                        enabled: false
+                    },
+                    {
+                        type: 'entity_select',
+                        name: 'memberof',
+                        widget: 'target.memberof',
+                        enabled: false
+                    },
+                    {
+                        name: 'subtree',
+                        widget: 'target.subtree',
+                        enabled: false
+                    },
+                    {
+                        type: 'entity_select',
+                        name: 'targetgroup',
+                        widget: 'target.targetgroup',
+                        enabled: false
+                    },
+                    {
+                        type: 'select',
+                        name: 'type',
+                        widget: 'target.type',
+                        enabled: false
+                    },
+                    {
+                        name: 'attrs',
+                        widget: 'target.attrs',
+                        enabled: false
+                    },
+                    {
+                        name: 'attrs_multi',
+                        param: 'attrs',
+                        type: 'multivalued',
+                        widget: 'target.attrs_multi',
+                        enabled: false
+                    }
+                ],
+                widgets: [
+                    {
+                        type: 'permission_target',
+                        container_factory: IPA.details_table_section,
+                        group_entity: group_entity,
+                        name: 'target',
+                        label: 'Target',
+                        show_target: false
+                    }
+                ],
+                policies: [
+                    IPA.permission_target_policy('target')
+                ]
+            });
+           entity.add_facet('details', target_facet);
+
+            target_container = $('<div id="target"/>').appendTo(document.body);
+            target_facet.create(target_container);
+            target_widget = target_facet.widgets.get_widget('target');
+        },
+        teardown: function() {
+                target_container.remove();
+        }}
 );
 
 
@@ -62,7 +123,6 @@ test("IPA.attributes_widget.", function() {
         name: 'attrs',
         object_type: 'user',
         entity:entity
-
     });
 
     widget.create(container);
@@ -71,15 +131,13 @@ test("IPA.attributes_widget.", function() {
 
     ok(
         table,
-        'Widget contains table'
-    );
+        'Widget contains table');
 
     var tr = $('tbody tr', table);
 
     same(
         tr.length, aciattrs.length,
-        'Widget contains all user ACI attributes'
-    );
+        'Widget contains all user ACI attributes');
 
     var record = {
         'attrs': [
@@ -91,22 +149,19 @@ test("IPA.attributes_widget.", function() {
 
     same(
         widget.save(), [],
-        'Widget has no initial values'
-    );
+        'Widget has no initial values');
 
-    widget.load(record);
+    widget.update(record.attrs);
 
     tr = $('tbody tr', table);
 
     same(
         tr.length, aciattrs.length+1,
-        'Widget contains all user ACI attributes plus 1 unmatched attribute'
-    );
+        'Widget contains all user ACI attributes plus 1 unmatched attribute');
 
     same(
         widget.save(), record.attrs.sort(),
-        'All loaded values are saved and sorted'
-    );
+        'All loaded values are saved and sorted');
 });
 
 test("IPA.rights_widget.", function() {
@@ -126,61 +181,109 @@ test("IPA.rights_widget.", function() {
 
     same(
         inputs.length, widget.rights.length,
-        'Widget displays all permissions'
-    );
+        'Widget displays all permissions');
 });
 
+var get_visible_rows = function(section) {
+    var keys = section.rows.keys;
+
+    var visible = [];
+
+    for (var i=0; i<keys.length; i++) {
+        var key = keys[i];
+        var row = section.rows.get(key);
+        var row_visible = row.css('display') !== 'none';
+        if(row_visible) {
+            visible.push(key);
+        }
+    }
+
+    return visible;
+};
+
 test("Testing aci grouptarget.", function() {
-    var sample_data_filter_only = {"targetgroup":"ipausers"};
-    target_section.load(sample_data_filter_only);
+    var data = {};
+    data.result = {};
+    data.result.result = {
+        targetgroup: 'ipausers'
+    };
 
-    var selected = $(target_section.type_select+":selected");
+    target_facet.load(data);
 
-    same(selected.val(), 'targetgroup' , 'group control selected');
-    ok ($('option', selected.group_select).length > 2,
+    same(target_widget.target, 'targetgroup' , 'group control selected');
+
+
+    same(get_visible_rows(target_widget), ['targetgroup', 'attrs'],
+        'group select row visible');
+
+    ok ($('option', target_widget.group_select.container).length > 2,
         'group select populated');
 
 });
 
 test("Testing type target.", function() {
-    var sample_data_filter_only = {"type":"hostgroup"};
+    var data = {};
+    data.result = {};
+    data.result.result = {
+        type: 'hostgroup'
+    };
 
-    target_section.load(sample_data_filter_only);
-    var selected = $(target_section.type_select+":selected");
-    same(selected.val(), 'type', 'type selected');
+    target_facet.load(data);
+
+    same(target_widget.target, 'type', 'type selected');
 
     $("input[type=checkbox]").attr("checked",true);
-    var response_record = {};
-    target_section.save(response_record);
-    same(response_record.type[0], sample_data_filter_only.type,
-         "saved type matches sample data");
-    ok((response_record.attrs.length > 10),
-       "response length shows some attrs set");
+    var record = {};
+    target_facet.save(record);
 
+    same(record.type[0], data.result.result.type,
+         "saved type matches sample data");
+
+    same(get_visible_rows(target_widget), ['memberof', 'type', 'attrs'],
+        'type and attrs rows visible');
+
+    ok((record.attrs.length > 10),
+       "response length shows some attrs set");
 });
 
 
 test("Testing filter target.", function() {
 
-    var sample_data_filter_only = {"filter":"somevalue"};
+    var data = {};
+    data.result = {};
+    data.result.result = {
+        filter: 'somevalue'
+    };
 
-    target_section.load(sample_data_filter_only);
+    target_facet.load(data);
 
-    var selected = $(target_section.type_select+":selected");
-    same(selected.val(), 'filter', 'filter selected');
+    var record = {};
+    target_facet.save(record);
+
+    same(target_widget.target, 'filter', 'filter selected');
+
+    same(get_visible_rows(target_widget), ['filter', 'attrs_multi'], 'filter row visible');
+
+    ok(record.filter[0], data.result.result.filter, 'filter set correctly');
 });
 
 
 
 test("Testing subtree target.", function() {
 
-    var sample_data = {
-        subtree:"ldap:///cn=*,cn=roles,cn=accounts,dc=example,dc=co"};
+    var data = {};
+    data.result = {};
+    data.result.result = {
+        subtree: 'ldap:///cn=*,cn=roles,cn=accounts,dc=example,dc=co'
+    };
 
-    target_section.load(sample_data);
+    target_facet.load(data);
     var record = {};
-    target_section.save(record);
-    same(record.subtree[0], sample_data.subtree, 'subtree set correctly');
+    target_facet.save(record);
+
+    same(record.subtree[0], data.result.result.subtree, 'subtree set correctly');
+
+    same(get_visible_rows(target_widget), ['memberof', 'subtree', 'attrs_multi'], 'subtree row visible');
 });
 
 

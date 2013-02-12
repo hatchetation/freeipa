@@ -161,6 +161,41 @@ objectClass: nsContainer
 objectClass: top
 cn: posix-ids
 
+dn: cn=ca_renewal,cn=ipa,cn=etc,$SUFFIX
+changetype: add
+objectClass: nsContainer
+objectClass: top
+cn: ca_renewal
+
+dn: cn=s4u2proxy,cn=etc,$SUFFIX
+changetype: add
+objectClass: nsContainer
+objectClass: top
+cn: s4u2proxy
+
+dn: cn=ipa-http-delegation,cn=s4u2proxy,cn=etc,$SUFFIX
+changetype: add
+objectClass: ipaKrb5DelegationACL
+objectClass: groupOfPrincipals
+objectClass: top
+cn: ipa-http-delegation
+memberPrincipal: HTTP/$HOST@$REALM
+ipaAllowedTarget: cn=ipa-ldap-delegation-targets,cn=s4u2proxy,cn=etc,$SUFFIX
+ipaAllowedTarget: cn=ipa-cifs-delegation-targets,cn=s4u2proxy,cn=etc,$SUFFIX
+
+dn: cn=ipa-ldap-delegation-targets,cn=s4u2proxy,cn=etc,$SUFFIX
+changetype: add
+objectClass: groupOfPrincipals
+objectClass: top
+cn: ipa-ldap-delegation-targets
+memberPrincipal: ldap/$HOST@$REALM
+
+dn: cn=ipa-cifs-delegation-targets,cn=s4u2proxy,cn=etc,$SUFFIX
+changetype: add
+objectClass: groupOfPrincipals
+objectClass: top
+cn: ipa-cifs-delegation-targets
+
 dn: uid=admin,cn=users,cn=accounts,$SUFFIX
 changetype: add
 objectClass: top
@@ -170,6 +205,7 @@ objectClass: krbprincipalaux
 objectClass: krbticketpolicyaux
 objectClass: inetuser
 objectClass: ipaobject
+objectClass: ipasshuser
 uid: admin
 krbPrincipalName: admin@$REALM
 cn: Administrator
@@ -179,7 +215,7 @@ gidNumber: $IDSTART
 homeDirectory: /home/admin
 loginShell: /bin/bash
 gecos: Administrator
-nsAccountLock: False
+nsAccountLock: FALSE
 ipaUniqueID: autogenerate
 
 dn: cn=admins,cn=groups,cn=accounts,$SUFFIX
@@ -193,7 +229,7 @@ cn: admins
 description: Account administrators group
 gidNumber: $IDSTART
 member: uid=admin,cn=users,cn=accounts,$SUFFIX
-nsAccountLock: False
+nsAccountLock: FALSE
 ipaUniqueID: autogenerate
 
 dn: cn=ipausers,cn=groups,cn=accounts,$SUFFIX
@@ -202,9 +238,7 @@ objectClass: top
 objectClass: groupofnames
 objectClass: nestedgroup
 objectClass: ipausergroup
-objectClass: posixgroup
 objectClass: ipaobject
-gidNumber: eval($IDSTART+1)
 description: Default group for all users
 cn: ipausers
 ipaUniqueID: autogenerate
@@ -343,9 +377,12 @@ ipaUserObjectClasses: posixaccount
 ipaUserObjectClasses: krbprincipalaux
 ipaUserObjectClasses: krbticketpolicyaux
 ipaUserObjectClasses: ipaobject
+ipaUserObjectClasses: ipasshuser
 ipaDefaultEmailDomain: $DOMAIN
 ipaMigrationEnabled: FALSE
 ipaConfigString: AllowNThash
+ipaSELinuxUserMapOrder: guest_u:s0$$xguest_u:s0$$user_u:s0$$staff_u:s0-s0:c0.c1023$$unconfined_u:s0-s0:c0.c1023
+ipaSELinuxUserMapDefault: unconfined_u:s0-s0:c0.c1023
 
 dn: cn=cosTemplates,cn=accounts,$SUFFIX
 changetype: add
@@ -364,3 +401,30 @@ objectClass: cosClassicDefinition
 cosTemplateDn: cn=cosTemplates,cn=accounts,$SUFFIX
 cosAttribute: krbPwdPolicyReference override
 cosSpecifier: memberOf
+
+dn: cn=selinux,$SUFFIX
+changetype: add
+objectClass: top
+objectClass: nsContainer
+cn: selinux
+
+dn: cn=usermap,cn=selinux,$SUFFIX
+changetype: add
+objectClass: top
+objectClass: nsContainer
+cn: usermap
+
+dn: cn=ranges,cn=etc,$SUFFIX
+changetype: add
+objectClass: top
+objectClass: nsContainer
+cn: ranges
+
+dn: cn=${REALM}_id_range,cn=ranges,cn=etc,$SUFFIX
+changetype: add
+objectClass: top
+objectClass: ipaIDrange
+objectClass: ipaDomainIDRange
+cn: ${REALM}_id_range
+ipaBaseID: $IDSTART
+ipaIDRangeSize: $IDRANGE_SIZE

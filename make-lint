@@ -37,36 +37,49 @@ except ImportError:
 
 # File names to ignore when searching for python source files
 IGNORE_FILES = ('.*', '*~', '*.in', '*.pyc', '*.pyo')
-IGNORE_PATHS = ('build', 'dist', 'install/po/test_i18n.py', 'lite-server.py',
+IGNORE_PATHS = ('build', 'rpmbuild', 'dist', 'install/po/test_i18n.py', 'lite-server.py',
     'make-lint', 'make-test', 'tests')
 
 class IPATypeChecker(TypeChecker):
     # 'class': ('generated', 'properties',)
     ignore = {
-        'ipalib.base.NameSpace': ('find',),
-        'ipalib.cli.Collector': ('__options',),
-        'ipalib.config.Env': ('*'),
-        'ipalib.plugable.API': ('Command', 'Object', 'Method', 'Property',
-            'Backend', 'log', 'plugins'),
-        'ipalib.plugable.Plugin': ('Command', 'Object', 'Method', 'Property',
+        'ipalib.base.NameSpace': ['find'],
+        'ipalib.cli.Collector': ['__options'],
+        'ipalib.config.Env': ['*'],
+        'ipalib.plugable.API': ['Command', 'Object', 'Method', 'Property',
+            'Backend', 'log', 'plugins'],
+        'ipalib.plugable.Plugin': ['Command', 'Object', 'Method', 'Property',
             'Backend', 'env', 'debug', 'info', 'warning', 'error', 'critical',
-            'exception', 'context', 'log'),
-        'ipalib.plugins.baseldap.CallbackInterface': ('pre_callback',
-            'post_callback', 'exc_callback'),
-        'ipalib.plugins.misc.env': ('env',),
-        'ipalib.parameters.Param': ('cli_name', 'cli_short_name', 'label',
+            'exception', 'context', 'log'],
+        'ipalib.plugins.misc.env': ['env'],
+        'ipalib.parameters.Param': ['cli_name', 'cli_short_name', 'label',
             'doc', 'required', 'multivalue', 'primary_key', 'normalizer',
-            'default', 'default_from', 'create_default', 'autofill', 'query',
-            'attribute', 'include', 'exclude', 'flags', 'hint', 'alwaysask'),
-        'ipalib.parameters.Bool': ('truths', 'falsehoods'),
-        'ipalib.parameters.Int': ('minvalue', 'maxvalue'),
-        'ipalib.parameters.Float': ('minvalue', 'maxvalue'),
-        'ipalib.parameters.Data': ('minlength', 'maxlength', 'length',
-            'pattern', 'pattern_errmsg'),
-        'ipalib.parameters.Enum': ('values',),
-        'ipalib.parameters.List': ('separator', 'skipspace'),
-        'ipalib.parameters.File': ('stdin_if_missing'),
-        'urlparse.SplitResult': ('netloc',),
+            'default', 'default_from', 'autofill', 'query', 'attribute',
+            'include', 'exclude', 'flags', 'hint', 'alwaysask', 'sortorder',
+            'csv', 'csv_separator', 'csv_skipspace'],
+        'ipalib.parameters.Bool': ['truths', 'falsehoods'],
+        'ipalib.parameters.Int': ['minvalue', 'maxvalue'],
+        'ipalib.parameters.Decimal': ['minvalue', 'maxvalue', 'precision'],
+        'ipalib.parameters.Data': ['minlength', 'maxlength', 'length',
+            'pattern', 'pattern_errmsg'],
+        'ipalib.parameters.Enum': ['values'],
+        'ipalib.parameters.File': ['stdin_if_missing'],
+        'urlparse.SplitResult': ['scheme', 'netloc', 'path', 'query', 'fragment', 'username', 'password', 'hostname', 'port'],
+        'urlparse.ParseResult': ['scheme', 'netloc', 'path', 'params', 'query', 'fragment', 'username', 'password', 'hostname', 'port'],
+        'ipaserver.install.ldapupdate.LDAPUpdate' : ['log', 'debug', 'info', 'warning', 'error', 'critical', 'exception'],
+        'ipaserver.plugins.ldap2.SchemaCache' : ['log', 'debug', 'info', 'warning', 'error', 'critical', 'exception'],
+        'ipaserver.plugins.ldap2.IPASimpleLDAPObject' : ['log', 'debug', 'info', 'warning', 'error', 'critical', 'exception'],
+        'ipaserver.plugins.ldap2.ldap2' : ['log', 'debug', 'info', 'warning', 'error', 'critical', 'exception'],
+        'ipaserver.rpcserver.KerberosSession' : ['api', 'log', 'debug', 'info', 'warning', 'error', 'critical', 'exception'],
+        'ipaserver.rpcserver.HTTP_Status' : ['log', 'debug', 'info', 'warning', 'error', 'critical', 'exception'],
+        'ipalib.krb_utils.KRB5_CCache' : ['log', 'debug', 'info', 'warning', 'error', 'critical', 'exception'],
+        'ipalib.session.AuthManager' : ['log', 'debug', 'info', 'warning', 'error', 'critical', 'exception'],
+        'ipalib.session.SessionAuthManager' : ['log', 'debug', 'info', 'warning', 'error', 'critical', 'exception'],
+        'ipalib.session.SessionManager' : ['log', 'debug', 'info', 'warning', 'error', 'critical', 'exception'],
+        'ipalib.session.SessionCCache' : ['log', 'debug', 'info', 'warning', 'error', 'critical', 'exception'],
+        'ipalib.session.MemcacheSessionManager' : ['log', 'debug', 'info', 'warning', 'error', 'critical', 'exception'],
+        'ipapython.admintool.AdminTool' : ['log', 'debug', 'info', 'warning', 'error', 'critical', 'exception'],
+        'ipapython.cookie.Cookie' : ['log', 'debug', 'info', 'warning', 'error', 'critical', 'exception'],
     }
 
     def _related_classes(self, klass):
@@ -92,7 +105,7 @@ class IPATypeChecker(TypeChecker):
             inferred = []
 
         for owner in inferred:
-            if not isinstance(owner, Class) and not isinstance(owner, Instance):
+            if not isinstance(owner, Class) and type(owner) is not Instance:
                 continue
 
             ignored = self._find_ignored_attrs(owner)

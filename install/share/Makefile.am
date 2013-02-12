@@ -7,15 +7,18 @@ app_DATA =				\
 	60samba.ldif			\
 	60ipaconfig.ldif		\
 	60basev2.ldif			\
-	60ipasudo.ldif			\
+	60basev3.ldif			\
+	60ipadns.ldif			\
+	61kerberos-ipav3.ldif		\
+	65ipasudo.ldif			\
 	anonymous-vlv.ldif		\
 	bootstrap-template.ldif		\
 	caJarSigningCert.cfg.template	\
 	default-aci.ldif		\
 	default-hbac.ldif		\
-	default-keytypes.ldif		\
-	default-pwpolicy.ldif		\
+	default-smb-group.ldif		\
 	delegation.ldif			\
+	disable-betxn.ldif		\
 	replica-acis.ldif		\
 	ds-nfiles.ldif			\
 	dns.ldif			\
@@ -30,8 +33,11 @@ app_DATA =				\
 	krb5.conf.template		\
 	krb5.ini.template		\
 	krb.con.template		\
+	krb.js.template			\
 	krbrealm.con.template		\
-	preferences.html.template 	\
+	preferences.html.template	\
+	smb.conf.template		\
+	smb.conf.empty			\
 	referint-conf.ldif		\
 	dna.ldif			\
 	master-entry.ldif		\
@@ -53,6 +59,9 @@ app_DATA =				\
 	sudobind.ldif			\
 	automember.ldif			\
 	replica-automember.ldif		\
+	replica-s4u2proxy.ldif		\
+	copy-schema-to-ca.py		\
+	upload-cacert.ldif		\
 	$(NULL)
 
 EXTRA_DIST =				\

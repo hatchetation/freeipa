@@ -1,0 +1,372 @@
+#! /usr/bin/python
+#
+# Authors: Sumit Bose <sbose@redhat.com>
+# Based on ipa-server-install by Karl MacMillan <kmacmillan@mentalrootkit.com>
+# and ipa-dns-install by Martin Nagy
+#
+# Copyright (C) 2011  Red Hat
+# see file 'COPYING' for use and warranty information
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+
+from ipaserver.plugins.ldap2 import ldap2
+from ipaserver.install import adtrustinstance
+from ipaserver.install.installutils import *
+from ipaserver.install import service
+from ipapython import version
+from ipapython import ipautil, sysrestore
+from ipalib import api, errors, util
+from ipapython.config import IPAOptionParser
+import krbV
+import ldap
+from ipapython.ipa_log_manager import *
+from ipapython.dn import DN
+
+log_file_name = "/var/log/ipaserver-install.log"
+
+def parse_options():
+    parser = IPAOptionParser(version=version.VERSION)
+    parser.add_option("-d", "--debug", dest="debug", action="store_true",
+                      default=False, help="print debugging information")
+    parser.add_option("--ip-address", dest="ip_address",
+                      type="ip", ip_local=True, help="Master Server IP Address")
+    parser.add_option("--netbios-name", dest="netbios_name",
+                      help="NetBIOS name of the IPA domain")
+    parser.add_option("--no-msdcs", dest="no_msdcs", action="store_true",
+                      default=False, help="Do not create DNS service records " \
+                                          "for Windows in managed DNS server")
+    parser.add_option("--rid-base", dest="rid_base", type=int, default=1000,
+                      help="Start value for mapping UIDs and GIDs to RIDs")
+    parser.add_option("--secondary-rid-base", dest="secondary_rid_base",
+                      type=int, default=100000000,
+                      help="Start value of the secondary range for mapping " \
+                           "UIDs and GIDs to RIDs")
+    parser.add_option("-U", "--unattended", dest="unattended", action="store_true",
+                      default=False, help="unattended installation never prompts the user")
+    parser.add_option("-a", "--admin-password",
+                      sensitive=True, dest="admin_password",
+                      help="admin user kerberos password")
+    parser.add_option("-A", "--admin-name",
+                      sensitive=True, dest="admin_name", default='admin',
+                      help="admin user principal")
+    parser.add_option("--add-sids", dest="add_sids", action="store_true",
+                      default=False, help="Add SIDs for existing users and" \
+                                          "groups as the final step")
+
+    options, args = parser.parse_args()
+    safe_options = parser.get_safe_opts(options)
+
+    return safe_options, options
+
+def netbios_name_error(name):
+    print "\nIllegal NetBIOS name [%s].\n" % name
+    print "Up to 15 characters and only uppercase ASCII letter and digits are allowed."
+
+def read_netbios_name(netbios_default):
+    netbios_name = ""
+
+    print "Enter the NetBIOS name for the IPA domain."
+    print "Only up to 15 uppercase ASCII letters and digits are allowed."
+    print "Example: EXAMPLE."
+    print ""
+    print ""
+    if not netbios_default:
+        netbios_default = "EXAMPLE"
+    while True:
+        netbios_name = ipautil.user_input("NetBIOS domain name", netbios_default, allow_empty = False)
+        print ""
+        if adtrustinstance.check_netbios_name(netbios_name):
+            break
+
+        netbios_name_error(netbios_name)
+
+    return netbios_name
+
+def read_admin_password(admin_name):
+    print "Configuring cross-realm trusts for IPA server requires password for user '%s'." % (admin_name)
+    print "This user is a regular system account used for IPA server administration."
+    print ""
+    admin_password = read_password(admin_name, confirm=False, validate=None)
+    return admin_password
+
+def set_and_check_netbios_name(netbios_name, unattended):
+    """
+    Depending if trust in already configured or not a given NetBIOS domain
+    name must be handled differently.
+
+    If trust is not configured the given NetBIOS is used or the NetBIOS is
+    generated if none was given on the command line.
+
+    If trust is  already configured the given NetBIOS name is used to reset
+    the stored NetBIOS name it it differs from the current one.
+    """
+
+    flat_name_attr = 'ipantflatname'
+    cur_netbios_name = None
+    gen_netbios_name = None
+    reset_netbios_name = False
+    dom_dn = None
+
+    try:
+        (dom_dn, entry) = api.Backend.ldap2.get_entry(DN(('cn', api.env.domain),
+                                    api.env.container_cifsdomains,
+                                    ipautil.realm_to_suffix(api.env.realm)),
+                                    [flat_name_attr])
+    except errors.NotFound:
+        # trust not configured
+        pass
+    else:
+        cur_netbios_name = entry.get(flat_name_attr)[0]
+
+    if cur_netbios_name and not netbios_name:
+        # keep the current NetBIOS name
+        netbios_name = cur_netbios_name
+        reset_netbios_name = False
+    elif cur_netbios_name and cur_netbios_name != netbios_name:
+        # change the NetBIOS name
+        print "Current NetBIOS domain name is %s, new name is %s.\n" % \
+              (cur_netbios_name, netbios_name)
+        print "Please note that changing the NetBIOS name might " \
+              "break existing trust relationships."
+        if unattended:
+            reset_netbios_name = True
+            print "NetBIOS domain name will be changed to %s.\n" % \
+                  netbios_name
+        else:
+            print "Say 'yes' if the NetBIOS shall be changed and " \
+                  "'no' if the old one shall be kept."
+            reset_netbios_name = ipautil.user_input(
+                            'Do you want to reset the NetBIOS domain name?',
+                            default = False, allow_empty = False)
+        if not reset_netbios_name:
+            netbios_name = cur_netbios_name
+    elif cur_netbios_name and cur_netbios_name == netbios_name:
+        # keep the current NetBIOS name
+        reset_netbios_name = False
+    elif not cur_netbios_name:
+        if not netbios_name:
+            gen_netbios_name = adtrustinstance.make_netbios_name(api.env.domain)
+
+        if dom_dn:
+            # Fix existing trust configuration
+            print "Trust is configured but no NetBIOS domain name found, " \
+                  "setting it now."
+            reset_netbios_name = True
+        else:
+            # initial trust configuration
+            reset_netbios_name = False
+    else:
+        # all possible cases should be covered above
+        raise Exception('Unexpected state while checking NetBIOS domain name')
+
+    if not adtrustinstance.check_netbios_name(netbios_name):
+        if unattended:
+            netbios_name_error(netbios_name)
+            sys.exit("Aborting installation.")
+        else:
+            if netbios_name:
+                netbios_name_error(netbios_name)
+                netbios_name = None
+
+    if not unattended and not netbios_name:
+        netbios_name = read_netbios_name(gen_netbios_name)
+
+    return (netbios_name, reset_netbios_name)
+
+def ensure_admin_kinit(admin_name, admin_password):
+    try:
+        ipautil.run(['kinit', admin_name], stdin=admin_password+'\n')
+    except ipautil.CalledProcessError, e:
+        print "There was error to automatically re-kinit your admin user ticket."
+        return False
+    return True
+
+def main():
+    safe_options, options = parse_options()
+
+    if os.getegid() != 0:
+        sys.exit("Must be root to setup AD trusts on server")
+
+    standard_logging_setup(log_file_name, debug=options.debug, filemode='a')
+    print "\nThe log file for this installation can be found in %s" % log_file_name
+
+    root_logger.debug('%s was invoked with options: %s' % (sys.argv[0], safe_options))
+    root_logger.debug("missing options might be asked for interactively later\n")
+
+    check_server_configuration()
+
+    global fstore
+    fstore = sysrestore.FileStore('/var/lib/ipa/sysrestore')
+
+    print "=============================================================================="
+    print "This program will setup components needed to establish trust to AD domains for"
+    print "the FreeIPA Server."
+    print ""
+    print "This includes:"
+    print "  * Configure Samba"
+    print "  * Add trust related objects to FreeIPA LDAP server"
+    #TODO:
+    #print "  * Add a SID to all users and Posix groups"
+    print ""
+    print "To accept the default shown in brackets, press the Enter key."
+    print ""
+
+    # Check if samba packages are installed
+    if not adtrustinstance.check_inst():
+        sys.exit("Aborting installation.")
+
+    # Initialize the ipalib api
+    cfg = dict(
+        in_server=True,
+        debug=options.debug,
+    )
+    api.bootstrap(**cfg)
+    api.finalize()
+
+    if adtrustinstance.ipa_smb_conf_exists():
+        if not options.unattended:
+            while True:
+                print "IPA generated smb.conf detected."
+                if not ipautil.user_input("Overwrite smb.conf?", default = False, allow_empty = False):
+                    sys.exit("Aborting installation.")
+                break
+
+    # Check we have a public IP that is associated with the hostname
+    ip = None
+    try:
+        hostaddr = resolve_host(api.env.host)
+        if len(hostaddr) > 1:
+            print >> sys.stderr, "The server hostname resolves to more than one address:"
+            for addr in hostaddr:
+                print >> sys.stderr, "  %s" % addr
+
+            if options.ip_address:
+                if str(options.ip_address) not in hostaddr:
+                    print >> sys.stderr, "Address passed in --ip-address did not match any resolved"
+                    print >> sys.stderr, "address!"
+                    sys.exit(1)
+                print "Selected IP address:", str(options.ip_address)
+                ip = options.ip_address
+            else:
+                if options.unattended:
+                    print >> sys.stderr, "Please use --ip-address option to specify the address"
+                    sys.exit(1)
+                else:
+                    ip = read_ip_address(api.env.host, fstore)
+        else:
+                ip = hostaddr and ipautil.CheckedIPAddress(hostaddr[0], match_local=True)
+    except Exception, e:
+        print "Error: Invalid IP Address %s: %s" % (ip, e)
+        print "Aborting installation"
+        sys.exit(1)
+
+    ip_address = str(ip)
+    root_logger.debug("will use ip_address: %s\n", ip_address)
+
+    if not options.unattended:
+        print ""
+        print "The following operations may take some minutes to complete."
+        print "Please wait until the prompt is returned."
+        print ""
+
+    admin_password = options.admin_password
+    if not (options.unattended or admin_password):
+        admin_password = read_admin_password(options.admin_name)
+
+    admin_kinited = None
+    if admin_password:
+        admin_kinited = ensure_admin_kinit(options.admin_name, admin_password)
+        if not admin_kinited:
+            print "Proceeding with credentials that existed before"
+
+    try:
+        ctx = krbV.default_context()
+        ccache = ctx.default_ccache()
+        principal = ccache.principal()
+    except krbV.Krb5Error, e:
+        sys.exit("Must have Kerberos credentials to setup AD trusts on server")
+
+    try:
+        api.Backend.ldap2.connect(ccache.name)
+    except errors.ACIError, e:
+        sys.exit("Outdated Kerberos credentials. Use kdestroy and kinit to update your ticket")
+    except errors.DatabaseError, e:
+        sys.exit("Cannot connect to the LDAP database. Please check if IPA is running")
+
+    try:
+        user = api.Command.user_show(unicode(principal[0]))['result']
+        group = api.Command.group_show(u'admins')['result']
+        if not (user['uid'][0] in group['member_user'] and
+                group['cn'][0] in user['memberof_group']):
+            raise errors.RequirementError(name='admins group membership')
+    except errors.RequirementError, e:
+        sys.exit("Must have administrative privileges to setup AD trusts on server")
+    except Exception, e:
+        sys.exit("Unrecognized error during check of admin rights: %s" % (str(e)))
+
+    (netbios_name, reset_netbios_name) = \
+                                set_and_check_netbios_name(options.netbios_name,
+                                options.unattended)
+
+    smb = adtrustinstance.ADTRUSTInstance(fstore)
+    smb.realm = api.env.realm
+    smb.autobind = service.ENABLED
+    smb.setup(api.env.host, ip_address, api.env.realm, api.env.domain,
+              netbios_name, reset_netbios_name,
+              options.rid_base, options.secondary_rid_base,
+              options.no_msdcs, options.add_sids)
+    smb.find_local_id_range()
+    smb.create_instance()
+
+    print """
+=============================================================================
+Setup complete
+
+You must make sure these network ports are open:
+\tTCP Ports:
+\t  * 138: netbios-dgm
+\t  * 139: netbios-ssn
+\t  * 445: microsoft-ds
+\tUDP Ports:
+\t  * 138: netbios-dgm
+\t  * 139: netbios-ssn
+\t  * 389: (C)LDAP
+\t  * 445: microsoft-ds
+
+Additionally you have to make sure the FreeIPA LDAP server is not reachable
+by any domain controller in the Active Directory domain by closing down
+the following ports for these servers:
+\tTCP Ports:
+\t  * 389, 636: LDAP/LDAPS
+
+You may want to choose to REJECT the network packets instead of DROPing
+them to avoid timeouts on the AD domain controllers.
+
+=============================================================================
+"""
+    if admin_password:
+        admin_kinited = ensure_admin_kinit(options.admin_name, admin_password)
+
+    if not admin_kinited:
+        print """
+WARNING: you MUST re-kinit admin user before using 'ipa trust-*' commands
+family in order to re-generate Kerberos tickets to include AD-specific
+information"""
+
+    return 0
+
+if __name__ == '__main__':
+    run_script(main, log_file_name=log_file_name,
+            operation_name='ipa-adtrust-install')

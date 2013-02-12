@@ -25,15 +25,31 @@ Upgrade configuration files to a newer template.
 
 import sys
 try:
-    from ipapython import ipautil, sysrestore
+    from ipapython import ipautil, sysrestore, version, services
+    from ipapython.config import IPAOptionParser
+    from ipapython.ipa_log_manager import *
+    from ipapython import certmonger
+    from ipapython import dogtag
+    from ipapython.dn import DN
     from ipaserver.install import installutils
     from ipaserver.install import dsinstance
     from ipaserver.install import httpinstance
+    from ipaserver.install import memcacheinstance
+    from ipaserver.install import bindinstance
+    from ipaserver.install import service
+    from ipaserver.install import cainstance
+    from ipaserver.install import certs
+    from ipaserver.install import sysupgrade
+    import ldap
     import krbV
     import re
     import os
     import shutil
+    import pwd
     import fileinput
+    from ipalib import api
+    import ipalib.util
+    import ipalib.errors
 except ImportError:
     print >> sys.stderr, """\
 There was a problem importing one of the required Python modules. The
@@ -42,6 +58,38 @@ error was:
     %s
 """ % sys.exc_value
     sys.exit(1)
+
+def parse_options():
+    parser = IPAOptionParser(version=version.VERSION)
+    parser.add_option("-d", "--debug", dest="debug", action="store_true",
+                      default=False, help="print debugging information")
+    parser.add_option("-q", "--quiet", dest="quiet",
+                      action="store_true",
+                      default=False, help="Output only errors")
+
+    options, args = parser.parse_args()
+    safe_options = parser.get_safe_opts(options)
+
+    return safe_options, options
+
+class KpasswdInstance(service.SimpleServiceInstance):
+    def __init__(self):
+        service.SimpleServiceInstance.__init__(self, "ipa_kpasswd")
+
+def uninstall_ipa_kpasswd():
+    """
+    We can't use the full service uninstaller because that will attempt
+    to stop and disable the service which by now doesn't exist. We just
+    want to clean up sysrestore.state to remove all references to
+    ipa_kpasswd.
+    """
+    ipa_kpasswd = KpasswdInstance()
+
+    running = ipa_kpasswd.restore_state("running")
+    enabled = not ipa_kpasswd.restore_state("enabled")
+
+    if enabled is not None and not enabled:
+        ipa_kpasswd.remove()
 
 def backup_file(filename, ext):
     """Make a backup of filename using ext as the extension. Do not overwrite
@@ -86,8 +134,32 @@ def find_hostname():
 
     raise RuntimeError("Unable to determine the fully qualified hostname from %s" % filename)
 
+def find_autoredirect(fqdn):
+    """
+    When upgrading ipa-rewrite.conf we need to see if the automatic redirect
+    was disabled during install time (or afterward). So sift through the
+    configuration file and see if we can determine the status.
+
+    Returns True if autoredirect is enabled, False otherwise
+    """
+    filename = '/etc/httpd/conf.d/ipa-rewrite.conf'
+    if os.path.exists(filename):
+        pattern = "^RewriteRule \^/\$ https://%s/ipa/ui \[L,NC,R=301\]" % fqdn
+        p = re.compile(pattern)
+        for line in fileinput.input(filename):
+            if p.search(line):
+                fileinput.close()
+                return True
+        fileinput.close()
+        return False
+    return True
+
 def find_version(filename):
-    """Find the version of a configuration file"""
+    """Find the version of a configuration file
+
+    If no VERSION entry exists in the file, returns 0.
+    If the file does not exist, returns -1.
+    """
     if os.path.exists(filename):
         pattern = "^[\s#]*VERSION\s+([0-9]+)\s+.*"
         p = re.compile(pattern)
@@ -113,19 +185,26 @@ def upgrade(sub_dict, filename, template, add=False):
     new = int(find_version(template))
 
     if old < 0 and not add:
-        print "%s not found." % filename
+        root_logger.error("%s not found." % filename)
         sys.exit(1)
 
     if new < 0:
-        print "%s not found." % template
+        root_logger.error("%s not found." % template)
 
-    if old < new or add:
+    if old == 0:
+        # The original file does not have a VERSION entry. This means it's now
+        # managed by IPA, but previously was not.
+        root_logger.warning("%s is now managed by IPA. It will be "
+            "overwritten. A backup of the original will be made.", filename)
+
+    if old < new or (add and old == 0):
         backup_file(filename, new)
         update_conf(sub_dict, filename, template)
-        print "Upgraded %s to version %d" % (filename, new)
+        root_logger.info("Upgraded %s to version %d", filename, new)
 
 def check_certs():
     """Check ca.crt is in the right place, and try to fix if not"""
+    root_logger.info('[Verifying that root certificate is published]')
     if not os.path.exists("/usr/share/ipa/html/ca.crt"):
         ca_file = "/etc/httpd/alias/cacert.asc"
         if os.path.exists(ca_file):
@@ -135,27 +214,399 @@ def check_certs():
             finally:
                 os.umask(old_umask)
         else:
-            print "Missing Certification Authority file."
-            print "You should place a copy of the CA certificate in /usr/share/ipa/html/ca.crt"
+            root_logger.error("Missing Certification Authority file.")
+            root_logger.error("You should place a copy of the CA certificate in /usr/share/ipa/html/ca.crt")
+    else:
+        root_logger.debug('Certificate file exists')
 
-def upgrade_pki():
+def upgrade_pki(ca, fstore):
     """
     Update/add the dogtag proxy configuration. The IPA side of this is
     handled in ipa-pki-proxy.conf.
 
     This requires enabling SSL renegotiation.
     """
-    if not os.path.exists('/etc/pki-ca/CS.cfg'):
+    configured_constants = dogtag.configured_constants()
+    root_logger.info('[Verifying that CA proxy configuration is correct]')
+    if not ca.is_configured():
+        root_logger.info('CA is not configured')
         return
 
-    fstore = sysrestore.FileStore('/var/lib/ipa/sysrestore')
     http = httpinstance.HTTPInstance(fstore)
     http.enable_mod_nss_renegotiate()
-    if not installutils.get_directive('/etc/pki-ca/CS.cfg',
+    if not installutils.get_directive(configured_constants.CS_CFG_PATH,
                                       'proxy.securePort', '=') and \
             os.path.exists('/usr/bin/pki-setup-proxy'):
         ipautil.run(['/usr/bin/pki-setup-proxy', '-pki_instance_root=/var/lib'
                      ,'-pki_instance_name=pki-ca','-subsystem_type=ca'])
+        root_logger.debug('Proxy configuration updated')
+    else:
+        root_logger.debug('Proxy configuration up-to-date')
+
+def update_dbmodules(realm, filename="/etc/krb5.conf"):
+    newfile = []
+    found_dbrealm = False
+    found_realm = False
+    prefix = ''
+
+    root_logger.info('[Verifying that KDC configuration is using ipa-kdb backend]')
+    st = os.stat(filename)
+    fd = open(filename)
+
+    lines = fd.readlines()
+    fd.close()
+
+    if '    db_library = ipadb.so\n' in lines:
+        root_logger.debug('dbmodules already updated in %s', filename)
+        return
+
+    for line in lines:
+        if line.startswith('[dbmodules]'):
+            found_dbrealm = True
+        if found_dbrealm and line.find(realm) > -1:
+            found_realm = True
+            prefix = '#'
+        if found_dbrealm and line.find('}') > -1 and found_realm:
+            found_realm = False
+            newfile.append('#%s' % line)
+            prefix = ''
+            continue
+
+        newfile.append('%s%s' % (prefix, line))
+
+    # Append updated dbmodules information
+    newfile.append('  %s = {\n' % realm)
+    newfile.append('    db_library = ipadb.so\n')
+    newfile.append('  }\n')
+
+    # Write out new file
+    fd = open(filename, 'w')
+    fd.write("".join(newfile))
+    fd.close()
+    root_logger.debug('%s updated', filename)
+
+def cleanup_kdc(fstore):
+    """
+    Clean up old KDC files if they exist. We need to remove the actual
+    file and any references in the uninstall configuration.
+    """
+    root_logger.info('[Checking for deprecated KDC configuration files]')
+    for file in ['kpasswd.keytab', 'ldappwd']:
+        filename = '/var/kerberos/krb5kdc/%s' % file
+        installutils.remove_file(filename)
+        if fstore.has_file(filename):
+            fstore.untrack_file(filename)
+            root_logger.debug('Uninstalling %s', filename)
+
+
+def setup_firefox_extension(fstore):
+    """Set up the Firefox configuration extension, if it's not set up yet
+    """
+    root_logger.info('[Setting up Firefox extension]')
+    http = httpinstance.HTTPInstance(fstore)
+    realm = api.env.realm
+    domain = api.env.domain
+    http.setup_firefox_extension(realm, domain)
+
+
+def upgrade_ipa_profile(ca, domain, fqdn):
+    """
+    Update the IPA Profile provided by dogtag
+
+    Returns True if restart is needed, False otherwise.
+    """
+    root_logger.info('[Verifying that CA service certificate profile is updated]')
+    if ca.is_configured():
+        ski = ca.enable_subject_key_identifier()
+        if ski:
+            root_logger.debug('Subject Key Identifier updated.')
+        else:
+            root_logger.debug('Subject Key Identifier already set.')
+        audit = ca.set_audit_renewal()
+        uri = ca.set_crl_ocsp_extensions(domain, fqdn)
+        if audit or ski or uri:
+            return True
+    else:
+        root_logger.info('CA is not configured')
+
+    return False
+
+
+def named_enable_psearch():
+    """
+    From IPA 3.0, persistent search is a preferred mechanism for new DNS zone
+    detection and is also needed for other features (DNSSEC, SOA serial
+    updates). Enable psearch and make sure connections attribute is right.
+    This step is done just once for a case when user switched the persistent
+    search back to disabled.
+
+    When some change in named.conf is done, this functions returns True
+    """
+    changed = False
+
+    root_logger.info('[Enabling persistent search in DNS]')
+
+    if not bindinstance.named_conf_exists():
+        # DNS service may not be configured
+        root_logger.info('DNS is not configured')
+        return
+
+    try:
+        psearch = bindinstance.named_conf_get_directive('psearch')
+    except IOError, e:
+        root_logger.debug('Cannot retrieve psearch option from %s: %s',
+                bindinstance.NAMED_CONF, e)
+        return
+    else:
+        psearch = None if psearch is None else psearch.lower()
+    if not sysupgrade.get_upgrade_state('named.conf', 'psearch_enabled'):
+        if psearch != "yes":
+            try:
+                bindinstance.named_conf_set_directive('zone_refresh', 0)
+                bindinstance.named_conf_set_directive('psearch', 'yes')
+            except IOError, e:
+                root_logger.error('Cannot enable psearch in %s: %s',
+                        bindinstance.NAMED_CONF, e)
+            else:
+                changed = True
+                psearch = "yes"
+        sysupgrade.set_upgrade_state('named.conf', 'psearch_enabled', True)
+        root_logger.debug('Persistent search enabled')
+
+    # make sure number of connections is right
+    minimum_connections = 2
+    if psearch == 'yes':
+        # serial_autoincrement increased the minimal number of connections to 4
+        minimum_connections = 4
+    try:
+        connections = bindinstance.named_conf_get_directive('connections')
+    except IOError, e:
+        root_logger.debug('Cannot retrieve connections option from %s: %s',
+                bindinstance.NAMED_CONF, e)
+        return
+    try:
+        if connections is not None:
+            connections = int(connections)
+    except ValueError:
+        # this should not happend, but there is some bad value in
+        # "connections" option, bail out
+        pass
+    else:
+        if connections is None or connections < minimum_connections:
+            try:
+                bindinstance.named_conf_set_directive('connections',
+                                                        minimum_connections)
+                root_logger.debug('Connections set to %d', minimum_connections)
+            except IOError, e:
+                root_logger.error('Cannot update connections in %s: %s',
+                        bindinstance.NAMED_CONF, e)
+            else:
+                changed = True
+
+    if not changed:
+        root_logger.debug('No changes made')
+    return changed
+
+def named_enable_serial_autoincrement():
+    """
+    Serial autoincrement is a requirement for zone transfers or DNSSEC. It
+    should be enabled both for new installs and upgraded servers.
+
+    When some change in named.conf is done, this functions returns True
+    """
+    changed = False
+
+    root_logger.info('[Enabling serial autoincrement in DNS]')
+
+    if not bindinstance.named_conf_exists():
+        # DNS service may not be configured
+        root_logger.info('DNS is not configured')
+        return changed
+
+    try:
+        psearch = bindinstance.named_conf_get_directive('psearch')
+        serial_autoincrement = bindinstance.named_conf_get_directive(
+                                    'serial_autoincrement')
+    except IOError, e:
+        root_logger.debug('Cannot retrieve psearch option from %s: %s',
+                bindinstance.NAMED_CONF, e)
+        return changed
+    else:
+        psearch = None if psearch is None else psearch.lower()
+        serial_autoincrement = None if serial_autoincrement is None \
+                else serial_autoincrement.lower()
+
+    # enable SOA serial autoincrement
+    if not sysupgrade.get_upgrade_state('named.conf', 'autoincrement_enabled'):
+        if psearch != "yes":    # psearch is required
+            root_logger.error('Persistent search is disabled, '
+                    'serial autoincrement cannot be enabled')
+        else:
+            if serial_autoincrement != 'yes':
+                try:
+                    bindinstance.named_conf_set_directive('serial_autoincrement', 'yes')
+                except IOError, e:
+                    root_logger.error('Cannot enable serial_autoincrement in %s: %s',
+                            bindinstance.NAMED_CONF, e)
+                    return changed
+                else:
+                    root_logger.debug('Serial autoincrement enabled')
+                    changed = True
+            else:
+                root_logger.debug('Serial autoincrement is alredy enabled')
+        sysupgrade.set_upgrade_state('named.conf', 'autoincrement_enabled', True)
+    else:
+        root_logger.debug('Skip serial autoincrement check')
+
+    return changed
+
+def enable_certificate_renewal(ca):
+    """
+    If the CA subsystem certificates are not being tracked for renewal then
+    tell certmonger to start tracking them.
+
+    Returns True when CA needs to be restarted
+    """
+    root_logger.info('[Enable certificate renewal]')
+    if not ca.is_configured():
+        root_logger.info('CA is not configured')
+        return False
+
+    # Using the nickname find the certmonger request_id
+    criteria = (('cert_storage_location', '/etc/httpd/alias', certmonger.NPATH),('cert_nickname', 'ipaCert', None))
+    request_id = certmonger.get_request_id(criteria)
+    if request_id is not None:
+        root_logger.debug('Certificate renewal already configured')
+        return False
+
+    if not sysupgrade.get_upgrade_state('dogtag', 'renewal_configured'):
+        if ca.is_master():
+            ca.configure_renewal()
+        else:
+            ca.configure_certmonger_renewal()
+            ca.configure_clone_renewal()
+            ca.configure_agent_renewal()
+        ca.track_servercert()
+        sysupgrade.set_upgrade_state('dogtag', 'renewal_configured', True)
+        root_logger.debug('CA subsystem certificate renewal enabled')
+        return True
+
+    return False
+
+def copy_crl_file(old_path, new_path=None):
+    """
+    Copy CRL to new location, update permissions and SELinux context
+    """
+    if new_path is None:
+        filename = os.path.basename(old_path)
+        new_path = os.path.join(dogtag.configured_constants().CRL_PUBLISH_PATH,
+                                filename)
+    root_logger.debug('copy_crl_file: %s -> %s', old_path, new_path)
+
+    if os.path.islink(old_path):
+        # update symlink to the most most recent CRL file
+        filename = os.path.basename(os.readlink(old_path))
+        realpath = os.path.join(dogtag.configured_constants().CRL_PUBLISH_PATH,
+                                filename)
+        root_logger.debug('copy_crl_file: Create symlink %s -> %s',
+            new_path, realpath)
+        os.symlink(realpath, new_path)
+    else:
+        shutil.copy2(old_path, new_path)
+        pent = pwd.getpwnam(cainstance.PKI_USER)
+        os.chown(new_path, pent.pw_uid, pent.pw_gid)
+
+    services.restore_context(new_path)
+
+def migrate_crl_publish_dir(ca):
+    """
+    Move CRL publish dir from /var/lib/pki-ca/publish to IPA controlled tree:
+    /var/lib/ipa/pki-ca/publish
+    """
+    root_logger.info('[Migrate CRL publish directory]')
+    if sysupgrade.get_upgrade_state('dogtag', 'moved_crl_publish_dir'):
+        root_logger.info('CRL tree already moved')
+        return False
+
+    if not ca.is_configured():
+        root_logger.info('CA is not configured')
+        return False
+
+    caconfig = dogtag.configured_constants()
+
+    try:
+        old_publish_dir = installutils.get_directive(caconfig.CS_CFG_PATH,
+            'ca.publish.publisher.instance.FileBaseCRLPublisher.directory',
+            separator='=')
+    except OSError, e:
+        root_logger.error('Cannot read CA configuration file "%s": %s',
+                caconfig.CS_CFG_PATH, e)
+        return False
+
+    if old_publish_dir == caconfig.CRL_PUBLISH_PATH:
+        # publish dir is already updated
+        root_logger.info('Publish directory already set to new location')
+        sysupgrade.set_upgrade_state('dogtag', 'moved_crl_publish_dir', True)
+        return False
+
+    # Prepare target publish dir (permissions, SELinux context)
+    publishdir = ca.prepare_crl_publish_dir()
+
+    # Copy all CRLs to new directory
+    root_logger.info('Copy all CRLs to new publish directory')
+    try:
+        crl_files_unsorted = cainstance.get_crl_files(old_publish_dir)
+    except OSError, e:
+        root_logger.error('Cannot move CRL files to new directory: %s', e)
+    else:
+        # Move CRL files at the end of the list to make sure that the actual
+        # CRL files are copied first
+        crl_files = sorted(crl_files_unsorted,
+                           key=lambda f: os.path.islink(f))
+        for f in crl_files:
+            try:
+                copy_crl_file(f)
+            except Exception, e:
+                root_logger.error('Cannot move CRL file to new directory: %s', e)
+
+    try:
+        installutils.set_directive(caconfig.CS_CFG_PATH,
+            'ca.publish.publisher.instance.FileBaseCRLPublisher.directory',
+            publishdir, quotes=False, separator='=')
+    except OSError, e:
+        root_logger.error('Cannot update CA configuration file "%s": %s',
+                caconfig.CS_CFG_PATH, e)
+        return False
+    sysupgrade.set_upgrade_state('dogtag', 'moved_crl_publish_dir', True)
+    root_logger.info('CRL publish directory has been migrated, '
+                     'request pki-ca restart')
+    return True
+
+def add_server_cname_records():
+    root_logger.info('[Add missing server CNAME records]')
+
+    if not sysupgrade.get_upgrade_state('dns', 'ipa_ca_cname'):
+        try:
+            api.Backend.ldap2.connect(autobind=True)
+        except ipalib.errors.PublicError, e:
+            root_logger.error("Cannot connect to LDAP to add DNS records: %s", e)
+        else:
+            ret = api.Command['dns_is_enabled']()
+            if not ret['result']:
+                root_logger.info('DNS is not configured')
+                sysupgrade.set_upgrade_state('dns', 'ipa_ca_cname', True)
+                return
+
+            bind = bindinstance.BindInstance()
+            # DNS is enabled, so let bindinstance find out if CA is enabled
+            # and let it add the CNAME in that case
+            bind.add_ipa_ca_cname(api.env.host, api.env.domain, ca_configured=None)
+            sysupgrade.set_upgrade_state('dns', 'ipa_ca_cname', True)
+        finally:
+            if api.Backend.ldap2.isconnected():
+                 api.Backend.ldap2.disconnect()
+    else:
+        root_logger.info('IPA CA CNAME already processed')
 
 def main():
     """
@@ -164,11 +615,28 @@ def main():
     exit gracefully.
     """
 
-    try:
-        krbctx = krbV.default_context()
-    except krbV.Krb5Error, e:
-        # Unable to get default kerberos realm
+    if not os.geteuid()==0:
+        sys.exit("\nYou must be root to run this script.\n")
+
+    if not installutils.is_ipa_configured():
         sys.exit(0)
+
+    safe_options, options = parse_options()
+
+    verbose = not options.quiet
+    if options.debug:
+        console_format = '%(levelname)s: %(message)s'
+    else:
+        console_format = '%(message)s'
+
+    standard_logging_setup('/var/log/ipaupgrade.log', debug=options.debug,
+        verbose=verbose, console_format=console_format, filemode='a')
+    root_logger.debug('%s was invoked with options: %s' % (sys.argv[0], safe_options))
+
+    fstore = sysrestore.FileStore('/var/lib/ipa/sysrestore')
+
+    api.bootstrap(context='restart', in_server=True)
+    api.finalize()
 
     fqdn = find_hostname()
     if fqdn is None:
@@ -179,16 +647,78 @@ def main():
 
     check_certs()
 
-    sub_dict = { "REALM" : krbctx.default_realm, "FQDN": fqdn }
+    auto_redirect = find_autoredirect(fqdn)
+    configured_constants = dogtag.configured_constants()
+    sub_dict = dict(
+        REALM=api.env.realm,
+        FQDN=fqdn,
+        AUTOREDIR='' if auto_redirect else '#',
+        CRL_PUBLISH_PATH=configured_constants.CRL_PUBLISH_PATH,
+        DOGTAG_PORT=configured_constants.AJP_PORT,
+        CLONE='#'
+    )
+
+    ca = cainstance.CAInstance(api.env.realm, certs.NSS_DIR)
+
+    # migrate CRL publish dir before the location in ipa.conf is updated
+    ca_restart = migrate_crl_publish_dir(ca)
+
+    if ca.is_configured():
+        crl = installutils.get_directive(configured_constants.CS_CFG_PATH,
+                                         'ca.crl.MasterCRL.enableCRLUpdates',
+                                         '=')
+        sub_dict['CLONE']='#' if crl.lower() == 'true' else ''
+
+    certmap_dir = dsinstance.config_dirname(
+        dsinstance.realm_to_serverid(api.env.realm))
 
     upgrade(sub_dict, "/etc/httpd/conf.d/ipa.conf", ipautil.SHARE_DIR + "ipa.conf")
     upgrade(sub_dict, "/etc/httpd/conf.d/ipa-rewrite.conf", ipautil.SHARE_DIR + "ipa-rewrite.conf")
     upgrade(sub_dict, "/etc/httpd/conf.d/ipa-pki-proxy.conf", ipautil.SHARE_DIR + "ipa-pki-proxy.conf", add=True)
-    upgrade_pki()
-try:
-    if __name__ == "__main__":
-        sys.exit(main())
-except SystemExit, e:
-    sys.exit(e)
-except KeyboardInterrupt, e:
-    sys.exit(1)
+    upgrade(sub_dict, os.path.join(certmap_dir, "certmap.conf"),
+        os.path.join(ipautil.SHARE_DIR, "certmap.conf.template"))
+    upgrade_pki(ca, fstore)
+    update_dbmodules(api.env.realm)
+    uninstall_ipa_kpasswd()
+
+    http = httpinstance.HTTPInstance(fstore)
+    http.remove_httpd_ccache()
+    http.configure_selinux_for_httpd()
+
+    memcache = memcacheinstance.MemcacheInstance()
+    memcache.ldapi = True
+    memcache.realm = api.env.realm
+    try:
+        if not memcache.is_configured():
+            # 389-ds needs to be running to create the memcache instance
+            # because we record the new service in cn=masters.
+            ds = dsinstance.DsInstance()
+            ds.start()
+            memcache.create_instance('MEMCACHE', fqdn, None, ipautil.realm_to_suffix(api.env.realm))
+    except (ldap.ALREADY_EXISTS, ipalib.errors.DuplicateEntry):
+        pass
+
+    cleanup_kdc(fstore)
+    setup_firefox_extension(fstore)
+    add_server_cname_records()
+    changed_psearch = named_enable_psearch()
+    changed_autoincrement = named_enable_serial_autoincrement()
+    if changed_psearch or changed_autoincrement:
+        # configuration has changed, restart the name server
+        root_logger.info('Changes to named.conf have been made, restart named')
+        bind = bindinstance.BindInstance(fstore)
+        try:
+            bind.restart()
+        except ipautil.CalledProcessError, e:
+            root_logger.error("Failed to restart %s: %s", bind.service_name, e)
+    ca_restart = ca_restart or enable_certificate_renewal(ca) or upgrade_ipa_profile(ca, api.env.domain, fqdn)
+
+    if ca_restart:
+        root_logger.info('pki-ca configuration changed, restart pki-ca')
+        try:
+            ca.restart(dogtag.configured_constants().PKI_INSTANCE_NAME)
+        except ipautil.CalledProcessError, e:
+            root_logger.error("Failed to restart %s: %s", ca.service_name, e)
+
+if __name__ == '__main__':
+    installutils.run_script(main, operation_name='ipa-upgradeconfig')

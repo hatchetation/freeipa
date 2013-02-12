@@ -23,6 +23,7 @@ Base classes for all backed-end plugins.
 
 import threading
 import plugable
+import os
 from errors import PublicError, InternalError, CommandError
 from request import context, Connection, destroy_context
 
@@ -101,16 +102,19 @@ class Connectible(Backend):
 
 class Executioner(Backend):
 
-
     def create_context(self, ccache=None, client_ip=None):
         """
         client_ip: The IP address of the remote client.
         """
+
+        if ccache is not None:
+            os.environ["KRB5CCNAME"] = ccache
+
         if self.env.in_server:
             self.Backend.ldap2.connect(ccache=ccache)
         else:
             self.Backend.xmlclient.connect(verbose=(self.env.verbose >= 2),
-                fallback=self.env.fallback)
+                fallback=self.env.fallback, delegate=self.env.delegate)
         if client_ip is not None:
             setattr(context, "client_ip", client_ip)
 

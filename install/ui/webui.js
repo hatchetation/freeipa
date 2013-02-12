@@ -40,10 +40,9 @@ IPA.admin_navigation = function(spec) {
             {entity: 'hostgroup'},
             {entity: 'netgroup'},
             {entity: 'service'},
-            {name:'dns',
-             label: IPA.messages.tabs.dns,
-             children:[
-                 {entity: 'dnszone', hidden:true},
+            {name:'dns', label: IPA.messages.tabs.dns, children:[
+                 {entity: 'dnszone'},
+                 {entity: 'dnsconfig'},
                  {entity: 'dnsrecord', hidden:true}
              ]
             }
@@ -52,7 +51,8 @@ IPA.admin_navigation = function(spec) {
             {name: 'hbac', label: IPA.messages.tabs.hbac, children: [
                  {entity: 'hbacrule'},
                  {entity: 'hbacsvc'},
-                 {entity: 'hbacsvcgroup'}
+                 {entity: 'hbacsvcgroup'},
+                 {entity: 'hbactest'}
             ]},
             {name: 'sudo', label: IPA.messages.tabs.sudo, children: [
                  {entity: 'sudorule'},
@@ -62,11 +62,19 @@ IPA.admin_navigation = function(spec) {
             {name:'automount',
              label: IPA.messages.tabs.automount,
              children:[
-                {entity: 'automountlocation', hidden:true},
-                {entity: 'automountmap', hidden: true},
-                {entity: 'automountkey', hidden: true}]},
+                {entity: 'automountlocation', hidden:true, depth: -1},
+                {entity: 'automountmap', hidden: true, depth: -1},
+                {entity: 'automountkey', hidden: true, depth: -1}]},
             {entity: 'pwpolicy'},
-            {entity: 'krbtpolicy'}
+            {entity: 'krbtpolicy'},
+            {entity: 'selinuxusermap'},
+            {name: 'automember', label: IPA.messages.tabs.automember,
+             children: [
+                { name: 'amgroup', entity: 'automember',
+                  facet: 'searchgroup', label: IPA.messages.objects.automember.usergrouprules},
+                { name: 'amhostgroup', entity: 'automember',
+                  facet: 'searchhostgroup', label: IPA.messages.objects.automember.hostgrouprules}
+            ]}
         ]},
         {name: 'ipaserver', label: IPA.messages.tabs.ipaserver, children: [
             {name: 'rolebased', label: IPA.messages.tabs.role, children: [
@@ -76,6 +84,8 @@ IPA.admin_navigation = function(spec) {
              ]},
             {entity: 'selfservice'},
             {entity: 'delegation'},
+            {entity: 'idrange'},
+            {entity: 'trust'},
             {entity: 'config'}
         ]}];
 
@@ -142,6 +152,9 @@ $(function() {
         } else if (whoami.hasOwnProperty('memberof_role') &&
                    whoami.memberof_role.length > 0) {
             factory = IPA.admin_navigation;
+        } else if (whoami.hasOwnProperty('memberofindirect_role') &&
+                   whoami.memberofindirect_role.length > 0) {
+            factory = IPA.admin_navigation;
         } else {
             factory = IPA.self_serv_navigation;
         }
@@ -153,26 +166,28 @@ $(function() {
     }
 
 
-    function init_on_win(data, text_status, xhr) {
+    function init_on_success(data, text_status, xhr) {
         $(window).bind('hashchange', window_hashchange);
 
         var whoami = IPA.whoami;
         IPA.whoami_pkey = whoami.uid[0];
-        $('#loggedinas strong').text(whoami.cn[0]);
+        $('#loggedinas .login').text(whoami.cn[0]);
         $('#loggedinas a').fragment(
             {'user-facet': 'details', 'user-pkey': IPA.whoami_pkey}, 2);
+
+        $('#logout').click(function() {
+            IPA.logout();
+            return false;
+        }).text(IPA.messages.login.logout);
+
+        $('.header-loggedinas').css('visibility','visible');
+        IPA.update_password_expiration();
 
         IPA.nav = create_navigation();
         IPA.nav.create();
         IPA.nav.update();
 
         $('#login_header').html(IPA.messages.login.header);
-
-        if (IPA.hbac_deny_rules  && IPA.hbac_deny_rules.count > 0){
-            if (IPA.nav.name === 'admin'){
-                IPA.hbac_deny_warning_dialog();
-            }
-        }
     }
 
 
@@ -182,6 +197,8 @@ $(function() {
         container.append('<p>'+error_thrown.message+'</p>');
     }
 
-    IPA.init(null, null, init_on_win, init_on_error);
-
+    IPA.init({
+        on_success: init_on_success,
+        on_error: init_on_error
+    });
 });

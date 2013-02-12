@@ -22,6 +22,9 @@ import platform
 import os
 import sys
 from nss.error import NSPRError
+import nss.nss as nss
+import netaddr
+import string
 
 from ipalib import api, errors, util
 from ipalib import Str, Flag, Bytes
@@ -29,15 +32,18 @@ from ipalib.plugins.baseldap import *
 from ipalib.plugins.service import split_principal
 from ipalib.plugins.service import validate_certificate
 from ipalib.plugins.service import set_certificate_attrs
-from ipalib.plugins.dns import dns_container_exists, _record_types
-from ipalib.plugins.dns import add_forward_record
+from ipalib.plugins.dns import (dns_container_exists, _record_types,
+        add_records_for_host_validation, add_records_for_host,
+        _hostname_validator, get_reverse_zone)
+from ipalib.plugins.dns import get_reverse_zone
 from ipalib import _, ngettext
 from ipalib import x509
-from ipapython.ipautil import ipa_generate_password, CheckedIPAddress
 from ipalib.request import context
-import base64
-import nss.nss as nss
-import netaddr
+from ipalib.util import (normalize_sshpubkey, validate_sshpubkey_no_options,
+    convert_sshpubkey_post)
+from ipapython.ipautil import ipa_generate_password, CheckedIPAddress
+from ipapython.ssh import SSHPublicKey
+from ipapython.dn import DN
 
 __doc__ = _("""
 Hosts/Machines
@@ -86,6 +92,9 @@ EXAMPLES:
  Modify information about a host:
    ipa host-mod --os='Fedora 12' test.example.com
 
+ Remove SSH public keys of a host and update DNS to reflect this change:
+   ipa host-mod --sshpubkey= --updatedns test.example.com
+
  Disable the host Kerberos key, SSL certificate and all of its services:
    ipa host-disable test.example.com
 
@@ -93,64 +102,20 @@ EXAMPLES:
    ipa host-add-managedby --hosts=test2 test
 """)
 
-def validate_host(ugettext, fqdn):
-    """
-    Require at least one dot in the hostname (to support localhost.localdomain)
-    """
-    if fqdn.find('.') == -1:
-        return _('Fully-qualified hostname required')
-    return None
-
-def is_forward_record(zone, str_address):
-    addr = netaddr.IPAddress(str_address)
-    if addr.version == 4:
-        result = api.Command['dnsrecord_find'](zone, arecord=str_address)
-    elif addr.version == 6:
-        result = api.Command['dnsrecord_find'](zone, aaaarecord=str_address)
-    else:
-        raise ValueError('Invalid address family')
-
-    return result['count'] > 0
-
-def get_reverse_zone(ipaddr, prefixlen=None):
-    ip = netaddr.IPAddress(ipaddr)
-    revdns = unicode(ip.reverse_dns)
-
-    if prefixlen is None:
-        revzone = u''
-
-        result = api.Command['dnszone_find']()['result']
-        for zone in result:
-            zonename = zone['idnsname'][0]
-            if revdns.endswith(zonename) and len(zonename) > len(revzone):
-                revzone = zonename
-    else:
-        if ip.version == 4:
-            pos = 4 - prefixlen / 8
-        elif ip.version == 6:
-            pos = 32 - prefixlen / 4
-        items = ip.reverse_dns.split('.')
-        revzone = u'.'.join(items[pos:])
-
-        try:
-            api.Command['dnszone_show'](revzone)
-        except errors.NotFound:
-            revzone = u''
-
-    if len(revzone) == 0:
-        raise errors.NotFound(
-            reason=_('DNS reverse zone for IP address %(addr)s not found') % dict(addr=ipaddr)
-        )
-
-    revname = revdns[:-len(revzone)-1]
-
-    return revzone, revname
+# Characters to be used by random password generator
+# The set was chosen to avoid the need for escaping the characters by user
+host_pwd_chars=string.digits + string.ascii_letters + '_,.@+-='
 
 def remove_fwd_ptr(ipaddr, host, domain, recordtype):
     api.log.debug('deleting ipaddr %s' % ipaddr)
     try:
         revzone, revname = get_reverse_zone(ipaddr)
-        delkw = { 'ptrrecord' : "%s.%s." % (host, domain) }
+
+        # in case domain is in FQDN form with a trailing dot, we needn't add
+        # another one, in case it has no trailing dot, dnsrecord-del will
+        # normalize the entry
+        delkw = { 'ptrrecord' : "%s.%s" % (host, domain) }
+
         api.Command['dnsrecord_del'](revzone, revname, **delkw)
     except errors.NotFound:
         pass
@@ -161,7 +126,29 @@ def remove_fwd_ptr(ipaddr, host, domain, recordtype):
     except errors.NotFound:
         pass
 
+def update_sshfp_record(zone, record, entry_attrs):
+    if 'ipasshpubkey' not in entry_attrs:
+        return
+
+    pubkeys = entry_attrs['ipasshpubkey'] or ()
+    sshfps=[]
+    for pubkey in pubkeys:
+        try:
+            sshfp = SSHPublicKey(pubkey).fingerprint_dns_sha1()
+        except ValueError, UnicodeDecodeError:
+            continue
+        if sshfp is not None:
+            sshfps.append(sshfp)
+
+    try:
+        api.Command['dnsrecord_mod'](zone, record, sshfprecord=sshfps)
+    except errors.EmptyModlist:
+        pass
+
 host_output_params = (
+    Flag('has_keytab',
+        label=_('Keytab'),
+    ),
     Str('managedby_host',
         label='Managed by',
     ),
@@ -173,6 +160,9 @@ host_output_params = (
     ),
     Str('serial_number',
         label=_('Serial Number'),
+    ),
+    Str('serial_number_hex',
+        label=_('Serial Number (hex)'),
     ),
     Str('issuer',
         label=_('Issuer'),
@@ -192,6 +182,12 @@ host_output_params = (
     Str('revocation_reason?',
         label=_('Revocation reason'),
     ),
+    Str('managedby',
+        label=_('Failed managedby'),
+    ),
+    Str('sshpubkeyfp*',
+        label=_('SSH public key fingerprint'),
+    ),
 )
 
 def validate_ipaddr(ugettext, ipaddr):
@@ -200,10 +196,16 @@ def validate_ipaddr(ugettext, ipaddr):
     """
     try:
         ip = CheckedIPAddress(ipaddr, match_local=False)
-    except:
-        return _('invalid IP address')
+    except Exception, e:
+        return unicode(e)
     return None
 
+def normalize_hostname(hostname):
+    """Use common fqdn form without the trailing dot"""
+    if hostname.endswith(u'.'):
+        hostname = hostname[:-1]
+    hostname = hostname.lower()
+    return hostname
 
 class host(LDAPObject):
     """
@@ -221,7 +223,7 @@ class host(LDAPObject):
     default_attributes = [
         'fqdn', 'description', 'l', 'nshostlocation', 'krbprincipalname',
         'nshardwareplatform', 'nsosversion', 'usercertificate', 'memberof',
-        'managedby', 'memberindirect', 'memberofindirect',
+        'managedby', 'memberindirect', 'memberofindirect', 'macaddress',
     ]
     uuid_attribute = 'ipauniqueid'
     attribute_members = {
@@ -246,14 +248,11 @@ class host(LDAPObject):
     label_singular = _('Host')
 
     takes_params = (
-        Str('fqdn', validate_host,
-            pattern='^[a-zA-Z0-9][a-zA-Z0-9-\.]{0,254}$',
-            pattern_errmsg='may only include letters, numbers, and -',
-            maxlength=255,
+        Str('fqdn', _hostname_validator,
             cli_name='hostname',
             label=_('Host name'),
             primary_key=True,
-            normalizer=lambda value: value.lower(),
+            normalizer=normalize_hostname,
         ),
         Str('description?',
             cli_name='desc',
@@ -287,12 +286,12 @@ class host(LDAPObject):
         ),
         Flag('random?',
             doc=_('Generate a random password to be used in bulk enrollment'),
-            flags=['no_search'],
+            flags=('no_search', 'virtual_attribute'),
             default=False,
         ),
         Str('randompassword?',
             label=_('Random password'),
-            flags=['no_create', 'no_update', 'no_search'],
+            flags=('no_create', 'no_update', 'no_search', 'virtual_attribute'),
         ),
         Bytes('usercertificate?', validate_certificate,
             cli_name='certificate',
@@ -303,12 +302,25 @@ class host(LDAPObject):
             label=_('Principal name'),
             flags=['no_create', 'no_update', 'no_search'],
         ),
+        Str('macaddress*',
+            normalizer=lambda value: value.upper(),
+            pattern='^([a-fA-F0-9]{2}[:|\-]?){5}[a-fA-F0-9]{2}$',
+            pattern_errmsg='Must be of the form HH:HH:HH:HH:HH:HH, where each H is a hexadecimal character.',
+            csv=True,
+            label=_('MAC address'),
+            doc=_('Hardware MAC address(es) on this host'),
+        ),
+        Str('ipasshpubkey*', validate_sshpubkey_no_options,
+            cli_name='sshpubkey',
+            label=_('SSH public key'),
+            normalizer=normalize_sshpubkey,
+            csv=True,
+            flags=['no_search'],
+        ),
     )
 
     def get_dn(self, *keys, **options):
         hostname = keys[-1]
-        if hostname.endswith('.'):
-            hostname = hostname[:-1]
         dn = super(host, self).get_dn(hostname, **options)
         try:
             self.backend.get_entry(dn, [''])
@@ -365,7 +377,7 @@ class host_add(LDAPCreate):
     has_output_params = LDAPCreate.has_output_params + host_output_params
     msg_summary = _('Added host "%(value)s"')
     member_attributes = ['managedby']
-    takes_options = (
+    takes_options = LDAPCreate.takes_options + (
         Flag('force',
             label=_('Force'),
             doc=_('force host name even if not in DNS'),
@@ -380,35 +392,16 @@ class host_add(LDAPCreate):
     )
 
     def pre_callback(self, ldap, dn, entry_attrs, attrs_list, *keys, **options):
-        if 'ip_address' in options and dns_container_exists(ldap):
+        assert isinstance(dn, DN)
+        if options.get('ip_address') and dns_container_exists(ldap):
             parts = keys[-1].split('.')
+            host = parts[0]
             domain = unicode('.'.join(parts[1:]))
-            result = api.Command['dnszone_find']()['result']
-            match = False
-            for zone in result:
-                if domain == zone['idnsname'][0]:
-                    match = True
-                    break
-            if not match:
-                raise errors.NotFound(
-                    reason=_('DNS zone %(zone)s not found') % dict(zone=domain)
-                )
-            ip = CheckedIPAddress(options['ip_address'], match_local=False)
-            if not options.get('no_reverse', False):
-                try:
-                    prefixlen = None
-                    if not ip.defaultnet:
-                        prefixlen = ip.prefixlen
-                    # we prefer lookup of the IP through the reverse zone
-                    revzone, revname = get_reverse_zone(ip, prefixlen)
-                    reverse = api.Command['dnsrecord_find'](revzone, idnsname=revname)
-                    if reverse['count'] > 0:
-                        raise errors.DuplicateEntry(message=u'This IP address is already assigned.')
-                except errors.NotFound:
-                    pass
-            else:
-                if is_forward_record(domain, unicode(ip)):
-                    raise errors.DuplicateEntry(message=u'This IP address is already assigned.')
+            check_reverse = not options.get('no_reverse', False)
+            add_records_for_host_validation('ip_address', host, domain,
+                    options['ip_address'],
+                    check_forward=True,
+                    check_reverse=check_reverse)
         if not options.get('force', False) and not 'ip_address' in options:
             util.validate_host_dns(self.log, keys[-1])
         if 'locality' in entry_attrs:
@@ -429,45 +422,40 @@ class host_add(LDAPCreate):
                 entry_attrs['objectclass'].remove('krbprincipalaux')
             if 'krbprincipal' in entry_attrs['objectclass']:
                 entry_attrs['objectclass'].remove('krbprincipal')
-        if 'random' in options:
-            if options.get('random'):
-                entry_attrs['userpassword'] = ipa_generate_password()
-                # save the password so it can be displayed in post_callback
-                setattr(context, 'randompassword', entry_attrs['userpassword'])
-            del entry_attrs['random']
+        if options.get('random'):
+            entry_attrs['userpassword'] = ipa_generate_password(characters=host_pwd_chars)
+            # save the password so it can be displayed in post_callback
+            setattr(context, 'randompassword', entry_attrs['userpassword'])
         cert = options.get('usercertificate')
         if cert:
             cert = x509.normalize_certificate(cert)
             x509.verify_cert_subject(ldap, keys[-1], cert)
             entry_attrs['usercertificate'] = cert
         entry_attrs['managedby'] = dn
+        entry_attrs['objectclass'].append('ieee802device')
+        entry_attrs['objectclass'].append('ipasshhost')
         return dn
 
     def post_callback(self, ldap, dn, entry_attrs, *keys, **options):
+        assert isinstance(dn, DN)
         exc = None
-        try:
-            if 'ip_address' in options and dns_container_exists(ldap):
+        if dns_container_exists(ldap):
+            try:
                 parts = keys[-1].split('.')
+                host = parts[0]
                 domain = unicode('.'.join(parts[1:]))
 
-                ip = CheckedIPAddress(options['ip_address'], match_local=False)
-                add_forward_record(domain, parts[0], unicode(ip))
+                if options.get('ip_address'):
+                    add_reverse = not options.get('no_reverse', False)
 
-                if not options.get('no_reverse', False):
-                    try:
-                        prefixlen = None
-                        if not ip.defaultnet:
-                            prefixlen = ip.prefixlen
-                        revzone, revname = get_reverse_zone(ip, prefixlen)
-                        addkw = { 'ptrrecord' : keys[-1]+'.' }
-                        api.Command['dnsrecord_add'](revzone, revname, **addkw)
-                    except errors.EmptyModlist:
-                        # the entry already exists and matches
-                        pass
+                    add_records_for_host(host, domain, options['ip_address'],
+                                         add_forward=True,
+                                         add_reverse=add_reverse)
+                    del options['ip_address']
 
-                del options['ip_address']
-        except Exception, e:
-            exc = e
+                update_sshfp_record(domain, unicode(parts[0]), entry_attrs)
+            except Exception, e:
+                exc = e
         if options.get('random', False):
             try:
                 entry_attrs['randompassword'] = unicode(getattr(context, 'randompassword'))
@@ -482,12 +470,14 @@ class host_add(LDAPCreate):
         set_certificate_attrs(entry_attrs)
 
         if options.get('all', False):
-                entry_attrs['managing'] = self.obj.get_managed_hosts(dn)
+            entry_attrs['managing'] = self.obj.get_managed_hosts(dn)
         self.obj.get_password_attributes(ldap, dn, entry_attrs)
         if entry_attrs['has_password']:
             # If an OTP is set there is no keytab, at least not one
             # fetched anywhere.
             entry_attrs['has_keytab'] = False
+
+        convert_sshpubkey_post(ldap, dn, entry_attrs)
 
         return dn
 
@@ -508,12 +498,14 @@ class host_del(LDAPDelete):
     )
 
     def pre_callback(self, ldap, dn, *keys, **options):
+        assert isinstance(dn, DN)
         # If we aren't given a fqdn, find it
-        if validate_host(None, keys[-1]) is not None:
+        if _hostname_validator(None, keys[-1]) is not None:
             hostentry = api.Command['host_show'](keys[-1])['result']
             fqdn = hostentry['fqdn'][0]
         else:
             fqdn = keys[-1]
+        host_is_master(ldap, fqdn)
         # Remove all service records for this host
         truncated = True
         while truncated:
@@ -540,16 +532,11 @@ class host_del(LDAPDelete):
             # Remove DNS entries
             parts = fqdn.split('.')
             domain = unicode('.'.join(parts[1:]))
-            result = api.Command['dnszone_find']()['result']
-            match = False
-            for zone in result:
-                if domain == zone['idnsname'][0]:
-                    match = True
-                    break
-            if not match:
-                raise errors.NotFound(
-                    reason=_('DNS zone %(zone)s not found') % dict(zone=domain)
-                )
+            try:
+                result = api.Command['dnszone_show'](domain)['result']
+                domain = result['idnsname'][0]
+            except errors.NotFound:
+                self.obj.handle_not_found(*keys)
             # Get all forward resources for this host
             records = api.Command['dnsrecord_find'](domain, idnsname=parts[0])['result']
             for record in records:
@@ -621,12 +608,17 @@ class host_mod(LDAPUpdate):
             doc=_('Kerberos principal name for this host'),
             attribute=True,
         ),
+        Flag('updatedns?',
+            doc=_('Update DNS entries'),
+            default=False,
+        ),
     )
 
     def pre_callback(self, ldap, dn, entry_attrs, attrs_list, *keys, **options):
+        assert isinstance(dn, DN)
         # Allow an existing OTP to be reset but don't allow a OTP to be
         # added to an enrolled host.
-        if 'userpassword' in options:
+        if options.get('userpassword') or options.get('random'):
             entry = {}
             self.obj.get_password_attributes(ldap, dn, entry)
             if not entry['has_password'] and entry['has_keytab']:
@@ -634,7 +626,7 @@ class host_mod(LDAPUpdate):
 
         # Once a principal name is set it cannot be changed
         if 'cn' in entry_attrs:
-            raise errors.ACIError(info='cn is immutable')
+            raise errors.ACIError(info=_('cn is immutable'))
         if 'locality' in entry_attrs:
             entry_attrs['l'] = entry_attrs['locality']
             del entry_attrs['locality']
@@ -677,15 +669,45 @@ class host_mod(LDAPUpdate):
                         raise nsprerr
 
             entry_attrs['usercertificate'] = cert
-        if 'random' in options:
-            if options.get('random'):
-                entry_attrs['userpassword'] = ipa_generate_password()
-                setattr(context, 'randompassword', entry_attrs['userpassword'])
-            del entry_attrs['random']
+
+        if options.get('random'):
+            entry_attrs['userpassword'] = ipa_generate_password(characters=host_pwd_chars)
+            setattr(context, 'randompassword', entry_attrs['userpassword'])
+        if 'macaddress' in entry_attrs:
+            if 'objectclass' in entry_attrs:
+                obj_classes = entry_attrs['objectclass']
+            else:
+                (_dn, _entry_attrs) = ldap.get_entry(
+                    dn, ['objectclass']
+                )
+                obj_classes = _entry_attrs['objectclass']
+            if 'ieee802device' not in obj_classes:
+                obj_classes.append('ieee802device')
+                entry_attrs['objectclass'] = obj_classes
+
+        if options.get('updatedns', False) and dns_container_exists(ldap):
+            parts = keys[-1].split('.')
+            domain = unicode('.'.join(parts[1:]))
+            try:
+                result = api.Command['dnszone_show'](domain)['result']
+                domain = result['idnsname'][0]
+            except errors.NotFound:
+                self.obj.handle_not_found(*keys)
+            update_sshfp_record(domain, unicode(parts[0]), entry_attrs)
+
+        if 'ipasshpubkey' in entry_attrs:
+            if 'objectclass' in entry_attrs:
+                obj_classes = entry_attrs['objectclass']
+            else:
+                (_dn, _entry_attrs) = ldap.get_entry(dn, ['objectclass'])
+                obj_classes = entry_attrs['objectclass'] = _entry_attrs['objectclass']
+            if 'ipasshhost' not in obj_classes:
+                obj_classes.append('ipasshhost')
 
         return dn
 
     def post_callback(self, ldap, dn, entry_attrs, *keys, **options):
+        assert isinstance(dn, DN)
         if options.get('random', False):
             entry_attrs['randompassword'] = unicode(getattr(context, 'randompassword'))
         set_certificate_attrs(entry_attrs)
@@ -699,6 +721,8 @@ class host_mod(LDAPUpdate):
             entry_attrs['managing'] = self.obj.get_managed_hosts(dn)
 
         self.obj.suppress_netgroup_memberof(entry_attrs)
+
+        convert_sshpubkey_post(ldap, dn, entry_attrs)
 
         return dn
 
@@ -714,13 +738,62 @@ class host_find(LDAPSearch):
     )
     member_attributes = ['memberof', 'enrolledby', 'managedby']
 
+    def get_options(self):
+        for option in super(host_find, self).get_options():
+            yield option
+        # "managing" membership has to be added and processed separately
+        for option in self.get_member_options('managing'):
+            yield option
+
     def pre_callback(self, ldap, filter, attrs_list, base_dn, scope, *args, **options):
+        assert isinstance(base_dn, DN)
         if 'locality' in attrs_list:
             attrs_list.remove('locality')
             attrs_list.append('l')
+        if 'man_host' in options or 'not_man_host' in options:
+            hosts = []
+            if options.get('man_host') is not None:
+                for pkey in options.get('man_host', []):
+                    dn = self.obj.get_dn(pkey)
+                    try:
+                        (dn, entry_attrs) = ldap.get_entry(dn, ['managedby'])
+                    except errors.NotFound:
+                        self.obj.handle_not_found(pkey)
+                    hosts.append(set(entry_attrs.get('managedby', '')))
+                hosts = list(reduce(lambda s1, s2: s1 & s2, hosts))
+
+                if not hosts:
+                    # There is no host managing _all_ hosts in --man-hosts
+                    filter = ldap.combine_filters(
+                        (filter, '(objectclass=disabled)'), ldap.MATCH_ALL
+                    )
+
+            not_hosts = []
+            if options.get('not_man_host') is not None:
+                for pkey in options.get('not_man_host', []):
+                    dn = self.obj.get_dn(pkey)
+                    try:
+                        (dn, entry_attrs) = ldap.get_entry(dn, ['managedby'])
+                    except errors.NotFound:
+                        self.obj.handle_not_found(pkey)
+                    not_hosts += entry_attrs.get('managedby', [])
+                not_hosts = list(set(not_hosts))
+
+            for target_hosts, filter_op in ((hosts, ldap.MATCH_ANY),
+                                            (not_hosts, ldap.MATCH_NONE)):
+                hosts_avas = [DN(host)[0][0] for host in target_hosts]
+                hosts_filters = [ldap.make_filter_from_attr(ava.attr, ava.value) for ava in hosts_avas]
+                hosts_filter = ldap.combine_filters(hosts_filters, filter_op)
+
+                filter = ldap.combine_filters(
+                        (filter, hosts_filter), ldap.MATCH_ALL
+                    )
+
         return (filter.replace('locality', 'l'), base_dn, scope)
 
     def post_callback(self, ldap, entries, truncated, *args, **options):
+        if options.get('pkey_only', False):
+            return truncated
         for entry in entries:
             (dn, entry_attrs) = entry
             set_certificate_attrs(entry_attrs)
@@ -733,6 +806,10 @@ class host_find(LDAPSearch):
 
             if options.get('all', False):
                 entry_attrs['managing'] = self.obj.get_managed_hosts(entry[0])
+
+            convert_sshpubkey_post(ldap, dn, entry_attrs)
+
+        return truncated
 
 api.register(host_find)
 
@@ -750,6 +827,7 @@ class host_show(LDAPRetrieve):
     member_attributes = ['managedby']
 
     def post_callback(self, ldap, dn, entry_attrs, *keys, **options):
+        assert isinstance(dn, DN)
         self.obj.get_password_attributes(ldap, dn, entry_attrs)
         if entry_attrs['has_password']:
             # If an OTP is set there is no keytab, at least not one
@@ -762,6 +840,8 @@ class host_show(LDAPRetrieve):
             entry_attrs['managing'] = self.obj.get_managed_hosts(dn)
 
         self.obj.suppress_netgroup_memberof(entry_attrs)
+
+        convert_sshpubkey_post(ldap, dn, entry_attrs)
 
         return dn
 
@@ -791,11 +871,13 @@ class host_disable(LDAPQuery):
         ldap = self.obj.backend
 
         # If we aren't given a fqdn, find it
-        if validate_host(None, keys[-1]) is not None:
+        if _hostname_validator(None, keys[-1]) is not None:
             hostentry = api.Command['host_show'](keys[-1])['result']
             fqdn = hostentry['fqdn'][0]
         else:
             fqdn = keys[-1]
+
+        host_is_master(ldap, fqdn)
 
         # See if we actually do anthing here, and if not raise an exception
         done_work = False
@@ -829,8 +911,7 @@ class host_disable(LDAPQuery):
             try:
                 serial = unicode(x509.get_serial_number(cert, x509.DER))
                 try:
-                    result = api.Command['cert_show'](unicode(serial))['result'
-]
+                    result = api.Command['cert_show'](unicode(serial))['result']
                     if 'revocation_reason' not in result:
                         try:
                             api.Command['cert_revoke'](unicode(serial), revocation_reason=4)
@@ -866,6 +947,7 @@ class host_disable(LDAPQuery):
         )
 
     def post_callback(self, ldap, dn, entry_attrs, *keys, **options):
+        assert isinstance(dn, DN)
         self.obj.suppress_netgroup_memberof(entry_attrs)
         return dn
 
@@ -879,6 +961,7 @@ class host_add_managedby(LDAPAddMember):
     allow_same = True
 
     def post_callback(self, ldap, completed, failed, dn, entry_attrs, *keys, **options):
+        assert isinstance(dn, DN)
         self.obj.suppress_netgroup_memberof(entry_attrs)
         return (completed, dn)
 
@@ -892,6 +975,7 @@ class host_remove_managedby(LDAPRemoveMember):
     has_output_params = LDAPRemoveMember.has_output_params + host_output_params
 
     def post_callback(self, ldap, completed, failed, dn, entry_attrs, *keys, **options):
+        assert isinstance(dn, DN)
         self.obj.suppress_netgroup_memberof(entry_attrs)
         return (completed, dn)
 

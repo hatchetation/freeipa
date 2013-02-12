@@ -25,13 +25,14 @@ Test the `ipalib.parameters` module.
 import re
 import sys
 from types import NoneType
+from decimal import Decimal
 from inspect import isclass
 from tests.util import raises, ClassChecker, read_only
 from tests.util import dummy_ugettext, assert_equal
 from tests.data import binary_bytes, utf8_bytes, unicode_str
 from ipalib import parameters, text, errors, config
 from ipalib.constants import TYPE_ERROR, CALLABLE_ERROR, NULLS
-from ipalib.errors import ValidationError
+from ipalib.errors import ValidationError, ConversionError
 from ipalib import _
 from xmlrpclib import MAXINT, MININT
 
@@ -62,6 +63,16 @@ class test_DefaultFrom(ClassChecker):
         # Test that TypeError is raised when a key isn't an str:
         e = raises(TypeError, self.cls, callback, 'givenname', 17)
         assert str(e) == TYPE_ERROR % ('keys', str, 17, int)
+
+        # Test that ValueError is raised when inferring keys from a callback
+        # which has *args:
+        e = raises(ValueError, self.cls, lambda foo, *args: None)
+        assert str(e) == "callback: variable-length argument list not allowed"
+
+        # Test that ValueError is raised when inferring keys from a callback
+        # which has **kwargs:
+        e = raises(ValueError, self.cls, lambda foo, **kwargs: None)
+        assert str(e) == "callback: variable-length argument list not allowed"
 
     def test_repr(self):
         """
@@ -184,14 +195,16 @@ class test_Param(ClassChecker):
         assert o.normalizer is None
         assert o.default is None
         assert o.default_from is None
-        assert o.create_default is None
-        assert o._get_default is None
         assert o.autofill is False
         assert o.query is False
         assert o.attribute is False
         assert o.include is None
         assert o.exclude is None
         assert o.flags == frozenset()
+        assert o.sortorder == 2
+        assert o.csv is False
+        assert o.csv_separator == ','
+        assert o.csv_skipspace is True
 
         # Test that doc defaults from label:
         o = self.cls('my_param', doc=_('Hello world'))
@@ -245,16 +258,6 @@ class test_Param(ClassChecker):
         assert str(e) == \
             "Param('my_param'): takes no such kwargs: 'ape', 'great'"
 
-        # Test that ValueError is raised if you provide both default_from and
-        # create_default:
-        e = raises(ValueError, self.cls, 'my_param',
-            default_from=lambda first, last: first[0] + last,
-            create_default=lambda **kw: 'The Default'
-        )
-        assert str(e) == '%s: cannot have both %r and %r' % (
-            "Param('my_param')", 'default_from', 'create_default',
-        )
-
         # Test that ValueError is raised if you provide both include and
         # exclude:
         e = raises(ValueError, self.cls, 'my_param',
@@ -267,15 +270,15 @@ class test_Param(ClassChecker):
             'exclude', frozenset(['client', 'bar']),
         )
 
-        # Test that _get_default gets set:
-        call1 = lambda first, last: first[0] + last
-        call2 = lambda **kw: 'The Default'
-        o = self.cls('my_param', default_from=call1)
-        assert o.default_from.callback is call1
-        assert o._get_default is o.default_from
-        o = self.cls('my_param', create_default=call2)
-        assert o.create_default is call2
-        assert o._get_default is call2
+        # Test that ValueError is raised if csv is set and multivalue is not set:
+        e = raises(ValueError, self.cls, 'my_param', csv=True)
+        assert str(e) == '%s: cannot have csv without multivalue' % "Param('my_param')"
+
+        # Test that default_from gets set:
+        call = lambda first, last: first[0] + last
+        o = self.cls('my_param', default_from=call)
+        assert type(o.default_from) is parameters.DefaultFrom
+        assert o.default_from.callback is call
 
     def test_repr(self):
         """
@@ -570,7 +573,7 @@ class test_Param(ClassChecker):
 
     def test_get_default(self):
         """
-        Test the `ipalib.parameters.Param._get_default` method.
+        Test the `ipalib.parameters.Param.get_default` method.
         """
         class PassThrough(object):
             value = None
@@ -615,16 +618,47 @@ class test_Param(ClassChecker):
         assert o._convert_scalar.value is default
         assert o.normalizer.value is default
 
-        # Test with create_default:
-        o = Str('my_str',
-            normalizer=PassThrough(),
-            default=u'Static Default',
-            create_default=lambda **kw: u'The created default',
-        )
-        default = o.get_default(first=u'john', last='doe')
-        assert_equal(default, u'The created default')
-        assert o._convert_scalar.value is default
-        assert o.normalizer.value is default
+    def test_split_csv(self):
+        """
+        Test the `ipalib.parameters.Param.split_csv` method with csv.
+        """
+        o = self.cls('my_list+', csv=True)
+        n = o.split_csv('a,b')
+        assert type(n) is tuple
+        assert len(n) is 2
+
+        n = o.split_csv('bar,   "hi, there",foo')
+        assert type(n) is tuple
+        assert len(n) is 3
+
+    def test_split_csv_separator(self):
+        """
+        Test the `ipalib.parameters.Param.split_csv` method with csv and a separator.
+        """
+        o = self.cls('my_list+', csv=True, csv_separator='|')
+
+        n = o.split_csv('a')
+        assert type(n) is tuple
+        assert len(n) is 1
+
+        n = o.split_csv('a|b')
+        assert type(n) is tuple
+        assert len(n) is 2
+
+    def test_split_csv_skipspace(self):
+        """
+        Test the `ipalib.parameters.Param.split_csv` method with csv without skipping spaces.
+        """
+        o = self.cls('my_list+', csv=True, csv_skipspace=False)
+
+        n = o.split_csv('a')
+        assert type(n) is tuple
+        assert len(n) is 1
+
+        n = o.split_csv('a, "b,c", d')
+        assert type(n) is tuple
+        # the output w/o skipspace is ['a',' "b','c"',' d']
+        assert len(n) is 4
 
 
 class test_Flag(ClassChecker):
@@ -1106,6 +1140,12 @@ class test_StrEnum(ClassChecker):
             "StrEnum('my_enum') values[1]", unicode, 'naughty', str
         )
 
+        # Test that ValueError is raised when list of values is empty
+        badvalues = tuple()
+        e = raises(ValueError, self.cls, 'empty_enum', values=badvalues)
+        assert_equal(str(e), "StrEnum('empty_enum'): list of values must not "
+                "be empty")
+
     def test_rules_values(self):
         """
         Test the `ipalib.parameters.StrEnum._rule_values` method.
@@ -1113,7 +1153,7 @@ class test_StrEnum(ClassChecker):
         values = (u'Hello', u'naughty', u'nurse!')
         o = self.cls('my_enum', values=values)
         rule = o._rule_values
-        translation = u'values=%(values)s'
+        translation = u"values='Hello', 'naughty', 'nurse!'"
         dummy = dummy_ugettext(translation)
 
         # Test with passing values:
@@ -1127,7 +1167,22 @@ class test_StrEnum(ClassChecker):
                 rule(dummy, val),
                 translation % dict(values=values),
             )
-            assert_equal(dummy.message, 'must be one of %(values)r')
+            assert_equal(dummy.message, "must be one of %(values)s")
+            dummy.reset()
+
+        # test a special case when we have just one allowed value
+        values = (u'Hello', )
+        o = self.cls('my_enum', values=values)
+        rule = o._rule_values
+        translation = u"value='Hello'"
+        dummy = dummy_ugettext(translation)
+
+        for val in (u'Howdy', u'quiet', u'library!'):
+            assert_equal(
+                rule(dummy, val),
+                translation % dict(values=values),
+            )
+            assert_equal(dummy.message, "must be '%(value)s'")
             dummy.reset()
 
 
@@ -1250,139 +1305,170 @@ class test_Int(ClassChecker):
         assert o._convert_scalar(u'0x10')  == 16
         assert o._convert_scalar(u'020')   == 16
 
-class test_Float(ClassChecker):
+class test_Decimal(ClassChecker):
     """
-    Test the `ipalib.parameters.Float` class.
+    Test the `ipalib.parameters.Decimal` class.
     """
-    _cls = parameters.Float
+    _cls = parameters.Decimal
 
     def test_init(self):
         """
-        Test the `ipalib.parameters.Float.__init__` method.
+        Test the `ipalib.parameters.Decimal.__init__` method.
         """
         # Test with no kwargs:
         o = self.cls('my_number')
-        assert o.type is float
-        assert isinstance(o, parameters.Float)
+        assert o.type is Decimal
+        assert isinstance(o, parameters.Decimal)
         assert o.minvalue is None
         assert o.maxvalue is None
 
         # Test when min > max:
-        e = raises(ValueError, self.cls, 'my_number', minvalue=22.5, maxvalue=15.1)
+        e = raises(ValueError, self.cls, 'my_number', minvalue=Decimal('22.5'), maxvalue=Decimal('15.1'))
         assert str(e) == \
-            "Float('my_number'): minvalue > maxvalue (minvalue=22.5, maxvalue=15.1)"
+            "Decimal('my_number'): minvalue > maxvalue (minvalue=22.5, maxvalue=15.1)"
 
     def test_rule_minvalue(self):
         """
-        Test the `ipalib.parameters.Float._rule_minvalue` method.
+        Test the `ipalib.parameters.Decimal._rule_minvalue` method.
         """
-        o = self.cls('my_number', minvalue=3.1)
-        assert o.minvalue == 3.1
+        o = self.cls('my_number', minvalue='3.1')
+        assert o.minvalue == Decimal('3.1')
         rule = o._rule_minvalue
-        translation = u'minvalue=%(minvalue)r'
+        translation = u'minvalue=%(minvalue)s'
         dummy = dummy_ugettext(translation)
         assert dummy.translation is translation
 
         # Test with passing values:
-        for value in (3.2, 99.0):
+        for value in (Decimal('3.2'), Decimal('99.0')):
             assert rule(dummy, value) is None
             assert dummy.called() is False
 
         # Test with failing values:
-        for value in (-1.2, 0.0, 3.0):
+        for value in (Decimal('-1.2'), Decimal('0.0'), Decimal('3.0')):
             assert_equal(
                 rule(dummy, value),
-                translation % dict(minvalue=3.1)
+                translation % dict(minvalue=Decimal('3.1'))
             )
-            assert dummy.message == 'must be at least %(minvalue)f'
+            assert dummy.message == 'must be at least %(minvalue)s'
             assert dummy.called() is True
             dummy.reset()
 
     def test_rule_maxvalue(self):
         """
-        Test the `ipalib.parameters.Float._rule_maxvalue` method.
+        Test the `ipalib.parameters.Decimal._rule_maxvalue` method.
         """
-        o = self.cls('my_number', maxvalue=4.7)
-        assert o.maxvalue == 4.7
+        o = self.cls('my_number', maxvalue='4.7')
+        assert o.maxvalue == Decimal('4.7')
         rule = o._rule_maxvalue
         translation = u'maxvalue=%(maxvalue)r'
         dummy = dummy_ugettext(translation)
         assert dummy.translation is translation
 
         # Test with passing values:
-        for value in (-1.0, 0.1, 4.2):
+        for value in (Decimal('-1.0'), Decimal('0.1'), Decimal('4.2')):
             assert rule(dummy, value) is None
             assert dummy.called() is False
 
         # Test with failing values:
-        for value in (5.3, 99.9):
+        for value in (Decimal('5.3'), Decimal('99.9')):
             assert_equal(
                 rule(dummy, value),
-                translation % dict(maxvalue=4.7)
+                translation % dict(maxvalue=Decimal('4.7'))
             )
-            assert dummy.message == 'can be at most %(maxvalue)f'
+            assert dummy.message == 'can be at most %(maxvalue)s'
             assert dummy.called() is True
             dummy.reset()
 
-
-class test_List(ClassChecker):
-    """
-    Test the `ipalib.parameters.List` class.
-    """
-    _cls = parameters.List
-
-    def test_init(self):
+    def test_precision(self):
         """
-        Test the `ipalib.parameters.List.__init__` method.
+        Test the `ipalib.parameters.Decimal` precision attribute
         """
-        # Test with no kwargs:
-        o = self.cls('my_list')
-        assert o.type is tuple
-        assert isinstance(o, parameters.List)
-        assert o.multivalue is True
-        assert o.skipspace is True
+        # precission is None
+        param = self.cls('my_number')
 
-    def test_normalize(self):
+        for value in (Decimal('0'), Decimal('4.4'), Decimal('4.67')):
+            assert_equal(
+                param(value),
+                value)
+
+        # precision is 0
+        param = self.cls('my_number', precision=0)
+        for original,expected in ((Decimal('0'), '0'),
+                                  (Decimal('1.1'), '1'),
+                                  (Decimal('4.67'), '5')):
+            assert_equal(
+                str(param(original)),
+                expected)
+
+        # precision is 1
+        param = self.cls('my_number', precision=1)
+        for original,expected in ((Decimal('0'), '0.0'),
+                                  (Decimal('1.1'), '1.1'),
+                                  (Decimal('4.67'), '4.7')):
+            assert_equal(
+                str(param(original)),
+                expected)
+
+        # value has too many digits
+        param = self.cls('my_number', precision=1)
+        e = raises(ConversionError, param, '123456789012345678901234567890')
+
+        assert str(e) == \
+        "invalid 'my_number': quantize result has too many digits for current context"
+
+    def test_exponential(self):
         """
-        Test the `ipalib.parameters.List.normalize` method.
+        Test the `ipalib.parameters.Decimal` exponential attribute
         """
-        o = self.cls('my_list')
-        n = o.normalize('a,b')
-        assert type(n) is tuple
-        assert len(n) is 2
+        param = self.cls('my_number', exponential=True)
+        for original,expected in ((Decimal('0'), '0'),
+                                  (Decimal('1E3'), '1E+3'),
+                                  (Decimal('3.4E2'), '3.4E+2')):
+            assert_equal(
+                str(param(original)),
+                expected)
 
-        n = o.normalize('bar,   "hi, there",foo')
-        assert type(n) is tuple
-        assert len(n) is 3
 
-    def test_normalize_separator(self):
+        param = self.cls('my_number', exponential=False)
+        for original,expected in ((Decimal('0'), '0'),
+                                  (Decimal('1E3'), '1000'),
+                                  (Decimal('3.4E2'), '340')):
+            assert_equal(
+                str(param(original)),
+                expected)
+
+    def test_numberclass(self):
         """
-        Test the `ipalib.parameters.List.normalize` method with a separator.
+        Test the `ipalib.parameters.Decimal` numberclass attribute
         """
-        o = self.cls('my_list', separator='|')
+        # test default value: '-Normal', '+Zero', '+Normal'
+        param = self.cls('my_number')
+        for value,raises_verror in ((Decimal('0'), False),
+                                    (Decimal('-0'), True),
+                                    (Decimal('1E8'), False),
+                                    (Decimal('-1.1'), False),
+                                    (Decimal('-Infinity'), True),
+                                    (Decimal('+Infinity'), True),
+                                    (Decimal('NaN'), True)):
+            if raises_verror:
+                raises(ValidationError, param, value)
+            else:
+                param(value)
 
-        n = o.normalize('a')
-        assert type(n) is tuple
-        assert len(n) is 1
 
-        n = o.normalize('a|b')
-        assert type(n) is tuple
-        assert len(n) is 2
-
-    def test_normalize_skipspace(self):
-        """
-        Test the `ipalib.parameters.List.normalize` method without skipping spaces.
-        """
-        o = self.cls('my_list', skipspace=False)
-
-        n = o.normalize('a')
-        assert type(n) is tuple
-        assert len(n) is 1
-
-        n = o.normalize('a, "b,c", d')
-        assert type(n) is tuple
-        # the output w/o skipspace is ['a',' "b','c"',' d']
-        assert len(n) is 4
+        param = self.cls('my_number', exponential=True,
+                numberclass=('-Normal', '+Zero', '+Infinity'))
+        for value,raises_verror in ((Decimal('0'), False),
+                                    (Decimal('-0'), True),
+                                    (Decimal('1E8'), True),
+                                    (Decimal('-1.1'), False),
+                                    (Decimal('-Infinity'), True),
+                                    (Decimal('+Infinity'), False),
+                                    (Decimal('NaN'), True)):
+            if raises_verror:
+                raises(ValidationError, param, value)
+            else:
+                param(value)
 
 class test_AccessTime(ClassChecker):
     """

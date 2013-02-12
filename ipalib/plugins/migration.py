@@ -17,20 +17,20 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import logging
 import re
 import ldap as _ldap
 
 from ipalib import api, errors, output
-from ipalib import Command, List, Password, Str, Flag, StrEnum
+from ipalib import Command, Password, Str, Flag, StrEnum, DNParam
 from ipalib.cli import to_cli
-from ipalib.dn import *
+from ipalib.plugins.user import NO_UPG_MAGIC
 if api.env.in_server and api.env.context in ['lite', 'server']:
     try:
         from ipaserver.plugins.ldap2 import ldap2
     except StandardError, e:
         raise e
 from ipalib import _
+from ipapython.dn import DN
 
 __doc__ = _("""
 Migration to IPA
@@ -53,6 +53,11 @@ Two LDAP schemas define how group members are stored: RFC2307 and
 RFC2307bis. RFC2307bis uses member and uniquemember to specify group
 members, RFC2307 uses memberUid. The default schema is RFC2307bis.
 
+The schema compat feature allows IPA to reformat data for systems that
+do not support RFC2307bis. It is recommended that this feature is disabled
+during migration to reduce system overhead. It can be re-enabled after
+migration. To migrate with it enabled use the "--with-compat" option.
+
 Migrated users do not have Kerberos credentials, they have only their
 LDAP password. To complete the migration process, users need to go
 to http://ipa.example.com/ipa/migration and authenticate using their
@@ -63,23 +68,40 @@ enable it:
 
  ipa config-mod --enable-migration=TRUE
 
+If a base DN is not provided with --basedn then IPA will use either
+the value of defaultNamingContext if it is set or the first value
+in namingContexts set in the root of the remote LDAP server.
+
 EXAMPLES:
 
  The simplest migration, accepting all defaults:
    ipa migrate-ds ldap://ds.example.com:389
 
- Specify the user and group container. This can be used to migrate user and
- group data from an IPA v1 server:
-   ipa migrate-ds --user-container='cn=users,cn=accounts' --group-container='cn=groups,cn=accounts' ldap://ds.example.com:389
+ Specify the user and group container. This can be used to migrate user
+ and group data from an IPA v1 server:
+   ipa migrate-ds --user-container='cn=users,cn=accounts' \\
+       --group-container='cn=groups,cn=accounts' \\
+       ldap://ds.example.com:389
 
  Since IPA v2 server already contain predefined groups that may collide with
- groups in migrated (IPA v1) server (for example admins, ipausers), users having
- colliding group as their primary group may happen to belong to an unknown group
- on new IPA v2 server.
+ groups in migrated (IPA v1) server (for example admins, ipausers), users
+ having colliding group as their primary group may happen to belong to
+ an unknown group on new IPA v2 server.
  Use --group-overwrite-gid option to overwrite GID of already existing groups
  to prevent this issue:
-    ipa migrate-ds --group-overwrite-gid --user-container='cn=users,cn=accounts' --group-container='cn=groups,cn=accounts' ldap://ds.example.com:389
+    ipa migrate-ds --group-overwrite-gid \\
+        --user-container='cn=users,cn=accounts' \\
+        --group-container='cn=groups,cn=accounts' \\
+        ldap://ds.example.com:389
 
+ Migrated users or groups may have object class and accompanied attributes
+ unknown to the IPA v2 server. These object classes and attributes may be
+ left out of the migration process:
+    ipa migrate-ds --user-container='cn=users,cn=accounts' \\
+       --group-container='cn=groups,cn=accounts' \\
+       --user-ignore-objectclass=radiusprofile \\
+       --user-ignore-attribute=radiusgroupname \\
+       ldap://ds.example.com:389
 """)
 
 # USER MIGRATION CALLBACKS AND VARS
@@ -91,21 +113,41 @@ _dn_err_msg = _('Malformed DN')
 
 _supported_schemas = (u'RFC2307bis', u'RFC2307')
 
+_compat_dn = DN(('cn', 'Schema Compatibility'), ('cn', 'plugins'), ('cn', 'config'))
 
 def _pre_migrate_user(ldap, pkey, dn, entry_attrs, failed, config, ctx, **kwargs):
+    assert isinstance(dn, DN)
     attr_blacklist = ['krbprincipalkey','memberofindirect','memberindirect']
     attr_blacklist.extend(kwargs.get('attr_blacklist', []))
+    ds_ldap = ctx['ds_ldap']
+    has_upg = ctx['has_upg']
+    search_bases = kwargs.get('search_bases', None)
+    valid_gids = kwargs['valid_gids']
 
-    # get default primary group for new users
-    if 'def_group_dn' not in ctx:
-        def_group = config.get('ipadefaultprimarygroup')
-        ctx['def_group_dn'] = api.Object.group.get_dn(def_group)
-        try:
-            (g_dn, g_attrs) = ldap.get_entry(ctx['def_group_dn'], ['gidnumber'])
-        except errors.NotFound:
-            error_msg = 'Default group for new users not found.'
-            raise errors.NotFound(reason=error_msg)
-        ctx['def_group_gid'] = g_attrs['gidnumber'][0]
+    if 'gidnumber' not in entry_attrs:
+        raise errors.NotFound(reason=_('%(user)s is not a POSIX user') % dict(user=pkey))
+    else:
+        # See if the gidNumber at least points to a valid group on the remote
+        # server.
+        if entry_attrs['gidnumber'][0] not in valid_gids:
+            try:
+                (remote_dn, remote_entry) = ds_ldap.find_entry_by_attr(
+                    'gidnumber', entry_attrs['gidnumber'][0], 'posixgroup',
+                    [''], search_bases['group']
+                )
+                valid_gids.append(entry_attrs['gidnumber'][0])
+            except errors.NotFound:
+                api.log.warn('GID number %s of migrated user %s does not point to a known group.' \
+                             % (entry_attrs['gidnumber'][0], pkey))
+            except errors.SingleMatchExpected, e:
+                # GID number matched more groups, this should not happen
+                api.log.warn('GID number %s of migrated user %s should match 1 group, but it matched %d groups' \
+                             % (entry_attrs['gidnumber'][0], pkey, e.found))
+
+    # We don't want to create a UPG so set the magic value in description
+    # to let the DS plugin know.
+    entry_attrs.setdefault('description', [])
+    entry_attrs['description'].append(NO_UPG_MAGIC)
 
     # fill in required attributes by IPA
     entry_attrs['ipauniqueid'] = 'autogenerate'
@@ -114,7 +156,10 @@ def _pre_migrate_user(ldap, pkey, dn, entry_attrs, failed, config, ctx, **kwargs
         home_dir = '%s/%s' % (homes_root, pkey)
         home_dir = home_dir.replace('//', '/').rstrip('/')
         entry_attrs['homedirectory'] = home_dir
-    entry_attrs.setdefault('gidnumber', ctx['def_group_gid'])
+
+    if 'loginshell' not in entry_attrs:
+        default_shell = config.get('ipadefaultloginshell', ['/bin/sh'])[0]
+        entry_attrs.setdefault('loginshell', default_shell)
 
     # do not migrate all attributes
     for attr in entry_attrs.keys():
@@ -140,20 +185,58 @@ def _pre_migrate_user(ldap, pkey, dn, entry_attrs, failed, config, ctx, **kwargs
     else:
         failed[pkey] = unicode(_krb_err_msg % principal)
 
+    # Fix any attributes with DN syntax that point to entries in the old
+    # tree
+
+    for attr in entry_attrs.keys():
+        if ldap.has_dn_syntax(attr):
+            for ind, value in enumerate(entry_attrs[attr]):
+                assert isinstance(value, DN)
+                try:
+                    (remote_dn, remote_entry) = ds_ldap.get_entry(value, [api.Object.user.primary_key.name, api.Object.group.primary_key.name])
+                except errors.NotFound:
+                    api.log.warn('%s: attribute %s refers to non-existent entry %s' % (pkey, attr, value))
+                    continue
+                if value.endswith(search_bases['user']):
+                    primary_key = api.Object.user.primary_key.name
+                    container = api.env.container_user
+                elif value.endswith(search_bases['group']):
+                    primary_key = api.Object.group.primary_key.name
+                    container = api.env.container_group
+                else:
+                    api.log.warn('%s: value %s in attribute %s does not belong into any known container' % (pkey, value, attr))
+                    continue
+
+                if not remote_entry.get(primary_key):
+                    api.log.warn('%s: there is no primary key %s to migrate for %s' % (pkey, primary_key, attr))
+                    continue
+
+                api.log.debug('converting DN value %s for %s in %s' % (value, attr, dn))
+                rdnval = remote_entry[primary_key][0].lower()
+                entry_attrs[attr][ind] = DN((primary_key, rdnval), container, api.env.basedn)
+
     return dn
 
 
 def _post_migrate_user(ldap, pkey, dn, entry_attrs, failed, config, ctx):
+    assert isinstance(dn, DN)
     # add user to the default group
     try:
         ldap.add_entry_to_group(dn, ctx['def_group_dn'])
     except errors.ExecutionError, e:
         failed[pkey] = unicode(_grp_err_msg)
-
+    if 'description' in entry_attrs and NO_UPG_MAGIC in entry_attrs['description']:
+        entry_attrs['description'].remove(NO_UPG_MAGIC)
+        kw = {'setattr': unicode('description=%s' % ','.join(entry_attrs['description']))}
+        try:
+            api.Command['user_mod'](pkey, **kw)
+        except (errors.EmptyModlist, errors.NotFound):
+            pass
 
 # GROUP MIGRATION CALLBACKS AND VARS
 
 def _pre_migrate_group(ldap, pkey, dn, entry_attrs, failed, config, ctx, **kwargs):
+
     def convert_members_rfc2307bis(member_attr, search_bases, overwrite=False):
         """
         Convert DNs in member attributes to work in IPA.
@@ -162,23 +245,24 @@ def _pre_migrate_group(ldap, pkey, dn, entry_attrs, failed, config, ctx, **kwarg
         entry_attrs.setdefault(member_attr, [])
         for m in entry_attrs[member_attr]:
             try:
-                # what str2dn returns looks like [[('cn', 'foo', 4)], [('dc', 'example', 1)], [('dc', 'com', 1)]]
-                rdn = _ldap.dn.str2dn(m ,flags=_ldap.DN_FORMAT_LDAPV3)[0]
-                rdnval = rdn[0][1]
+                m = DN(m)
+            except ValueError, e:
+                # This should be impossible unless the remote server
+                # doesn't enforce syntax checking.
+                api.log.error('Malformed DN %s: %s'  % (m, e))
+                continue
+            try:
+                rdnval = m[0].value
             except IndexError:
                 api.log.error('Malformed DN %s has no RDN?' % m)
                 continue
 
-            if m.lower().endswith(search_bases['user']):
-                api.log.info('migrating user %s' % m)
-                m = '%s=%s,%s' % (api.Object.user.primary_key.name,
-                                  rdnval,
-                                  api.env.container_user)
-            elif m.lower().endswith(search_bases['group']):
-                api.log.info('migrating group %s' % m)
-                m = '%s=%s,%s' % (api.Object.group.primary_key.name,
-                                  rdnval,
-                                  api.env.container_group)
+            if m.endswith(search_bases['user']):
+                api.log.info('migrating %s user %s' % (member_attr, m))
+                m = DN((api.Object.user.primary_key.name, rdnval), api.env.container_user)
+            elif m.endswith(search_bases['group']):
+                api.log.info('migrating %s group %s' % (member_attr, m))
+                m = DN((api.Object.group.primary_key.name, rdnval), api.env.container_group)
             else:
                 api.log.error('entry %s does not belong into any known container' % m)
                 continue
@@ -198,12 +282,11 @@ def _pre_migrate_group(ldap, pkey, dn, entry_attrs, failed, config, ctx, **kwarg
         new_members = []
         entry_attrs.setdefault(member_attr, [])
         for m in entry_attrs[member_attr]:
-            memberdn = '%s=%s,%s' % (api.Object.user.primary_key.name,
-                                     m,
-                                     api.env.container_user)
+            memberdn = DN((api.Object.user.primary_key.name, m), api.env.container_user)
             new_members.append(ldap.normalize_dn(memberdn))
         entry_attrs['member'] = new_members
 
+    assert isinstance(dn, DN)
     attr_blacklist = ['memberofindirect','memberindirect']
     attr_blacklist.extend(kwargs.get('attr_blacklist', []))
 
@@ -238,6 +321,7 @@ def _pre_migrate_group(ldap, pkey, dn, entry_attrs, failed, config, ctx, **kwarg
 
 
 def _group_exc_callback(ldap, dn, entry_attrs, exc, options):
+    assert isinstance(dn, DN)
     if isinstance(exc, errors.DuplicateEntry):
         if options.get('groupoverwritegid', False) and \
            entry_attrs.get('gidnumber') is not None:
@@ -332,65 +416,71 @@ class migrate_ds(Command):
     )
 
     takes_options = (
-        Str('binddn?',
+        DNParam('binddn?',
             cli_name='bind_dn',
             label=_('Bind DN'),
-            default=u'cn=directory manager',
+            default=DN(('cn', 'directory manager')),
             autofill=True,
         ),
-        Str('usercontainer?',
+        DNParam('usercontainer',
             cli_name='user_container',
             label=_('User container'),
-            doc=_('RDN of container for users in DS'),
-            default=u'ou=people',
+            doc=_('DN of container for users in DS relative to base DN'),
+            default=DN(('ou', 'people')),
             autofill=True,
         ),
-        Str('groupcontainer?',
+        DNParam('groupcontainer',
             cli_name='group_container',
             label=_('Group container'),
-            doc=_('RDN of container for groups in DS'),
-            default=u'ou=groups',
+            doc=_('DN of container for groups in DS relative to base DN'),
+            default=DN(('ou', 'groups')),
             autofill=True,
         ),
-        List('userobjectclass?',
+        Str('userobjectclass+',
             cli_name='user_objectclass',
             label=_('User object class'),
             doc=_('Comma-separated list of objectclasses used to search for user entries in DS'),
+            csv=True,
             default=(u'person',),
             autofill=True,
         ),
-        List('groupobjectclass?',
+        Str('groupobjectclass+',
             cli_name='group_objectclass',
             label=_('Group object class'),
             doc=_('Comma-separated list of objectclasses used to search for group entries in DS'),
+            csv=True,
             default=(u'groupOfUniqueNames', u'groupOfNames'),
             autofill=True,
         ),
-        List('userignoreobjectclass?',
+        Str('userignoreobjectclass*',
             cli_name='user_ignore_objectclass',
             label=_('Ignore user object class'),
             doc=_('Comma-separated list of objectclasses to be ignored for user entries in DS'),
+            csv=True,
             default=tuple(),
             autofill=True,
         ),
-        List('userignoreattribute?',
+        Str('userignoreattribute*',
             cli_name='user_ignore_attribute',
             label=_('Ignore user attribute'),
             doc=_('Comma-separated list of attributes to be ignored for user entries in DS'),
+            csv=True,
             default=tuple(),
             autofill=True,
         ),
-        List('groupignoreobjectclass?',
+        Str('groupignoreobjectclass*',
             cli_name='group_ignore_objectclass',
             label=_('Ignore group object class'),
             doc=_('Comma-separated list of objectclasses to be ignored for group entries in DS'),
+            csv=True,
             default=tuple(),
             autofill=True,
         ),
-        List('groupignoreattribute?',
+        Str('groupignoreattribute*',
             cli_name='group_ignore_attribute',
             label=_('Ignore group attribute'),
             doc=_('Comma-separated list of attributes to be ignored for group entries in DS'),
+            csv=True,
             default=tuple(),
             autofill=True,
         ),
@@ -413,6 +503,17 @@ class migrate_ds(Command):
             doc=_('Continuous operation mode. Errors are reported but the process continues'),
             default=False,
         ),
+        DNParam('basedn?',
+            cli_name='base_dn',
+            label=_('Base DN'),
+            doc=_('Base DN on remote LDAP server'),
+        ),
+        Flag('compat?',
+            cli_name='with_compat',
+            label=_('Ignore compat plugin'),
+            doc=_('Allows migration despite the usage of compat plugin'),
+            default=False,
+        ),
     )
 
     has_output = (
@@ -427,6 +528,10 @@ class migrate_ds(Command):
         output.Output('enabled',
             type=bool,
             doc=_('False if migration mode was disabled.'),
+        ),
+        output.Output('compat',
+            type=bool,
+            doc=_('False if migration fails because the compatibility plug-in is enabled.'),
         ),
     )
 
@@ -458,9 +563,9 @@ can use their Kerberos accounts.''')
             ldap_obj = self.api.Object[ldap_obj_name]
             name = 'exclude_%ss' % to_cli(ldap_obj_name)
             doc = self.exclude_doc % ldap_obj.object_name_plural
-            yield List(
-                '%s?' % name, cli_name=name, doc=doc, default=tuple(),
-                autofill=True
+            yield Str(
+                '%s*' % name, cli_name=name, doc=doc, csv=True,
+                default=tuple(), autofill=True
             )
 
     def normalize_options(self, options):
@@ -471,7 +576,7 @@ can use their Kerberos accounts.''')
         plugin doesn't like that - convert back to empty lists.
         """
         for p in self.params():
-            if isinstance(p, List):
+            if p.csv:
                 if options[p.name]:
                     options[p.name] = tuple(
                         v.lower() for v in options[p.name]
@@ -482,25 +587,35 @@ can use their Kerberos accounts.''')
     def _get_search_bases(self, options, ds_base_dn, migrate_order):
         search_bases = dict()
         for ldap_obj_name in migrate_order:
-            search_bases[ldap_obj_name] = '%s,%s' % (
-                options['%scontainer' % to_cli(ldap_obj_name)], ds_base_dn
-            )
+            container = options.get('%scontainer' % to_cli(ldap_obj_name))
+            if container:
+                # Don't append base dn if user already appended it in the container dn
+                if container.endswith(ds_base_dn):
+                    search_base = container
+                else:
+                    search_base = DN(container, ds_base_dn)
+            else:
+                search_base = ds_base_dn
+            search_bases[ldap_obj_name] = search_base
         return search_bases
 
     def migrate(self, ldap, config, ds_ldap, ds_base_dn, options):
         """
         Migrate objects from DS to LDAP.
         """
+        assert isinstance(ds_base_dn, DN)
         migrated = {} # {'OBJ': ['PKEY1', 'PKEY2', ...], ...}
         failed = {} # {'OBJ': {'PKEY1': 'Failed 'cos blabla', ...}, ...}
         search_bases = self._get_search_bases(options, ds_base_dn, self.migrate_order)
         for ldap_obj_name in self.migrate_order:
             ldap_obj = self.api.Object[ldap_obj_name]
 
-            search_filter = construct_filter(self.migrate_objects[ldap_obj_name]['filter_template'],
-                                             options[to_cli(self.migrate_objects[ldap_obj_name]['oc_option'])])
+            template = self.migrate_objects[ldap_obj_name]['filter_template']
+            oc_list = options[to_cli(self.migrate_objects[ldap_obj_name]['oc_option'])]
+            search_filter = construct_filter(template, oc_list)
+
             exclude = options['exclude_%ss' % to_cli(ldap_obj_name)]
-            context = {}
+            context = dict(ds_ldap = ds_ldap)
 
             migrated[ldap_obj_name] = []
             failed[ldap_obj_name] = {}
@@ -508,14 +623,19 @@ can use their Kerberos accounts.''')
             try:
                 (entries, truncated) = ds_ldap.find_entries(
                     search_filter, ['*'], search_bases[ldap_obj_name],
-                    ds_ldap.SCOPE_ONELEVEL,
+                    _ldap.SCOPE_ONELEVEL,
                     time_limit=0, size_limit=-1,
                     search_refs=True    # migrated DS may contain search references
                 )
             except errors.NotFound:
                 if not options.get('continue',False):
                     raise errors.NotFound(
-                        reason=_('Container for %(container)s not found') % {'container': ldap_obj_name}
+                        reason=_('%(container)s LDAP search did not return any result '
+                                 '(search base: %(search_base)s, '
+                                 'objectclass: %(objectclass)s)')
+                                 % {'container': ldap_obj_name,
+                                    'search_base': search_bases[ldap_obj_name],
+                                    'objectclass': ', '.join(oc_list)}
                     )
                 else:
                     truncated = False
@@ -535,6 +655,21 @@ can use their Kerberos accounts.''')
                 else:
                     blacklists[blacklist] = tuple()
 
+            # get default primary group for new users
+            if 'def_group_dn' not in context:
+                def_group = config.get('ipadefaultprimarygroup')
+                context['def_group_dn'] = api.Object.group.get_dn(def_group)
+                try:
+                    (g_dn, g_attrs) = ldap.get_entry(context['def_group_dn'], ['gidnumber', 'cn'])
+                except errors.NotFound:
+                    error_msg = _('Default group for new users not found')
+                    raise errors.NotFound(reason=error_msg)
+                if 'gidnumber' in g_attrs:
+                    context['def_group_gid'] = g_attrs['gidnumber'][0]
+
+            context['has_upg'] = ldap.has_upg()
+
+            valid_gids = []
             for (dn, entry_attrs) in entries:
                 if dn is None:  # LDAP search reference
                     failed[ldap_obj_name][entry_attrs[0]] = unicode(_ref_err_msg)
@@ -559,6 +694,7 @@ can use their Kerberos accounts.''')
                     continue
 
                 dn = ldap_obj.get_dn(pkey)
+                assert isinstance(dn, DN)
                 entry_attrs['objectclass'] = list(
                     set(
                         config.get(
@@ -566,16 +702,23 @@ can use their Kerberos accounts.''')
                         ) + [o.lower() for o in entry_attrs['objectclass']]
                     )
                 )
+                entry_attrs[ldap_obj.primary_key.name][0] = entry_attrs[ldap_obj.primary_key.name][0].lower()
 
                 callback = self.migrate_objects[ldap_obj_name]['pre_callback']
                 if callable(callback):
-                    dn = callback(
-                        ldap, pkey, dn, entry_attrs, failed[ldap_obj_name],
-                        config, context, schema = options['schema'],
-                        search_bases = search_bases,
-                        **blacklists
-                    )
-                    if not dn:
+                    try:
+                        dn = callback(
+                            ldap, pkey, dn, entry_attrs, failed[ldap_obj_name],
+                            config, context, schema = options['schema'],
+                            search_bases = search_bases,
+                            valid_gids = valid_gids,
+                            **blacklists
+                        )
+                        assert isinstance(dn, DN)
+                        if not dn:
+                            continue
+                    except errors.NotFound, e:
+                        failed[ldap_obj_name][pkey] = unicode(e.reason)
                         continue
 
                 try:
@@ -609,35 +752,59 @@ can use their Kerberos accounts.''')
 
         config = ldap.get_ipa_config()[1]
 
+        ds_base_dn = options.get('basedn')
+        if ds_base_dn is not None:
+            assert isinstance(ds_base_dn, DN)
+
         # check if migration mode is enabled
         if config.get('ipamigrationenabled', ('FALSE', ))[0] == 'FALSE':
-            return dict(result={}, failed={}, enabled=False)
+            return dict(result={}, failed={}, enabled=False, compat=True)
 
         # connect to DS
         ds_ldap = ldap2(shared_instance=False, ldap_uri=ldapuri, base_dn='')
         ds_ldap.connect(bind_dn=options['binddn'], bind_pw=bindpw)
 
-        # retrieve DS base DN
-        (entries, truncated) = ds_ldap.find_entries(
-            '', ['namingcontexts'], '', ds_ldap.SCOPE_BASE,
-            size_limit=-1, time_limit=0,
-        )
-        try:
-            ds_base_dn = entries[0][1]['namingcontexts'][0]
-        except (IndexError, KeyError), e:
-            raise StandardError(str(e))
+        #check whether the compat plugin is enabled
+        if not options.get('compat'):
+            try:
+                (dn,check_compat) = ldap.get_entry(_compat_dn, normalize=False)
+                assert isinstance(dn, DN)
+                if check_compat is not None and \
+                        check_compat.get('nsslapd-pluginenabled', [''])[0].lower() == 'on':
+                    return dict(result={}, failed={}, enabled=True, compat=False)
+            except errors.NotFound:
+                pass
+
+        if not ds_base_dn:
+            # retrieve base DN from remote LDAP server
+            (entries, truncated) = ds_ldap.find_entries(
+                '', ['namingcontexts', 'defaultnamingcontext'], DN(''),
+                _ldap.SCOPE_BASE, size_limit=-1, time_limit=0,
+            )
+            if 'defaultnamingcontext' in entries[0][1]:
+                ds_base_dn = DN(entries[0][1]['defaultnamingcontext'][0])
+                assert isinstance(ds_base_dn, DN)
+            else:
+                try:
+                    ds_base_dn = DN(entries[0][1]['namingcontexts'][0])
+                    assert isinstance(ds_base_dn, DN)
+                except (IndexError, KeyError), e:
+                    raise StandardError(str(e))
 
         # migrate!
         (migrated, failed) = self.migrate(
             ldap, config, ds_ldap, ds_base_dn, options
         )
 
-        return dict(result=migrated, failed=failed, enabled=True)
+        return dict(result=migrated, failed=failed, enabled=True, compat=True)
 
     def output_for_cli(self, textui, result, ldapuri, bindpw, **options):
         textui.print_name(self.name)
         if not result['enabled']:
             textui.print_plain(self.migration_disabled_msg)
+            return 1
+        if not result['compat']:
+            textui.print_plain("The compat plug-in is enabled. This can increase the memory requirements during migration. Disable the compat plug-in with \'ipa-compat-manage disable\' or re-run this script with \'--with-compat\' option.")
             return 1
         textui.print_plain('Migrated:')
         textui.print_entry1(

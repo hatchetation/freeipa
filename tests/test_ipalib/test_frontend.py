@@ -511,6 +511,11 @@ class test_Command(ClassChecker):
         assert e.count == 2
         assert str(e) == "command 'example' takes at most 2 arguments"
 
+        # Test that OptionError is raised when an extra option is given:
+        o = self.get_instance()
+        e = raises(errors.OptionError, o.args_options_2_params, bad_option=True)
+        assert e.option == 'bad_option'
+
         # Test that OverlapError is raised:
         o = self.get_instance(args=('one', 'two'), options=('three', 'four'))
         e = raises(errors.OverlapError, o.args_options_2_params,
@@ -610,7 +615,7 @@ class test_Command(ClassChecker):
         assert o.run.im_func is self.cls.run.im_func
         assert ('forward', args, kw) == o.run(*args, **kw)
 
-    def test_validate_output(self):
+    def test_validate_output_basic(self):
         """
         Test the `ipalib.frontend.Command.validate_output` method.
         """
@@ -641,7 +646,18 @@ class test_Command(ClassChecker):
             'Example', ['azz', 'fee'], wrong
         )
 
-        # Test with per item type validation:
+        # Test with different keys:
+        wrong = dict(baz=1, xyzzy=2, quux=3)
+        e = raises(ValueError, inst.validate_output, wrong)
+        assert str(e) == '%s.validate_output(): missing keys %r in %r' % (
+            'Example', ['bar', 'foo'], wrong
+        ), str(e)
+
+    def test_validate_output_per_type(self):
+        """
+        Test `ipalib.frontend.Command.validate_output` per-type validation.
+        """
+
         class Complex(self.cls):
             has_output = (
                 output.Output('foo', int),
@@ -661,6 +677,11 @@ class test_Command(ClassChecker):
         assert str(e) == '%s:\n  output[%r]: need %r; got %r: %r' % (
             'Complex.validate_output()', 'bar', list, int, 17
         )
+
+    def test_validate_output_nested(self):
+        """
+        Test `ipalib.frontend.Command.validate_output` nested validation.
+        """
 
         class Subclass(output.ListOfEntries):
             pass
@@ -942,7 +963,8 @@ class test_Object(ClassChecker):
                 parameters.Str('four', primary_key=True),
             )
         o = example3()
-        e = raises(ValueError, o.set_api, api)
+        o.set_api(api)
+        e = raises(ValueError, o.finalize)
         assert str(e) == \
             'example3 (Object) has multiple primary keys: one, two, four'
 

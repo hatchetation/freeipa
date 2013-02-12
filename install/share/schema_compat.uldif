@@ -14,6 +14,7 @@ default:nsslapd-plugintype: object
 default:nsslapd-pluginenabled: on
 default:nsslapd-pluginid: schema-compat-plugin
 default:nsslapd-pluginversion: 0.8
+default:nsslapd-pluginbetxn: on
 default:nsslapd-pluginvendor: redhat.com
 default:nsslapd-plugindescription: Schema Compatibility Plugin
 
@@ -91,6 +92,20 @@ add:schema-compat-entry-attribute: 'sudoRunAsUser=%ifeq("ipaSudoRunAsUserCategor
 add:schema-compat-entry-attribute: 'sudoRunAsGroup=%{ipaSudoRunAsExtGroup}'
 add:schema-compat-entry-attribute: 'sudoRunAsGroup=%deref("ipaSudoRunAs","cn")'
 add:schema-compat-entry-attribute: 'sudoOption=%{ipaSudoOpt}'
+
+dn: cn=computers, cn=Schema Compatibility, cn=plugins, cn=config
+default:objectClass: top
+default:objectClass: extensibleObject
+default:cn: computers
+default:schema-compat-container-group: cn=compat, $SUFFIX
+default:schema-compat-container-rdn: cn=computers
+default:schema-compat-search-base: cn=computers, cn=accounts, $SUFFIX
+default:schema-compat-search-filter: (&(macAddress=*)(fqdn=*)(objectClass=ipaHost))
+default:schema-compat-entry-rdn: cn=%first("%{fqdn}")
+default:schema-compat-entry-attribute: objectclass=device
+default:schema-compat-entry-attribute: objectclass=ieee802Device
+default:schema-compat-entry-attribute: cn=%{fqdn}
+default:schema-compat-entry-attribute: macAddress=%{macAddress}
 
 # Enable anonymous VLV browsing for Solaris
 dn: oid=2.16.840.1.113730.3.4.9,cn=features,cn=config

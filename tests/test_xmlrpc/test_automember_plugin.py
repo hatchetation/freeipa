@@ -22,6 +22,7 @@ Test the `ipalib/plugins/automember.py` module.
 """
 
 from ipalib import api, errors
+from ipapython.dn import DN
 from tests.test_xmlrpc import objectclasses
 from xmlrpc_test import Declarative, fuzzy_digits, fuzzy_uuid
 
@@ -76,31 +77,46 @@ class test_automember(Declarative):
     tests = [
 
         dict(
-            desc='Try to retrieve non-existent %r' % user1,
-            command=('user_show', [user1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            desc='Try to retrieve non-existent group rule %r' % group1,
+            command=('automember_add', [group1],
+                dict(description=u'Test desc', type=u'group')),
+            expected=errors.NotFound(reason=u'Group: %s not found!' % group1),
+        ),
+
+        dict(
+            desc='Try to update non-existent group rule %r' % group1,
+            command=('automember_add', [group1], dict(type=u'group')),
+            expected=errors.NotFound(reason=u'Group: %s not found!' % group1),
+        ),
+
+        dict(
+            desc='Try to delete non-existent group rule %r' % group1,
+            command=('automember_del', [group1], dict(type=u'group')),
+            expected=errors.NotFound(reason=u': auto_member_rule not found'),
         ),
 
 
         dict(
-            desc='Try to update non-existent %r' % user1,
-            command=('user_mod', [user1], dict(givenname=u'Foo')),
-            expected=errors.NotFound(reason='no such entry'),
+            desc='Try to retrieve non-existent hostgroup rule %r' % hostgroup1,
+            command=('automember_add', [hostgroup1],
+                dict(description=u'Test desc', type=u'hostgroup')),
+            expected=errors.NotFound(
+                reason=u'Group: %s not found!' % hostgroup1),
         ),
-
 
         dict(
-            desc='Try to delete non-existent %r' % user1,
-            command=('user_del', [user1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            desc='Try to update non-existent hostgroup rule %r' % hostgroup1,
+            command=('automember_add', [hostgroup1], dict(type=u'hostgroup')),
+            expected=errors.NotFound(
+                reason=u'Group: %s not found!' % hostgroup1),
         ),
-
 
         dict(
-            desc='Try to rename non-existent %r' % user1,
-            command=('user_mod', [user1], dict(setattr=u'uid=tuser')),
-            expected=errors.NotFound(reason='no such entry'),
+            desc='Try to delete non-existent hostgroup rule %r' % hostgroup1,
+            command=('automember_del', [hostgroup1], dict(type=u'hostgroup')),
+            expected=errors.NotFound(reason=u': auto_member_rule not found'),
         ),
+
 
 
         dict(
@@ -117,7 +133,7 @@ class test_automember(Declarative):
                     gidnumber=[fuzzy_digits],
                     objectclass=objectclasses.group + [u'posixgroup'],
                     ipauniqueid=[fuzzy_uuid],
-                    dn=u'cn=%s,cn=groups,cn=accounts,%s' % (group1, api.env.basedn),
+                    dn=DN(('cn', group1), ('cn', 'groups'), ('cn', 'accounts'), api.env.basedn),
                 ),
             ),
         ),
@@ -136,8 +152,8 @@ class test_automember(Declarative):
                     description=[u'Test desc'],
                     objectclass=objectclasses.hostgroup,
                     ipauniqueid=[fuzzy_uuid],
-                    mepmanagedentry=['cn=%s,cn=ng,cn=alt,%s' % (hostgroup1, api.env.basedn)],
-                    dn=u'cn=%s,cn=hostgroups,cn=accounts,%s' % (hostgroup1, api.env.basedn),
+                    mepmanagedentry=[DN(('cn', hostgroup1), ('cn', 'ng'), ('cn', 'alt'), api.env.basedn)],
+                    dn=DN(('cn', hostgroup1), ('cn', 'hostgroups'), ('cn', 'accounts'), api.env.basedn),
                 ),
             ),
         ),
@@ -156,8 +172,8 @@ class test_automember(Declarative):
                     description=[u'Test desc'],
                     objectclass=objectclasses.hostgroup,
                     ipauniqueid=[fuzzy_uuid],
-                    mepmanagedentry=['cn=%s,cn=ng,cn=alt,%s' % (hostgroup2, api.env.basedn)],
-                    dn=u'cn=%s,cn=hostgroups,cn=accounts,%s' % (hostgroup2, api.env.basedn),
+                    mepmanagedentry=[DN(('cn', hostgroup2), ('cn', 'ng'), ('cn', 'alt'), api.env.basedn)],
+                    dn=DN(('cn', hostgroup2), ('cn', 'hostgroups'), ('cn', 'accounts'), api.env.basedn),
                 ),
             ),
         ),
@@ -176,8 +192,8 @@ class test_automember(Declarative):
                     description=[u'Test desc'],
                     objectclass=objectclasses.hostgroup,
                     ipauniqueid=[fuzzy_uuid],
-                    mepmanagedentry=['cn=%s,cn=ng,cn=alt,%s' % (hostgroup3, api.env.basedn)],
-                    dn=u'cn=%s,cn=hostgroups,cn=accounts,%s' % (hostgroup3, api.env.basedn),
+                    mepmanagedentry=[DN(('cn', hostgroup3), ('cn', 'ng'), ('cn', 'alt'), api.env.basedn)],
+                    dn=DN(('cn', hostgroup3), ('cn', 'hostgroups'), ('cn', 'accounts'), api.env.basedn),
                 ),
             ),
         ),
@@ -196,8 +212,8 @@ class test_automember(Declarative):
                     description=[u'Test desc'],
                     objectclass=objectclasses.hostgroup,
                     ipauniqueid=[fuzzy_uuid],
-                    mepmanagedentry=['cn=%s,cn=ng,cn=alt,%s' % (hostgroup4, api.env.basedn)],
-                    dn=u'cn=%s,cn=hostgroups,cn=accounts,%s' % (hostgroup4, api.env.basedn),
+                    mepmanagedentry=[DN(('cn', hostgroup4), ('cn', 'ng'), ('cn', 'alt'), api.env.basedn)],
+                    dn=DN(('cn', hostgroup4), ('cn', 'hostgroups'), ('cn', 'accounts'), api.env.basedn),
                 ),
             ),
         ),
@@ -217,7 +233,7 @@ class test_automember(Declarative):
                     gidnumber=[fuzzy_digits],
                     objectclass=objectclasses.group + [u'posixgroup'],
                     ipauniqueid=[fuzzy_uuid],
-                    dn=u'cn=%s,cn=groups,cn=accounts,%s' % (defaultgroup1, api.env.basedn),
+                    dn=DN(('cn', defaultgroup1), ('cn', 'groups'), ('cn', 'accounts'), api.env.basedn),
                 ),
             ),
         ),
@@ -236,8 +252,8 @@ class test_automember(Declarative):
                     description=[u'Default test desc'],
                     objectclass=objectclasses.hostgroup,
                     ipauniqueid=[fuzzy_uuid],
-                    mepmanagedentry=['cn=%s,cn=ng,cn=alt,%s' % (defaulthostgroup1, api.env.basedn)],
-                    dn=u'cn=%s,cn=hostgroups,cn=accounts,%s' % (defaulthostgroup1, api.env.basedn),
+                    mepmanagedentry=[DN(('cn', defaulthostgroup1), ('cn', 'ng'), ('cn', 'alt'), api.env.basedn)],
+                    dn=DN(('cn', defaulthostgroup1), ('cn', 'hostgroups'), ('cn', 'accounts'), api.env.basedn),
                 ),
             ),
         ),
@@ -254,9 +270,9 @@ class test_automember(Declarative):
                 result=dict(
                     cn=[group1],
                     description=[u'Test desc'],
-                    automembertargetgroup=[u'cn=%s,cn=groups,cn=accounts,%s' % (group1, api.env.basedn)],
+                    automembertargetgroup=[DN(('cn', group1), ('cn', 'groups'), ('cn', 'accounts'), api.env.basedn)],
                     objectclass=objectclasses.automember,
-                    dn=u'cn=%s,cn=group,cn=automember,cn=etc,%s' % (group1, api.env.basedn),
+                    dn=DN(('cn', group1), ('cn', 'group'), ('cn', 'automember'), ('cn', 'etc'), api.env.basedn),
                 ),
             ),
         ),
@@ -284,7 +300,7 @@ class test_automember(Declarative):
                     cn=[group1],
                     description=[u'Test desc'],
                     automemberinclusiveregex=[u'manager=%s' % group_include_regex],
-                    automembertargetgroup=[u'cn=%s,cn=groups,cn=accounts,%s' % (group1, api.env.basedn)],
+                    automembertargetgroup=[DN(('cn', group1), ('cn', 'groups'), ('cn', 'accounts'), api.env.basedn)],
                 ),
             ),
         ),
@@ -303,9 +319,9 @@ class test_automember(Declarative):
                 result=dict(
                     cn=[hostgroup1],
                     description=[u'Test desc'],
-                    automembertargetgroup=[u'cn=%s,cn=hostgroups,cn=accounts,%s' % (hostgroup1, api.env.basedn)],
+                    automembertargetgroup=[DN(('cn', hostgroup1), ('cn', 'hostgroups'), ('cn', 'accounts'), api.env.basedn)],
                     objectclass=objectclasses.automember,
-                    dn=u'cn=%s,cn=hostgroup,cn=automember,cn=etc,%s' % (hostgroup1, api.env.basedn),
+                    dn=DN(('cn', hostgroup1), ('cn', 'hostgroup'), ('cn', 'automember'), ('cn', 'etc'), api.env.basedn),
                 ),
             ),
         ),
@@ -333,7 +349,7 @@ class test_automember(Declarative):
                     cn=[hostgroup1],
                     description=[u'Test desc'],
                     automemberinclusiveregex=[u'fqdn=%s' % hostgroup_include_regex],
-                    automembertargetgroup=[u'cn=%s,cn=hostgroups,cn=accounts,%s' % (hostgroup1, api.env.basedn)],
+                    automembertargetgroup=[DN(('cn', hostgroup1), ('cn', 'hostgroups'), ('cn', 'accounts'), api.env.basedn)],
                 ),
             ),
         ),
@@ -386,7 +402,7 @@ class test_automember(Declarative):
                 result=dict(
                     cn=[hostgroup1],
                     description=[u'Test desc'],
-                    automembertargetgroup=[u'cn=%s,cn=hostgroups,cn=accounts,%s' % (hostgroup1, api.env.basedn)],
+                    automembertargetgroup=[DN(('cn', hostgroup1), ('cn', 'hostgroups'), ('cn', 'accounts'), api.env.basedn)],
                     automemberinclusiveregex=[u'fqdn=%s' % hostgroup_include_regex,
                                               u'fqdn=%s' % hostgroup_include_regex3,
                                               u'fqdn=%s' % hostgroup_include_regex2,
@@ -413,9 +429,9 @@ class test_automember(Declarative):
                 result=dict(
                     cn=[hostgroup2],
                     description=[u'Test desc'],
-                    automembertargetgroup=[u'cn=%s,cn=hostgroups,cn=accounts,%s' % (hostgroup2, api.env.basedn)],
+                    automembertargetgroup=[DN(('cn', hostgroup2), ('cn', 'hostgroups'), ('cn', 'accounts'), api.env.basedn)],
                     objectclass=objectclasses.automember,
-                    dn=u'cn=%s,cn=hostgroup,cn=automember,cn=etc,%s' % (hostgroup2, api.env.basedn),
+                    dn=DN(('cn', hostgroup2), ('cn', 'hostgroup'), ('cn', 'automember'), ('cn', 'etc'), api.env.basedn),
                 ),
             ),
         ),
@@ -443,7 +459,7 @@ class test_automember(Declarative):
                     cn=[hostgroup2],
                     description=[u'Test desc'],
                     automemberinclusiveregex=[u'fqdn=%s' % hostgroup_exclude_regex],
-                    automembertargetgroup=[u'cn=%s,cn=hostgroups,cn=accounts,%s' % (hostgroup2, api.env.basedn)],
+                    automembertargetgroup=[DN(('cn', hostgroup2), ('cn', 'hostgroups'), ('cn', 'accounts'), api.env.basedn)],
                 ),
             ),
         ),
@@ -462,9 +478,9 @@ class test_automember(Declarative):
                 result=dict(
                     cn=[hostgroup3],
                     description=[u'Test desc'],
-                    automembertargetgroup=[u'cn=%s,cn=hostgroups,cn=accounts,%s' % (hostgroup3, api.env.basedn)],
+                    automembertargetgroup=[DN(('cn', hostgroup3), ('cn', 'hostgroups'), ('cn', 'accounts'), api.env.basedn)],
                     objectclass=objectclasses.automember,
-                    dn=u'cn=%s,cn=hostgroup,cn=automember,cn=etc,%s' % (hostgroup3, api.env.basedn),
+                    dn=DN(('cn', hostgroup3), ('cn', 'hostgroup'), ('cn', 'automember'), ('cn', 'etc'), api.env.basedn),
                 ),
             ),
         ),
@@ -492,7 +508,7 @@ class test_automember(Declarative):
                     cn=[hostgroup3],
                     description=[u'Test desc'],
                     automemberinclusiveregex=[u'fqdn=%s' % hostgroup_exclude_regex2],
-                    automembertargetgroup=[u'cn=%s,cn=hostgroups,cn=accounts,%s' % (hostgroup3, api.env.basedn)],
+                    automembertargetgroup=[DN(('cn', hostgroup3), ('cn', 'hostgroups'), ('cn', 'accounts'), api.env.basedn)],
                 ),
             ),
         ),
@@ -511,9 +527,9 @@ class test_automember(Declarative):
                 result=dict(
                     cn=[hostgroup4],
                     description=[u'Test desc'],
-                    automembertargetgroup=[u'cn=%s,cn=hostgroups,cn=accounts,%s' % (hostgroup4, api.env.basedn)],
+                    automembertargetgroup=[DN(('cn', hostgroup4), ('cn', 'hostgroups'), ('cn', 'accounts'), api.env.basedn)],
                     objectclass=objectclasses.automember,
-                    dn=u'cn=%s,cn=hostgroup,cn=automember,cn=etc,%s' % (hostgroup4, api.env.basedn),
+                    dn=DN(('cn', hostgroup4), ('cn', 'hostgroup'), ('cn', 'automember'), ('cn', 'etc'), api.env.basedn),
                 ),
             ),
         ),
@@ -541,7 +557,7 @@ class test_automember(Declarative):
                     cn=[hostgroup4],
                     description=[u'Test desc'],
                     automemberinclusiveregex=[u'fqdn=%s' % hostgroup_exclude_regex3],
-                    automembertargetgroup=[u'cn=%s,cn=hostgroups,cn=accounts,%s' % (hostgroup4, api.env.basedn)],
+                    automembertargetgroup=[DN(('cn', hostgroup4), ('cn', 'hostgroups'), ('cn', 'accounts'), api.env.basedn)],
                 ),
             ),
         ),
@@ -559,8 +575,8 @@ class test_automember(Declarative):
                     cn=[group1],
                     description=[u'Test desc'],
                     automemberinclusiveregex=[u'manager=%s' % group_include_regex],
-                    automembertargetgroup=[u'cn=%s,cn=groups,cn=accounts,%s' % (group1, api.env.basedn)],
-                    dn=u'cn=%s,cn=group,cn=automember,cn=etc,%s' % (group1, api.env.basedn),
+                    automembertargetgroup=[DN(('cn', group1), ('cn', 'groups'), ('cn', 'accounts'), api.env.basedn)],
+                    dn=DN(('cn', group1), ('cn', 'group'), ('cn', 'automember'), ('cn', 'etc'), api.env.basedn),
                 ),
                 summary=None,
             ),
@@ -581,8 +597,8 @@ class test_automember(Declarative):
                     cn=[group1],
                     description=[u'Test desc'],
                     automemberinclusiveregex=[u'manager=%s' % group_include_regex],
-                    automembertargetgroup=[u'cn=%s,cn=groups,cn=accounts,%s' % (group1, api.env.basedn)],
-                    dn=u'cn=%s,cn=group,cn=automember,cn=etc,%s' % (group1, api.env.basedn),
+                    automembertargetgroup=[DN(('cn', group1), ('cn', 'groups'), ('cn', 'accounts'), api.env.basedn)],
+                    dn=DN(('cn', group1), ('cn', 'group'), ('cn', 'automember'), ('cn', 'etc'), api.env.basedn),
                     ),
                 ],
                 summary=u'1 rules matched',
@@ -603,7 +619,7 @@ class test_automember(Declarative):
                     cn=[group1],
                     description=[u'New desc 1'],
                     automemberinclusiveregex=[u'manager=%s' % group_include_regex],
-                    automembertargetgroup=[u'cn=%s,cn=groups,cn=accounts,%s' % (group1, api.env.basedn)],
+                    automembertargetgroup=[DN(('cn', group1), ('cn', 'groups'), ('cn', 'accounts'), api.env.basedn)],
                 ),
                 summary=u'Modified automember rule "%s"' % group1,
                 value=group1,
@@ -622,7 +638,7 @@ class test_automember(Declarative):
                 result=dict(
                     cn=[hostgroup1],
                     description=[u'Test desc'],
-                    automembertargetgroup=[u'cn=%s,cn=hostgroups,cn=accounts,%s' % (hostgroup1, api.env.basedn)],
+                    automembertargetgroup=[DN(('cn', hostgroup1), ('cn', 'hostgroups'), ('cn', 'accounts'), api.env.basedn)],
                     automemberinclusiveregex=[u'fqdn=%s' % hostgroup_include_regex,
                                               u'fqdn=%s' % hostgroup_include_regex3,
                                               u'fqdn=%s' % hostgroup_include_regex2,
@@ -631,7 +647,7 @@ class test_automember(Declarative):
                                               u'fqdn=%s' % hostgroup_exclude_regex3,
                                               u'fqdn=%s' % hostgroup_exclude_regex,
                     ],
-                    dn=u'cn=%s,cn=hostgroup,cn=automember,cn=etc,%s' % (hostgroup1, api.env.basedn),
+                    dn=DN(('cn', hostgroup1), ('cn', 'hostgroup'), ('cn', 'automember'), ('cn', 'etc'), api.env.basedn),
                 ),
                 summary=None,
             ),
@@ -651,7 +667,7 @@ class test_automember(Declarative):
                     dict(
                     cn=[hostgroup1],
                     description=[u'Test desc'],
-                    automembertargetgroup=[u'cn=%s,cn=hostgroups,cn=accounts,%s' % (hostgroup1, api.env.basedn)],
+                    automembertargetgroup=[DN(('cn', hostgroup1), ('cn', 'hostgroups'), ('cn', 'accounts'), api.env.basedn)],
                     automemberinclusiveregex=[u'fqdn=%s' % hostgroup_include_regex,
                                               u'fqdn=%s' % hostgroup_include_regex3,
                                               u'fqdn=%s' % hostgroup_include_regex2,
@@ -660,7 +676,7 @@ class test_automember(Declarative):
                                               u'fqdn=%s' % hostgroup_exclude_regex3,
                                               u'fqdn=%s' % hostgroup_exclude_regex,
                     ],
-                    dn=u'cn=%s,cn=hostgroup,cn=automember,cn=etc,%s' % (hostgroup1, api.env.basedn),
+                    dn=DN(('cn', hostgroup1), ('cn', 'hostgroup'), ('cn', 'automember'), ('cn', 'etc'), api.env.basedn),
                     ),
                 ],
                 summary=u'1 rules matched',
@@ -680,7 +696,7 @@ class test_automember(Declarative):
                 result=dict(
                     cn=[hostgroup1],
                     description=[u'New desc 1'],
-                    automembertargetgroup=[u'cn=%s,cn=hostgroups,cn=accounts,%s' % (hostgroup1, api.env.basedn)],
+                    automembertargetgroup=[DN(('cn', hostgroup1), ('cn', 'hostgroups'), ('cn', 'accounts'), api.env.basedn)],
                     automemberinclusiveregex=[u'fqdn=%s' % hostgroup_include_regex,
                                               u'fqdn=%s' % hostgroup_include_regex3,
                                               u'fqdn=%s' % hostgroup_include_regex2,
@@ -707,10 +723,10 @@ class test_automember(Declarative):
             expected=dict(
                 result=dict(
                     cn=[u'Group'],
-                    automemberdefaultgroup=[u'cn=%s,cn=groups,cn=accounts,%s' % (defaultgroup1, api.env.basedn)],
+                    automemberdefaultgroup=[DN(('cn', defaultgroup1), ('cn', 'groups'), ('cn', 'accounts'), api.env.basedn)],
                 ),
                 value=u'group',
-                summary=u'Set default group for automember "group"',
+                summary=u'Set default (fallback) group for automember "group"',
             ),
         ),
 
@@ -718,16 +734,13 @@ class test_automember(Declarative):
         dict(
             desc='Retrieve default automember group for groups',
             command=(
-                'automember_default_group_show', [], dict(
-                    type=u'group',
-                    automemberdefaultgroup=defaultgroup1,
-                )
+                'automember_default_group_show', [], dict(type=u'group')
             ),
             expected=dict(
                 result=dict(
-                    dn=u'cn=group,cn=automember,cn=etc,%s' % (api.env.basedn),
+                    dn=DN(('cn', 'group'), ('cn', 'automember'), ('cn', 'etc'), api.env.basedn),
                     cn=[u'Group'],
-                    automemberdefaultgroup=[u'cn=%s,cn=groups,cn=accounts,%s' % (defaultgroup1, api.env.basedn)],
+                    automemberdefaultgroup=[DN(('cn', defaultgroup1), ('cn', 'groups'), ('cn', 'accounts'), api.env.basedn)],
                 ),
                 value=u'group',
                 summary=None,
@@ -736,7 +749,7 @@ class test_automember(Declarative):
 
 
         dict(
-            desc='Set default automember group for hostgroups',
+            desc='Set default (fallback) automember group for hostgroups',
             command=(
                 'automember_default_group_set', [], dict(
                     type=u'hostgroup',
@@ -746,10 +759,10 @@ class test_automember(Declarative):
             expected=dict(
                 result=dict(
                     cn=[u'Hostgroup'],
-                    automemberdefaultgroup=[u'cn=%s,cn=hostgroups,cn=accounts,%s' % (defaulthostgroup1, api.env.basedn)],
+                    automemberdefaultgroup=[DN(('cn', defaulthostgroup1), ('cn', 'hostgroups'), ('cn', 'accounts'), api.env.basedn)],
                 ),
                 value=u'hostgroup',
-                summary=u'Set default group for automember "hostgroup"',
+                summary=u'Set default (fallback) group for automember "hostgroup"',
             ),
         ),
 
@@ -763,9 +776,9 @@ class test_automember(Declarative):
             ),
             expected=dict(
                 result=dict(
-                    dn=u'cn=hostgroup,cn=automember,cn=etc,%s' % (api.env.basedn),
+                    dn=DN(('cn', 'hostgroup'), ('cn', 'automember'), ('cn', 'etc'), api.env.basedn),
                     cn=[u'Hostgroup'],
-                    automemberdefaultgroup=[u'cn=%s,cn=hostgroups,cn=accounts,%s' % (defaulthostgroup1, api.env.basedn)],
+                    automemberdefaultgroup=[DN(('cn', defaulthostgroup1), ('cn', 'hostgroups'), ('cn', 'accounts'), api.env.basedn)],
                 ),
                 value=u'hostgroup',
                 summary=None,
@@ -794,14 +807,18 @@ class test_automember(Declarative):
                     uid=[manager1],
                     uidnumber=[fuzzy_digits],
                     gidnumber=[fuzzy_digits],
+                    mail=[u'%s@%s' % (manager1, api.env.domain)],
                     displayname=[u'Michael Scott'],
                     cn=[u'Michael Scott'],
                     initials=[u'MS'],
                     ipauniqueid=[fuzzy_uuid],
-                    krbpwdpolicyreference=[u'cn=global_policy,cn=%s,cn=kerberos,%s' % (api.env.realm, api.env.basedn)],
-                    mepmanagedentry=[u'cn=%s,cn=groups,cn=accounts,%s' % (manager1, api.env.basedn)],
+                    krbpwdpolicyreference=[DN(('cn', 'global_policy'), ('cn', api.env.realm), ('cn', 'kerberos'),
+                                              api.env.basedn)],
+                    mepmanagedentry=[DN(('cn', manager1), ('cn', 'groups'), ('cn', 'accounts'),
+                                        api.env.basedn)],
                     memberof_group=[u'defaultgroup1', u'ipausers'],
-                    dn=u'uid=mscott,cn=users,cn=accounts,' + api.env.basedn,
+                    dn=DN(('uid', 'mscott'), ('cn', 'users'), ('cn', 'accounts'),
+                          api.env.basedn),
                 ),
             ),
         ),
@@ -828,15 +845,19 @@ class test_automember(Declarative):
                     uid=[user1],
                     uidnumber=[fuzzy_digits],
                     gidnumber=[fuzzy_digits],
-                    manager=[u'uid=mscott,cn=users,cn=accounts,%s' % api.env.basedn],
+                    mail=[u'%s@%s' % (user1, api.env.domain)],
+                    manager=[DN(('uid', 'mscott'), ('cn', 'users'), ('cn', 'accounts'), api.env.basedn)],
                     displayname=[u'Test User1'],
                     cn=[u'Test User1'],
                     initials=[u'TU'],
                     ipauniqueid=[fuzzy_uuid],
-                    krbpwdpolicyreference=[u'cn=global_policy,cn=%s,cn=kerberos,%s' % (api.env.realm, api.env.basedn)],
-                    mepmanagedentry=[u'cn=%s,cn=groups,cn=accounts,%s' % (user1, api.env.basedn)],
+                    krbpwdpolicyreference=[DN(('cn', 'global_policy'), ('cn', api.env.realm), ('cn', 'kerberos'),
+                                              api.env.basedn)],
+                    mepmanagedentry=[DN(('cn', user1), ('cn', 'groups'), ('cn', 'accounts'),
+                                        api.env.basedn)],
                     memberof_group=[u'group1', u'ipausers'],
-                    dn=u'uid=tuser1,cn=users,cn=accounts,' + api.env.basedn,
+                    dn=DN(('uid', 'tuser1'), ('cn', 'users'), ('cn', 'accounts'),
+                          api.env.basedn),
                 ),
             ),
         ),
@@ -855,7 +876,7 @@ class test_automember(Declarative):
                 value=fqdn1,
                 summary=u'Added host "%s"' % fqdn1,
                 result=dict(
-                    dn=u'fqdn=%s,cn=computers,cn=accounts,%s' % (fqdn1, api.env.basedn),
+                    dn=DN(('fqdn', fqdn1), ('cn', 'computers'), ('cn', 'accounts'), api.env.basedn),
                     fqdn=[fqdn1],
                     description=[u'Test host 1'],
                     l=[u'Undisclosed location 1'],
@@ -865,6 +886,8 @@ class test_automember(Declarative):
                     objectclass=objectclasses.host,
                     ipauniqueid=[fuzzy_uuid],
                     managedby_host=[fqdn1],
+                    memberof_hostgroup=[hostgroup1],
+                    memberofindirect_netgroup=[hostgroup1],
                 ),
             ),
         ),
@@ -883,7 +906,7 @@ class test_automember(Declarative):
                 value=fqdn2,
                 summary=u'Added host "%s"' % fqdn2,
                 result=dict(
-                    dn=u'fqdn=%s,cn=computers,cn=accounts,%s' % (fqdn2, api.env.basedn),
+                    dn=DN(('fqdn', fqdn2), ('cn', 'computers'), ('cn', 'accounts'), api.env.basedn),
                     fqdn=[fqdn2],
                     description=[u'Test host 2'],
                     l=[u'Undisclosed location 1'],
@@ -893,6 +916,8 @@ class test_automember(Declarative):
                     objectclass=objectclasses.host,
                     ipauniqueid=[fuzzy_uuid],
                     managedby_host=[fqdn2],
+                    memberof_hostgroup=[defaulthostgroup1],
+                    memberofindirect_netgroup=[defaulthostgroup1],
                 ),
             ),
         ),
@@ -911,7 +936,7 @@ class test_automember(Declarative):
                 value=fqdn3,
                 summary=u'Added host "%s"' % fqdn3,
                 result=dict(
-                    dn=u'fqdn=%s,cn=computers,cn=accounts,%s' % (fqdn3, api.env.basedn),
+                    dn=DN(('fqdn', fqdn3), ('cn', 'computers'), ('cn', 'accounts'), api.env.basedn),
                     fqdn=[fqdn3],
                     description=[u'Test host 3'],
                     l=[u'Undisclosed location 1'],
@@ -921,6 +946,8 @@ class test_automember(Declarative):
                     objectclass=objectclasses.host,
                     ipauniqueid=[fuzzy_uuid],
                     managedby_host=[fqdn3],
+                    memberof_hostgroup=[hostgroup2],
+                    memberofindirect_netgroup=[hostgroup2],
                 ),
             ),
         ),
@@ -939,7 +966,7 @@ class test_automember(Declarative):
                 value=fqdn4,
                 summary=u'Added host "%s"' % fqdn4,
                 result=dict(
-                    dn=u'fqdn=%s,cn=computers,cn=accounts,%s' % (fqdn4, api.env.basedn),
+                    dn=DN(('fqdn', fqdn4), ('cn', 'computers'), ('cn', 'accounts'), api.env.basedn),
                     fqdn=[fqdn4],
                     description=[u'Test host 4'],
                     l=[u'Undisclosed location 1'],
@@ -949,6 +976,8 @@ class test_automember(Declarative):
                     objectclass=objectclasses.host,
                     ipauniqueid=[fuzzy_uuid],
                     managedby_host=[fqdn4],
+                    memberof_hostgroup=[hostgroup3],
+                    memberofindirect_netgroup=[hostgroup3],
                 ),
             ),
         ),
@@ -967,7 +996,7 @@ class test_automember(Declarative):
                 value=fqdn5,
                 summary=u'Added host "%s"' % fqdn5,
                 result=dict(
-                    dn=u'fqdn=%s,cn=computers,cn=accounts,%s' % (fqdn5, api.env.basedn),
+                    dn=DN(('fqdn', fqdn5), ('cn', 'computers'), ('cn', 'accounts'), api.env.basedn),
                     fqdn=[fqdn5],
                     description=[u'Test host 5'],
                     l=[u'Undisclosed location 1'],
@@ -977,6 +1006,8 @@ class test_automember(Declarative):
                     objectclass=objectclasses.host,
                     ipauniqueid=[fuzzy_uuid],
                     managedby_host=[fqdn5],
+                    memberof_hostgroup=[hostgroup4],
+                    memberofindirect_netgroup=[hostgroup4],
                 ),
             ),
         ),
@@ -989,7 +1020,7 @@ class test_automember(Declarative):
                 value=hostgroup1,
                 summary=None,
                 result={
-                    'dn': u'cn=%s,cn=hostgroups,cn=accounts,%s' % (hostgroup1, api.env.basedn),
+                    'dn': DN(('cn', hostgroup1), ('cn', 'hostgroups'), ('cn', 'accounts'), api.env.basedn),
                     'member_host': [u'%s' % fqdn1],
                     'cn': [hostgroup1],
                     'description': [u'Test desc'],
@@ -1005,7 +1036,7 @@ class test_automember(Declarative):
                 value=defaulthostgroup1,
                 summary=None,
                 result={
-                    'dn': u'cn=%s,cn=hostgroups,cn=accounts,%s' % (defaulthostgroup1, api.env.basedn),
+                    'dn': DN(('cn', defaulthostgroup1), ('cn', 'hostgroups'), ('cn', 'accounts'), api.env.basedn),
                     'member_host': [u'%s' % fqdn2],
                     'cn': [defaulthostgroup1],
                     'description': [u'Default test desc'],
@@ -1021,7 +1052,7 @@ class test_automember(Declarative):
                 value=hostgroup2,
                 summary=None,
                 result={
-                    'dn': u'cn=%s,cn=hostgroups,cn=accounts,%s' % (hostgroup2, api.env.basedn),
+                    'dn': DN(('cn', hostgroup2), ('cn', 'hostgroups'), ('cn', 'accounts'), api.env.basedn),
                     'member_host': [u'%s' % fqdn3],
                     'cn': [hostgroup2],
                     'description': [u'Test desc'],
@@ -1037,7 +1068,7 @@ class test_automember(Declarative):
                 value=hostgroup3,
                 summary=None,
                 result={
-                    'dn': u'cn=%s,cn=hostgroups,cn=accounts,%s' % (hostgroup3, api.env.basedn),
+                    'dn': DN(('cn', hostgroup3), ('cn', 'hostgroups'), ('cn', 'accounts'), api.env.basedn),
                     'member_host': [u'%s' % fqdn4],
                     'cn': [hostgroup3],
                     'description': [u'Test desc'],
@@ -1053,7 +1084,7 @@ class test_automember(Declarative):
                 value=hostgroup4,
                 summary=None,
                 result={
-                    'dn': u'cn=%s,cn=hostgroups,cn=accounts,%s' % (hostgroup4, api.env.basedn),
+                    'dn': DN(('cn', hostgroup4), ('cn', 'hostgroups'), ('cn', 'accounts'), api.env.basedn),
                     'member_host': [u'%s' % fqdn5],
                     'cn': [hostgroup4],
                     'description': [u'Test desc'],

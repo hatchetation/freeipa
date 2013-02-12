@@ -5,14 +5,12 @@ Date:   Tue Nov 1 11:48:27 2011 -0400
 
 they need a working certificate server running
 
-Index: freeipa/Makefile
-===================================================================
---- freeipa.orig/Makefile	2011-12-31 04:02:56.140475799 +0200
-+++ freeipa/Makefile	2011-12-31 04:04:39.887587352 +0200
-@@ -84,7 +84,7 @@
+--- a/Makefile
++++ b/Makefile
+@@ -96,7 +96,7 @@ lint: bootstrap-autogen
+ 
  
  test:
- 	$(MAKE) -C install/po test_lang
 -	./make-testcert
 +#	./make-testcert
  	./make-test

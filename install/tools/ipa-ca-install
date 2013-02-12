@@ -21,7 +21,7 @@
 import sys
 import socket
 
-import os, traceback, logging, shutil
+import os, shutil
 
 from ipapython import ipautil
 from ipapython import services as ipaservices
@@ -31,15 +31,18 @@ from ipaserver.install import certs
 from ipaserver.install.installutils import HostnameLocalhost
 from ipaserver.install.installutils import ReplicaConfig, expand_replica_info, read_replica_info
 from ipaserver.install.installutils import get_host_name, BadHostError
-from ipaserver.install import dsinstance, cainstance
+from ipaserver.install import dsinstance, cainstance, bindinstance
 from ipaserver.install.replication import replica_conn_check
 from ipapython import version
 from ipalib import api, util
+from ipapython.dn import DN
 from ipapython.config import IPAOptionParser
 from ipapython import sysrestore
+from ipapython import dogtag
+from ipapython.ipa_log_manager import *
 
-CACERT="/etc/ipa/ca.crt"
-REPLICA_INFO_TOP_DIR=None
+log_file_name = "/var/log/ipareplica-ca-install.log"
+REPLICA_INFO_TOP_DIR = None
 
 def parse_options():
     usage = "%prog [options] REPLICA_FILE"
@@ -55,6 +58,8 @@ def parse_options():
                       help="Do not use DNS for hostname lookup during installation")
     parser.add_option("--skip-conncheck", dest="skip_conncheck", action="store_true",
                       default=False, help="skip connection check to remote master")
+    parser.add_option("--skip-schema-check", dest="skip_schema_check", action="store_true",
+                      default=False, help="skip check for updated CA DS schema on the remote master")
     parser.add_option("-U", "--unattended", dest="unattended", action="store_true",
                       default=False, help="unattended installation never prompts the user")
 
@@ -69,10 +74,31 @@ def parse_options():
 def get_dirman_password():
     return installutils.read_password("Directory Manager (existing master)", confirm=False, validate=False)
 
+def install_dns_records(config, options):
+
+    if not bindinstance.dns_container_exists(config.master_host_name,
+                                             ipautil.realm_to_suffix(config.realm_name),
+                                             dm_password=config.dirman_password):
+        return
+
+    bind = bindinstance.BindInstance(dm_password=config.dirman_password)
+    try:
+        api.Backend.ldap2.connect(bind_dn=DN(('cn', 'Directory Manager')),
+                                  bind_pw=config.dirman_password)
+        bind.add_ipa_ca_cname(config.host_name, config.domain_name)
+    finally:
+        if api.Backend.ldap2.isconnected():
+             api.Backend.ldap2.disconnect()
+
 def main():
     safe_options, options, filename = parse_options()
-    installutils.standard_logging_setup("/var/log/ipareplica-ca-install.log", options.debug)
-    logging.debug('%s was invoked with argument "%s" and options: %s' % (sys.argv[0], filename, safe_options))
+
+    if os.geteuid() != 0:
+        sys.exit("\nYou must be root to run this script.\n")
+
+    standard_logging_setup(log_file_name, debug=options.debug)
+
+    root_logger.debug('%s was invoked with argument "%s" and options: %s' % (sys.argv[0], filename, safe_options))
 
     if not ipautil.file_exists(filename):
         sys.exit("Replica file %s does not exist" % filename)
@@ -120,7 +146,7 @@ def main():
     try:
         host = get_host_name(options.no_host_dns)
     except BadHostError, e:
-        logging.error(str(e))
+        root_logger.error(str(e))
         sys.exit(1)
     if config.host_name != host:
         try:
@@ -134,56 +160,69 @@ def main():
     config.dir = dir
     config.setup_ca = True
 
+    portfile = config.dir + "/dogtag_directory_port.txt"
+    if not ipautil.file_exists(portfile):
+        dogtag_master_ds_port = str(dogtag.Dogtag9Constants.DS_PORT)
+    else:
+        with open(portfile) as fd:
+            dogtag_master_ds_port = fd.read()
+
     if not options.skip_conncheck:
-        replica_conn_check(config.master_host_name, config.host_name, config.realm_name, True, options.admin_password)
+        replica_conn_check(
+            config.master_host_name, config.host_name, config.realm_name, True,
+            dogtag_master_ds_port, options.admin_password)
+
+    if options.skip_schema_check:
+        root_logger.info("Skipping CA DS schema check")
+    else:
+        cainstance.replica_ca_install_check(config, dogtag_master_ds_port)
 
     # Configure the CA if necessary
-    (CA, cs) = cainstance.install_replica_ca(config, postinstall=True)
+    (CA, cs) = cainstance.install_replica_ca(
+        config, dogtag_master_ds_port, postinstall=True)
 
     # We need to ldap_enable the CA now that DS is up and running
     CA.ldap_enable('CA', config.host_name, config.dirman_password,
-                   util.realm_to_suffix(config.realm_name))
-    cs.add_simple_service('dogtagldap/%s@%s' % (config.host_name, config.realm_name))
-    cs.add_cert_to_service()
+                   ipautil.realm_to_suffix(config.realm_name))
+    if not dogtag.install_constants.SHARED_DB:
+        cs.add_simple_service('dogtagldap/%s@%s' %
+            (config.host_name, config.realm_name))
+        cs.add_cert_to_service()
+    else:
+        CA.enable_client_auth_to_db()
+        CA.restart()
+
+    # Install CA DNS records
+    install_dns_records(config, options)
 
     # We need to restart apache as we drop a new config file in there
     ipaservices.knownservices.httpd.restart(capture_output=True)
 
-try:
-    if not os.geteuid()==0:
-        sys.exit("\nYou must be root to run this script.\n")
-
-    main()
-    sys.exit(0)
-except SystemExit, e:
-    sys.exit(e)
-except socket.error, (errno, errstr):
-    print errstr
-except HostnameLocalhost:
-    print "The hostname resolves to the localhost address (127.0.0.1/::1)"
-    print "Please change your /etc/hosts file so that the hostname"
-    print "resolves to the ip address of your network interface."
-    print ""
-    print "Please fix your /etc/hosts file and restart the setup program"
-except Exception, e:
-    print "creation of replica failed: %s" % str(e)
-    message = str(e)
-    for str in traceback.format_tb(sys.exc_info()[2]):
-        message = message + "\n" + str
-    logging.debug(message)
-except KeyboardInterrupt:
-    print "Installation cancelled."
-finally:
-    # always try to remove decrypted replica file
+    #update dogtag version in config file
     try:
-        if REPLICA_INFO_TOP_DIR:
-            shutil.rmtree(REPLICA_INFO_TOP_DIR)
-    except OSError:
-        pass
+        fd = open("/etc/ipa/default.conf", "a")
+        fd.write(
+            "dogtag_version=%s\n" % dogtag.install_constants.DOGTAG_VERSION)
+        fd.close()
+    except IOError, e:
+        print "Failed to update /etc/ipa/default.conf"
+        root_logger.error(str(e))
+        sys.exit(1)
 
-print ""
-print "Your system may be partly configured."
-print "Run /usr/sbin/ipa-server-install --uninstall to clean up."
+fail_message = '''
+Your system may be partly configured.
+Run /usr/sbin/ipa-server-install --uninstall to clean up.
+'''
 
-# the only way to get here is on error or ^C
-sys.exit(1)
+if __name__ == '__main__':
+    try:
+        installutils.run_script(main, log_file_name=log_file_name,
+                operation_name='ipa-ca-install',
+                fail_message=fail_message)
+    finally:
+        # always try to remove decrypted replica file
+        try:
+            if REPLICA_INFO_TOP_DIR:
+                shutil.rmtree(REPLICA_INFO_TOP_DIR)
+        except OSError:
+            pass

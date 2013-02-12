@@ -3,12 +3,7 @@
 
 %global httpd_conf /etc/httpd/conf.d
 %global plugin_dir %{_libdir}/dirsrv/plugins
-%if ! (0%{?fedora} > 12 || 0%{?rhel} > 5)
-%{!?python_sitelib: %global python_sitelib %(%{__python} -c "from
-distutils.sysconfig import get_python_lib; print(get_python_lib())")}
-%{!?python_sitearch: %global python_sitearch %(%{__python} -c "from
-distutils.sysconfig import get_python_lib; print(get_python_lib(1))")}
-%endif
+
 %global POLICYCOREUTILSVER 1.33.12-1
 %global gettext_domain ipa
 
@@ -24,33 +19,31 @@ Source0:        freeipa-%{version}.tar.gz
 BuildRoot:      %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
 
 %if ! %{ONLY_CLIENT}
-BuildRequires:  389-ds-base-devel >= 1.2.9
+BuildRequires:  389-ds-base-devel >= 1.3.0
 BuildRequires:  svrcore-devel
 BuildRequires:  /usr/share/selinux/devel/Makefile
 BuildRequires:  policycoreutils >= %{POLICYCOREUTILSVER}
-%if 0%{?fedora} >= 16
 BuildRequires:  systemd-units
+%if 0%{?fedora} >= 18
+BuildRequires:  samba-devel >= 4.0.0-150
+BuildRequires:  samba-python
+BuildRequires:  libwbclient-devel
+%else
+BuildRequires:  samba4-devel >= 4.0.0-139
+BuildRequires:  samba4-python
 %endif
-%endif
+BuildRequires:  libtalloc-devel
+BuildRequires:  libtevent-devel
+%endif  # ! %{ONLY_CLIENT}
 BuildRequires:  nspr-devel
 BuildRequires:  nss-devel
 BuildRequires:  openssl-devel
 BuildRequires:  openldap-devel
-BuildRequires:  krb5-devel
+BuildRequires:  krb5-devel >= 1.10
 BuildRequires:  krb5-workstation
 BuildRequires:  libuuid-devel
-%if 0%{?fedora} >= 16
 BuildRequires:  libcurl-devel >= 7.21.7-2
 BuildRequires:  xmlrpc-c-devel >= 1.27.4
-%else
-%if 0%{?fedora} == 15
-BuildRequires:  libcurl-devel >= 7.21.3-9
-BuildRequires:  xmlrpc-c-devel >= 1.25.4
-%else
-BuildRequires:  libcurl-devel
-BuildRequires:  xmlrpc-c-devel
-%endif
-%endif
 BuildRequires:  popt-devel
 BuildRequires:  autoconf
 BuildRequires:  automake
@@ -58,21 +51,25 @@ BuildRequires:  m4
 BuildRequires:  libtool
 BuildRequires:  gettext
 BuildRequires:  python-devel
-BuildRequires:  authconfig
 BuildRequires:  python-ldap
 BuildRequires:  python-setuptools
 BuildRequires:  python-krbV
 BuildRequires:  python-nss
-%if 0%{?fedora} >= 15
-BuildRequires:  python-netaddr >= 0.7.5-3
-%else
 BuildRequires:  python-netaddr
-%endif
 BuildRequires:  python-kerberos
 BuildRequires:  python-rhsm
 BuildRequires:  pyOpenSSL
 BuildRequires:  pylint
+BuildRequires:  python-polib
 BuildRequires:  libipa_hbac-python
+BuildRequires:  python-memcached
+BuildRequires:  sssd >= 1.9.2
+BuildRequires:  python-lxml
+BuildRequires:  python-pyasn1 >= 0.0.9a
+BuildRequires:  python-dns
+BuildRequires:  m2crypto
+BuildRequires:  check
+BuildRequires:  libsss_idmap-devel
 
 %description
 IPA is an integrated solution to provide centrally managed Identity (machine,
@@ -88,72 +85,61 @@ Requires: %{name}-python = %{version}-%{release}
 Requires: %{name}-client = %{version}-%{release}
 Requires: %{name}-admintools = %{version}-%{release}
 Requires: %{name}-server-selinux = %{version}-%{release}
-Requires(pre): 389-ds-base >= 1.2.10-0.4.a4
+Requires: 389-ds-base >= 1.3.0
 Requires: openldap-clients
 Requires: nss
 Requires: nss-tools
-%if 0%{?fedora} >= 16
-Requires: krb5-server >= 1.9.1-15
-%else
-Requires: krb5-server
-%endif
-Requires: krb5-server-ldap
+Requires: krb5-server >= 1.10
+Requires: krb5-server < 1.11
 Requires: krb5-pkinit-openssl
 Requires: cyrus-sasl-gssapi%{?_isa}
 Requires: ntp
 Requires: httpd
 Requires: mod_wsgi
-Requires: mod_auth_kerb
-Requires: mod_nss >= 1.0.8-10
+%if 0%{?fedora} >= 18
+Requires: mod_auth_kerb >= 5.4-16
+%else
+Requires: mod_auth_kerb >= 5.4-8
+%endif
+Requires: mod_nss
 Requires: python-ldap
 Requires: python-krbV
 Requires: acl
-Requires: python-pyasn1 >= 0.0.9a
-%if 0%{?fedora} >= 16
+Requires: python-pyasn1
+Requires: memcached
+Requires: python-memcached
 Requires: systemd-units >= 36-3
 Requires(pre): systemd-units
 Requires(post): systemd-units
-%endif
-%if 0%{?fedora} >= 15
-Requires: selinux-policy >= 3.9.16-18
-%else
-Requires: selinux-policy >= 3.9.7-27
-%endif
+Requires: selinux-policy >= 3.11.1-60
 Requires(post): selinux-policy-base
-Requires: slapi-nis >= 0.21
-%if 0%{?fedora} >= 16
-Requires: pki-ca >= 9.0.15
-Requires: pki-silent >= 9.0.15
-# Only tomcat6 greater than this version provides proper systemd support
-Requires: tomcat6 >= 6.0.32-17
-%else
-%if 0%{?fedora} >= 15
-Requires: pki-ca >= 9.0.15
-Requires: pki-silent >= 9.0.15
-Requires: pki-setup  >= 9.0.15
-%else
-Requires: pki-ca >= 9.0.5
-Requires: pki-silent >= 9.0.5
-%endif
-%endif
-Requires: dogtag-pki-common-theme
-Requires: dogtag-pki-ca-theme
+Requires: slapi-nis >= 0.44
+Requires: pki-ca >= 10.0.0-0.54.b3
+Requires: dogtag-pki-server-theme
 %if 0%{?rhel}
 Requires: subscription-manager
 %endif
-%if 0%{?fedora} >= 16
 Requires(preun): python systemd-units
 Requires(postun): python systemd-units
-%else
-Requires(preun):  python initscripts chkconfig
-Requires(postun): python initscripts chkconfig
-%endif
+Requires: python-dns
+Requires: keyutils
+Requires: zip
+Requires: policycoreutils >= %{POLICYCOREUTILSVER}
+Requires: tar
 
 # We have a soft-requires on bind. It is an optional part of
 # IPA but if it is configured we need a way to require versions
 # that work for us.
-Conflicts: bind-dyndb-ldap < 1.0.0-0.1.b1
-Conflicts: bind < 9.8.1-1
+%if 0%{?fedora} >= 18
+Conflicts: bind-dyndb-ldap < 2.3-2
+%else
+Conflicts: bind-dyndb-ldap < 1.1.0-0.12.rc1
+%endif
+Conflicts: bind < 9.8.2-0.4.rc2
+
+# mod_proxy provides a single API to communicate over SSL. If mod_ssl
+# is even loaded into Apache then it grabs this interface.
+Conflicts: mod_ssl
 
 Obsoletes: ipa-server >= 1.0
 
@@ -181,7 +167,36 @@ user, virtual machines, groups, authentication credentials), Policy
 (configuration settings, access control information) and Audit (events,
 logs, analysis thereof). This package provides SELinux rules for the
 daemons included in freeipa-server
+
+%package server-trust-ad
+Summary: Virtual package to install packages required for Active Directory trusts
+Group: System Environment/Base
+Requires: %{name}-server = %version-%release
+Requires: m2crypto
+%if 0%{?fedora} >= 18
+Requires: samba-python
+Requires: samba
+Requires: samba-winbind
+%else
+Requires: samba4-python
+Requires: samba4
+Requires: samba4-winbind
 %endif
+Requires: libsss_idmap
+# We use alternatives to divert winbind_krb5_locator.so plugin to libkrb5
+# on the installes where server-trust-ad subpackage is installed because
+# IPA AD trusts cannot be used at the same time with the locator plugin
+# since Winbindd will be configured in a different mode
+Requires(post): %{_sbindir}/update-alternatives
+Requires(post): python
+Requires(postun): %{_sbindir}/update-alternatives
+Requires(preun): %{_sbindir}/update-alternatives
+
+%description server-trust-ad
+Cross-realm trusts with Active Directory in IPA require working Samba 4 installation.
+This package is provided for convenience to install all required dependencies at once.
+
+%endif # ! %{ONLY_CLIENT}
 
 
 %package client
@@ -195,22 +210,20 @@ Requires: krb5-workstation
 Requires: authconfig
 Requires: pam_krb5
 Requires: wget
-%if 0%{?fedora} >= 16
-Requires:  libcurl >= 7.21.7-2
-Requires:  xmlrpc-c >= 1.27.4
-%else
-%if 0%{?fedora} == 15
-Requires:  libcurl >= 7.21.3-9
-Requires:  xmlrpc-c >= 1.25.4
-%else
-Requires:  libcurl
-Requires:  xmlrpc-c
-%endif
-%endif
-Requires: sssd >= 1.5.1
-Requires: certmonger >= 0.26
+Requires: libcurl >= 7.21.7-2
+Requires: xmlrpc-c >= 1.27.4
+Requires: sssd >= 1.8.0
+Requires: certmonger >= 0.60
 Requires: nss-tools
 Requires: bind-utils
+Requires: oddjob-mkhomedir
+Requires: python-krbV
+Requires: python-dns
+Requires: libsss_autofs
+Requires: autofs
+Requires: libnfsidmap
+Requires: nfs-utils
+Requires(post): policycoreutils
 
 Obsoletes: ipa-client >= 1.0
 
@@ -239,25 +252,18 @@ user, virtual machines, groups, authentication credentials), Policy
 (configuration settings, access control information) and Audit (events,
 logs, analysis thereof). This package provides command-line tools for
 IPA administrators.
-%endif
+%endif  # ! %{ONLY_CLIENT}
 
 %package python
 Summary: Python libraries used by IPA
 Group: System Environment/Libraries
-%if 0%{?fedora} >= 12 || 0%{?rhel} >= 6
-Requires: python-kerberos >= 1.1-3
-%endif
-Requires: authconfig
+Requires: python-kerberos
 Requires: gnupg
 Requires: iproute
 Requires: pyOpenSSL
-Requires: python-nss >= 0.11
+Requires: python-nss
 Requires: python-lxml
-%if 0%{?fedora} >= 15
-Requires: python-netaddr >= 0.7.5-3
-%else
 Requires: python-netaddr
-%endif
 Requires: libipa_hbac-python
 
 Obsoletes: ipa-python >= 1.0
@@ -269,24 +275,27 @@ user, virtual machines, groups, authentication credentials), Policy
 logs, analysis thereof). If you are using IPA you need to install this
 package.
 
-
 %prep
 %setup -n freeipa-%{version} -q
 
 %build
 export CFLAGS="$CFLAGS %{optflags}"
 export CPPFLAGS="$CPPFLAGS %{optflags}"
-%if 0%{?fedora} >= 16
+%if 0%{?fedora} >= 18
+# use fedora18 platform which is based on fedora16 platform with systemd
+# support + fedora18 changes
+export SUPPORTED_PLATFORM=fedora18
+%else
 export SUPPORTED_PLATFORM=fedora16
+%endif
 # Force re-generate of platform support
 rm -f ipapython/services.py
-%endif
 make version-update
 cd ipa-client; ../autogen.sh --prefix=%{_usr} --sysconfdir=%{_sysconfdir} --localstatedir=%{_localstatedir} --libdir=%{_libdir} --mandir=%{_mandir}; cd ..
 %if ! %{ONLY_CLIENT}
 cd daemons; ../autogen.sh --prefix=%{_usr} --sysconfdir=%{_sysconfdir} --localstatedir=%{_localstatedir} --libdir=%{_libdir} --mandir=%{_mandir} --with-openldap; cd ..
 cd install; ../autogen.sh --prefix=%{_usr} --sysconfdir=%{_sysconfdir} --localstatedir=%{_localstatedir} --libdir=%{_libdir} --mandir=%{_mandir}; cd ..
-%endif
+%endif  # ! %{ONLY_CLIENT}
 
 %if ! %{ONLY_CLIENT}
 make IPA_VERSION_IS_GIT_SNAPSHOT=no %{?_smp_mflags} all
@@ -295,23 +304,27 @@ cd selinux
 make all
 %else
 make IPA_VERSION_IS_GIT_SNAPSHOT=no %{?_smp_mflags} client
-%endif
+%endif  # ! %{ONLY_CLIENT}
 
 %install
 rm -rf %{buildroot}
-%if ! %{ONLY_CLIENT}
-%if 0%{?fedora} >= 16
+%if 0%{?fedora} >= 18
+# use fedora18 platform which is based on fedora16 platform with systemd
+# support + fedora18 changes
+export SUPPORTED_PLATFORM=fedora18
+%else
 export SUPPORTED_PLATFORM=fedora16
+%endif
 # Force re-generate of platform support
 rm -f ipapython/services.py
-%endif
+%if ! %{ONLY_CLIENT}
 make install DESTDIR=%{buildroot}
 cd selinux
 make install DESTDIR=%{buildroot}
 cd ..
 %else
 make client-install DESTDIR=%{buildroot}
-%endif
+%endif  # ! %{ONLY_CLIENT}
 %find_lang %{gettext_domain}
 
 
@@ -325,20 +338,31 @@ rm %{buildroot}/%{plugin_dir}/libipa_repl_version.la
 rm %{buildroot}/%{plugin_dir}/libipa_uuid.la
 rm %{buildroot}/%{plugin_dir}/libipa_modrdn.la
 rm %{buildroot}/%{plugin_dir}/libipa_lockout.la
+rm %{buildroot}/%{plugin_dir}/libipa_cldap.la
+rm %{buildroot}/%{plugin_dir}/libipa_sidgen.la
+rm %{buildroot}/%{plugin_dir}/libipa_sidgen_task.la
+rm %{buildroot}/%{plugin_dir}/libipa_extdom_extop.la
+rm %{buildroot}/%{plugin_dir}/libipa_range_check.la
+rm %{buildroot}/%{_libdir}/krb5/plugins/kdb/ipadb.la
+rm %{buildroot}/%{_libdir}/samba/pdb/ipasam.la
 
 # Some user-modifiable HTML files are provided. Move these to /etc
 # and link back.
 mkdir -p %{buildroot}/%{_sysconfdir}/ipa/html
 mkdir -p %{buildroot}/%{_localstatedir}/cache/ipa/sysrestore
+mkdir -p %{buildroot}/%{_localstatedir}/cache/ipa/sysupgrade
+mkdir -p %{buildroot}/%{_localstatedir}/cache/ipa/pki-ca/publish
 mkdir %{buildroot}%{_usr}/share/ipa/html/
+ln -s ../../../..%{_sysconfdir}/ipa/html/ffconfig.js \
+    %{buildroot}%{_usr}/share/ipa/html/ffconfig.js
+ln -s ../../../..%{_sysconfdir}/ipa/html/ffconfig_page.js \
+    %{buildroot}%{_usr}/share/ipa/html/ffconfig_page.js
 ln -s ../../../..%{_sysconfdir}/ipa/html/ssbrowser.html \
     %{buildroot}%{_usr}/share/ipa/html/ssbrowser.html
 ln -s ../../../..%{_sysconfdir}/ipa/html/unauthorized.html \
     %{buildroot}%{_usr}/share/ipa/html/unauthorized.html
 ln -s ../../../..%{_sysconfdir}/ipa/html/browserconfig.html \
     %{buildroot}%{_usr}/share/ipa/html/browserconfig.html
-ln -s ../../../..%{_sysconfdir}/ipa/html/hbac-deny-remove.html \
-    %{buildroot}%{_usr}/share/ipa/html/hbac-deny-remove.html
 ln -s ../../../..%{_sysconfdir}/ipa/html/ipa_error.css \
     %{buildroot}%{_usr}/share/ipa/html/ipa_error.css
 
@@ -347,20 +371,41 @@ mkdir -p %{buildroot}%{_sysconfdir}/httpd/conf.d/
 /bin/touch %{buildroot}%{_sysconfdir}/httpd/conf.d/ipa.conf
 /bin/touch %{buildroot}%{_sysconfdir}/httpd/conf.d/ipa-pki-proxy.conf
 /bin/touch %{buildroot}%{_sysconfdir}/httpd/conf.d/ipa-rewrite.conf
-%if 0%{?fedora} >= 16
-# Default to systemd initscripts for F16 and above
+mkdir -p %{buildroot}%{_usr}/share/ipa/html/
+/bin/touch %{buildroot}%{_usr}/share/ipa/html/ca.crt
+/bin/touch %{buildroot}%{_usr}/share/ipa/html/configure.jar
+/bin/touch %{buildroot}%{_usr}/share/ipa/html/kerberosauth.xpi
+/bin/touch %{buildroot}%{_usr}/share/ipa/html/krb.con
+/bin/touch %{buildroot}%{_usr}/share/ipa/html/krb.js
+/bin/touch %{buildroot}%{_usr}/share/ipa/html/krb5.ini
+/bin/touch %{buildroot}%{_usr}/share/ipa/html/krbrealm.con
+/bin/touch %{buildroot}%{_usr}/share/ipa/html/preferences.html
+mkdir -p %{buildroot}%{_initrddir}
+mkdir %{buildroot}%{_sysconfdir}/sysconfig/
+install -m 644 init/ipa_memcached.conf %{buildroot}%{_sysconfdir}/sysconfig/ipa_memcached
+
+# NOTE: systemd specific section
+mkdir -p %{buildroot}%{_sysconfdir}/tmpfiles.d/
+install -m 0644 init/systemd/ipa.conf.tmpfiles %{buildroot}%{_sysconfdir}/tmpfiles.d/ipa.conf
+# END
+
+mkdir -p %{buildroot}%{_localstatedir}/run/
+install -d -m 0700 %{buildroot}%{_localstatedir}/run/ipa_memcached/
+install -d -m 0700 %{buildroot}%{_localstatedir}/run/ipa/
+
+mkdir -p %{buildroot}%{_libdir}/krb5/plugins/libkrb5
+touch %{buildroot}%{_libdir}/krb5/plugins/libkrb5/winbind_krb5_locator.so
+
+# NOTE: systemd specific section
 mkdir -p %{buildroot}%{_unitdir}
-for i in ipa.service ipa_kpasswd.service ; do
-    install -m 644 init/systemd/$i %{buildroot}%{_unitdir}/$i
-done
-rm -f %{buildroot}%{_initrddir}/ipa_kpasswd
-%else
-install -m755 init/SystemV/ipa.init %{buildroot}%{_initrddir}/ipa
-%endif
-%endif
+install -m 644 init/systemd/ipa.service %{buildroot}%{_unitdir}/ipa.service
+install -m 644 init/systemd/ipa_memcached.service %{buildroot}%{_unitdir}/ipa_memcached.service
+# END
+%endif  # ! %{ONLY_CLIENT}
 
 mkdir -p %{buildroot}%{_sysconfdir}/ipa/
 /bin/touch %{buildroot}%{_sysconfdir}/ipa/default.conf
+/bin/touch %{buildroot}%{_sysconfdir}/ipa/ca.crt
 mkdir -p %{buildroot}/%{_localstatedir}/lib/ipa-client/sysrestore
 
 %if ! %{ONLY_CLIENT}
@@ -368,52 +413,53 @@ mkdir -p %{buildroot}%{_sysconfdir}/bash_completion.d
 install -pm 644 contrib/completion/ipa.bash_completion %{buildroot}%{_sysconfdir}/bash_completion.d/ipa
 mkdir -p %{buildroot}%{_sysconfdir}/cron.d
 install -pm 644 ipa-compliance.cron %{buildroot}%{_sysconfdir}/cron.d/ipa-compliance
-%endif
+
+(cd %{buildroot}/%{python_sitelib}/ipaserver && find . -type f  | \
+	grep -v dcerpc | grep -v adtrustinstance | \
+	sed -e 's,\.py.*$,.*,g' | sort -u | \
+	sed -e 's,\./,%%{python_sitelib}/ipaserver/,g' ) >server-python.list
+%endif  # ! %{ONLY_CLIENT}
 
 %clean
 rm -rf %{buildroot}
 
 %if ! %{ONLY_CLIENT}
 %post server
-%if 0%{?fedora} >= 16
-# Use systemd scheme
+# NOTE: systemd specific section
     /bin/systemctl --system daemon-reload 2>&1 || :
-%else
-# Use SystemV scheme only before F16
-if [ $1 = 1 ]; then
-    /sbin/chkconfig --add ipa
-    /sbin/chkconfig --add ipa_kpasswd
-fi
-%endif
+# END
 if [ $1 -gt 1 ] ; then
-    /usr/sbin/ipa-upgradeconfig || :
-    /usr/sbin/ipa-ldap-updater --upgrade >/dev/null 2>&1 || :
+    /usr/sbin/ipa-upgradeconfig --quiet >/dev/null || :
 fi
+
+%posttrans server
+# This must be run in posttrans so that updates from previous
+# execution that may no longer be shipped are not applied.
+/usr/sbin/ipa-ldap-updater --upgrade >/dev/null || :
 
 %preun server
 if [ $1 = 0 ]; then
-%if 0%{?fedora} >= 16
-# Use systemd scheme
+# NOTE: systemd specific section
     /bin/systemctl --quiet stop ipa.service || :
     /bin/systemctl --quiet disable ipa.service || :
-%else
-# Use SystemV scheme only before F16
-    /sbin/chkconfig --del ipa
-    /sbin/chkconfig --del ipa_kpasswd
-    /sbin/service ipa stop >/dev/null 2>&1 || :
-%endif
+# END
 fi
 
 %postun server
 if [ "$1" -ge "1" ]; then
-%if 0%{?fedora} >= 16
-# Use systemd scheme
+# NOTE: systemd specific section
     /bin/systemctl --quiet is-active ipa.service >/dev/null && \
     /bin/systemctl try-restart ipa.service >/dev/null 2>&1 || :
-%else
-# Use SystemV scheme only before F16
-    /sbin/service ipa condrestart >/dev/null 2>&1 || :
-%endif
+# END
+fi
+
+%pre server
+# Stop ipa_kpasswd if it exists before upgrading so we don't have a
+# zombie process when we're done.
+if [ -e /usr/sbin/ipa_kpasswd ]; then
+# NOTE: systemd specific section
+    /bin/systemctl stop ipa_kpasswd.service >/dev/null 2>&1 || :
+# END
 fi
 
 %pre server-selinux
@@ -426,7 +472,7 @@ if [ -s /etc/selinux/config ]; then
 fi
 
 %post server-selinux
-semodule -s targeted -i /usr/share/selinux/targeted/ipa_kpasswd.pp /usr/share/selinux/targeted/ipa_httpd.pp /usr/share/selinux/targeted/ipa_dogtag.pp
+semodule -s targeted -i /usr/share/selinux/targeted/ipa_httpd.pp /usr/share/selinux/targeted/ipa_dogtag.pp
 . %{_sysconfdir}/selinux/config
 FILE_CONTEXT=%{_sysconfdir}/selinux/targeted/contexts/files/file_contexts
 selinuxenabled
@@ -448,7 +494,7 @@ fi
 
 %postun server-selinux
 if [ $1 = 0 ]; then
-semodule -s targeted -r ipa_kpasswd ipa_httpd ipa_dogtag
+semodule -s targeted -r ipa_httpd ipa_dogtag
 . %{_sysconfdir}/selinux/config
 FILE_CONTEXT=%{_sysconfdir}/selinux/targeted/contexts/files/file_contexts
 selinuxenabled
@@ -457,11 +503,48 @@ if [ $? == 0  -a "${SELINUXTYPE}" == targeted -a -f ${FILE_CONTEXT}.%{name} ]; t
        rm -f ${FILE_CONTEXT}.%name
 fi
 fi
-%endif
 
+%postun server-trust-ad
+if [ "$1" -ge "1" ]; then
+	if [ "`readlink %{_sysconfdir}/alternatives/winbind_krb5_locator.so`" == "/dev/null" ]; then
+		%{_sbindir}/alternatives --set winbind_krb5_locator.so /dev/null
+	fi
+fi
+
+%post server-trust-ad
+%{_sbindir}/update-alternatives --install %{_libdir}/krb5/plugins/libkrb5/winbind_krb5_locator.so \
+				winbind_krb5_locator.so /dev/null 90
+python -c "import sys; from ipaserver.install import installutils; sys.exit(0 if installutils.is_ipa_configured() else 1);" > /dev/null 2>&1
+if [  $? -eq 0 ]; then
+# NOTE: systemd specific section
+    /bin/systemctl try-restart httpd.service >/dev/null 2>&1 || :
+# END
+fi
+
+%preun server-trust-ad
+if [ $1 -eq 0 ]; then
+	%{_sbindir}/update-alternatives --remove winbind_krb5_locator.so /dev/null
+fi
+%endif  # ! %{ONLY_CLIENT}
+
+%post client
+if [ $1 -gt 1 ] ; then
+    # Has the client been configured?
+    restore=0
+    test -f '/var/lib/ipa-client/sysrestore/sysrestore.index' && restore=$(wc -l '/var/lib/ipa-client/sysrestore/sysrestore.index' | awk '{print $1}')
+
+    if [ -f '/etc/sssd/sssd.conf' -a $restore -ge 2 ]; then
+        if ! egrep -q '/var/lib/sss/pubconf/krb5.include.d/' /etc/krb5.conf  2>/dev/null ; then
+            echo "includedir /var/lib/sss/pubconf/krb5.include.d/" > /etc/krb5.conf.ipanew
+            cat /etc/krb5.conf >> /etc/krb5.conf.ipanew
+            mv /etc/krb5.conf.ipanew /etc/krb5.conf
+            /sbin/restorecon /etc/krb5.conf
+        fi
+    fi
+fi
 
 %if ! %{ONLY_CLIENT}
-%files server
+%files server -f server-python.list
 %defattr(-,root,root,-)
 %doc COPYING README Contributors.txt
 %{_sbindir}/ipa-ca-install
@@ -477,43 +560,59 @@ fi
 %{_sbindir}/ipa-compat-manage
 %{_sbindir}/ipa-nis-manage
 %{_sbindir}/ipa-managed-entries
-%{_sbindir}/ipa_kpasswd
 %{_sbindir}/ipactl
 %{_sbindir}/ipa-upgradeconfig
 %{_sbindir}/ipa-compliance
+%{_libexecdir}/certmonger/dogtag-ipa-retrieve-agent-submit
 %{_sysconfdir}/cron.d/ipa-compliance
-%if 0%{?fedora} >= 16
-# Use systemd scheme
+%config(noreplace) %{_sysconfdir}/sysconfig/ipa_memcached
+%dir %attr(0700,apache,apache) %{_localstatedir}/run/ipa_memcached/
+%dir %attr(0700,root,root) %{_localstatedir}/run/ipa/
+# NOTE: systemd specific section
+%config %{_sysconfdir}/tmpfiles.d/ipa.conf
 %attr(644,root,root) %{_unitdir}/ipa.service
-%attr(644,root,root) %{_unitdir}/ipa_kpasswd.service
-%else
-# Use SystemV scheme only before F16
-%attr(755,root,root) %{_initrddir}/ipa
-%attr(755,root,root) %{_initrddir}/ipa_kpasswd
-%endif
+%attr(644,root,root) %{_unitdir}/ipa_memcached.service
+# END
 %dir %{python_sitelib}/ipaserver
-%{python_sitelib}/ipaserver/*
+%dir %{python_sitelib}/ipaserver/install
+%dir %{python_sitelib}/ipaserver/install/plugins
+%dir %{python_sitelib}/ipaserver/plugins
+%dir %{_libdir}/ipa/certmonger
+%attr(755,root,root) %{_libdir}/ipa/certmonger/*
 %dir %{_usr}/share/ipa
 %{_usr}/share/ipa/wsgi.py*
+%{_usr}/share/ipa/copy-schema-to-ca.py*
 %{_usr}/share/ipa/*.ldif
 %{_usr}/share/ipa/*.uldif
 %{_usr}/share/ipa/*.template
+%dir %{_usr}/share/ipa/ffextension
+%{_usr}/share/ipa/ffextension/bootstrap.js
+%{_usr}/share/ipa/ffextension/install.rdf
+%{_usr}/share/ipa/ffextension/chrome.manifest
+%dir %{_usr}/share/ipa/ffextension/chrome
+%dir %{_usr}/share/ipa/ffextension/chrome/content
+%{_usr}/share/ipa/ffextension/chrome/content/kerberosauth.js
+%{_usr}/share/ipa/ffextension/chrome/content/kerberosauth_overlay.xul
+%dir %{_usr}/share/ipa/ffextension/locale
+%dir %{_usr}/share/ipa/ffextension/locale/en-US
+%{_usr}/share/ipa/ffextension/locale/en-US/kerberosauth.properties
 %dir %{_usr}/share/ipa/html
+%{_usr}/share/ipa/html/ffconfig.js
+%{_usr}/share/ipa/html/ffconfig_page.js
 %{_usr}/share/ipa/html/ssbrowser.html
 %{_usr}/share/ipa/html/browserconfig.html
 %{_usr}/share/ipa/html/unauthorized.html
-%{_usr}/share/ipa/html/hbac-deny-remove.html
 %{_usr}/share/ipa/html/ipa_error.css
 %dir %{_usr}/share/ipa/migration
 %{_usr}/share/ipa/migration/error.html
 %{_usr}/share/ipa/migration/index.html
 %{_usr}/share/ipa/migration/invalid.html
-%{_usr}/share/ipa/migration/ipa_migration.css
 %{_usr}/share/ipa/migration/migration.py*
 %dir %{_usr}/share/ipa/ui
 %{_usr}/share/ipa/ui/index.html
-%{_usr}/share/ipa/ui/*.png
-%{_usr}/share/ipa/ui/*.gif
+%{_usr}/share/ipa/ui/login.html
+%{_usr}/share/ipa/ui/logout.html
+%{_usr}/share/ipa/ui/reset_password.html
 %{_usr}/share/ipa/ui/*.ico
 %{_usr}/share/ipa/ui/*.css
 %{_usr}/share/ipa/ui/*.js
@@ -521,19 +620,34 @@ fi
 %{_usr}/share/ipa/ui/*.svg
 %{_usr}/share/ipa/ui/*.ttf
 %{_usr}/share/ipa/ui/*.woff
+%dir %{_usr}/share/ipa/ui/ext
+%config(noreplace) %{_usr}/share/ipa/ui/ext/extension.js
+%dir %{_usr}/share/ipa/ui/images
+%{_usr}/share/ipa/ui/images/*.png
+%{_usr}/share/ipa/ui/images/*.gif
 %dir %{_sysconfdir}/ipa
 %dir %{_sysconfdir}/ipa/html
+%config(noreplace) %{_sysconfdir}/ipa/html/ffconfig.js
+%config(noreplace) %{_sysconfdir}/ipa/html/ffconfig_page.js
 %config(noreplace) %{_sysconfdir}/ipa/html/ssbrowser.html
 %config(noreplace) %{_sysconfdir}/ipa/html/ipa_error.css
 %config(noreplace) %{_sysconfdir}/ipa/html/unauthorized.html
 %config(noreplace) %{_sysconfdir}/ipa/html/browserconfig.html
-%config(noreplace) %{_sysconfdir}/ipa/html/hbac-deny-remove.html
 %ghost %attr(0644,root,apache) %config(noreplace) %{_sysconfdir}/httpd/conf.d/ipa-rewrite.conf
 %ghost %attr(0644,root,apache) %config(noreplace) %{_sysconfdir}/httpd/conf.d/ipa.conf
 %ghost %attr(0644,root,apache) %config(noreplace) %{_sysconfdir}/httpd/conf.d/ipa-pki-proxy.conf
+%{_usr}/share/ipa/ca_renewal
 %{_usr}/share/ipa/ipa.conf
 %{_usr}/share/ipa/ipa-rewrite.conf
 %{_usr}/share/ipa/ipa-pki-proxy.conf
+%ghost %attr(0644,root,apache) %config(noreplace) %{_usr}/share/ipa/html/ca.crt
+%ghost %attr(0644,root,apache) %{_usr}/share/ipa/html/configure.jar
+%ghost %attr(0644,root,apache) %{_usr}/share/ipa/html/kerberosauth.xpi
+%ghost %attr(0644,root,apache) %{_usr}/share/ipa/html/krb.con
+%ghost %attr(0644,root,apache) %{_usr}/share/ipa/html/krb.js
+%ghost %attr(0644,root,apache) %{_usr}/share/ipa/html/krb5.ini
+%ghost %attr(0644,root,apache) %{_usr}/share/ipa/html/krbrealm.con
+%ghost %attr(0644,root,apache) %{_usr}/share/ipa/html/preferences.html
 %dir %{_usr}/share/ipa/updates/
 %{_usr}/share/ipa/updates/*
 %attr(755,root,root) %{plugin_dir}/libipa_pwd_extop.so
@@ -543,11 +657,16 @@ fi
 %attr(755,root,root) %{plugin_dir}/libipa_uuid.so
 %attr(755,root,root) %{plugin_dir}/libipa_modrdn.so
 %attr(755,root,root) %{plugin_dir}/libipa_lockout.so
+%attr(755,root,root) %{plugin_dir}/libipa_cldap.so
+%attr(755,root,root) %{plugin_dir}/libipa_range_check.so
 %dir %{_localstatedir}/lib/ipa
 %attr(700,root,root) %dir %{_localstatedir}/lib/ipa/sysrestore
+%attr(700,root,root) %dir %{_localstatedir}/lib/ipa/sysupgrade
+%attr(755,root,root) %dir %{_localstatedir}/lib/ipa/pki-ca
+%attr(755,root,root) %dir %{_localstatedir}/lib/ipa/pki-ca/publish
 %dir %{_localstatedir}/cache/ipa
 %attr(700,apache,apache) %dir %{_localstatedir}/cache/ipa/sessions
-%attr(700,root,root) %dir %{_localstatedir}/cache/ipa/kpasswd
+%attr(755,root,root) %{_libdir}/krb5/plugins/kdb/ipadb.so
 %{_mandir}/man1/ipa-replica-conncheck.1.gz
 %{_mandir}/man1/ipa-replica-install.1.gz
 %{_mandir}/man1/ipa-replica-manage.1.gz
@@ -561,22 +680,34 @@ fi
 %{_mandir}/man1/ipa-nis-manage.1.gz
 %{_mandir}/man1/ipa-managed-entries.1.gz
 %{_mandir}/man1/ipa-ldap-updater.1.gz
-%{_mandir}/man8/ipa_kpasswd.8.gz
 %{_mandir}/man8/ipactl.8.gz
+%{_mandir}/man8/ipa-upgradeconfig.8.gz
 %{_mandir}/man1/ipa-compliance.1.gz
 
 %files server-selinux
 %defattr(-,root,root,-)
 %doc COPYING README Contributors.txt
-%{_usr}/share/selinux/targeted/ipa_kpasswd.pp
 %{_usr}/share/selinux/targeted/ipa_httpd.pp
 %{_usr}/share/selinux/targeted/ipa_dogtag.pp
-%endif
+
+%files server-trust-ad
+%{_sbindir}/ipa-adtrust-install
+%attr(755,root,root) %{plugin_dir}/libipa_extdom_extop.so
+%{_usr}/share/ipa/smb.conf.empty
+%attr(755,root,root) %{_libdir}/samba/pdb/ipasam.so
+%attr(755,root,root) %{plugin_dir}/libipa_sidgen.so
+%attr(755,root,root) %{plugin_dir}/libipa_sidgen_task.so
+%{_mandir}/man1/ipa-adtrust-install.1.gz
+%{python_sitelib}/ipaserver/dcerpc*
+%{python_sitelib}/ipaserver/install/adtrustinstance*
+%ghost %{_libdir}/krb5/plugins/libkrb5/winbind_krb5_locator.so
+%endif  # ! %{ONLY_CLIENT}
 
 %files client
 %defattr(-,root,root,-)
 %doc COPYING README Contributors.txt
 %{_sbindir}/ipa-client-install
+%{_sbindir}/ipa-client-automount
 %{_sbindir}/ipa-getkeytab
 %{_sbindir}/ipa-rmkeytab
 %{_sbindir}/ipa-join
@@ -591,6 +722,7 @@ fi
 %{_mandir}/man1/ipa-getkeytab.1.gz
 %{_mandir}/man1/ipa-rmkeytab.1.gz
 %{_mandir}/man1/ipa-client-install.1.gz
+%{_mandir}/man1/ipa-client-automount.1.gz
 %{_mandir}/man1/ipa-join.1.gz
 %{_mandir}/man5/default.conf.5.gz
 
@@ -601,7 +733,7 @@ fi
 %{_bindir}/ipa
 %config %{_sysconfdir}/bash_completion.d
 %{_mandir}/man1/ipa.1.gz
-%endif
+%endif  # ! %{ONLY_CLIENT}
 
 %files python -f %{gettext_domain}.lang
 %defattr(-,root,root,-)
@@ -613,37 +745,221 @@ fi
 %dir %{python_sitelib}/ipalib
 %{python_sitelib}/ipalib/*
 %{python_sitearch}/default_encoding_utf8.so
-%if 0%{?fedora} >= 12 || 0%{?rhel} >= 6
 %{python_sitelib}/ipapython-*.egg-info
 %{python_sitelib}/freeipa-*.egg-info
 %{python_sitearch}/python_default_encoding-*.egg-info
-%endif
 %ghost %attr(0644,root,apache) %config(noreplace) %{_sysconfdir}/ipa/default.conf
+%ghost %attr(0644,root,apache) %config(noreplace) %{_sysconfdir}/ipa/ca.crt
 
 %changelog
-* Tue Oct 18 2011 Alexander Bokovoy <abokovoy@redhat.com> - 2.1.3-1
-- 2.1.3
+* Fri Dec 7 2012 Endi S. Dewata <edewata@redhat.com> - 3.0.99-9
+- Bump minimum version of pki-ca to 10.0.0-0.54.b3
 
-* Mon Oct 17 2011 Alexander Bokovoy <abokovoy@redhat.com> - 2.1.2-1
+* Fri Dec 7 2012 Martin Kosek <mkosek@redhat.com> - 3.0.99-8
+- Bump minimum version of 389-ds-base to 1.3.0 to get transaction support
+
+* Thu Dec  6 2012 Rob Crittenden <rcritten@redhat.com> - 3.0.99-7
+- Set min for selinux-policy to 3.11.1-60 to fix errors including sssd
+  domain mapping in krb5.conf (#873429)
+
+* Wed Nov 21 2012 Alexander Bokovoy <abokovoy@redhat.com> - 3.0.99-6
+- Replace python-crypto by m2crypto dependency
+
+* Fri Nov 16 2012 Rob Crittenden <rcritten@redhat.com> - 3.0.99-5
+- Bump minimum version of slapi-nis to 0.44
+
+* Wed Nov 14 2012 Martin Kosek <mkosek@redhat.com> - 3.0.99-4
+- Remove compatibility definitions for unsupported Fedora versions (Fedora 16 and lower)
+  - Do not require specific package version when the package was available in Fedora 17
+  - Remove old SysV initscript compatibility code - we run on systemd now
+- Add Requires for the new Dogtag 10 and dogtag-pki-server-theme
+- Remove Requires on tomcat6 for Fedora 18 and later, Dogtag 10 pulls tomcat7 itself
+- Add Requires for tar (used by ipa-replica-prepare)
+
+* Fri Nov 09 2012 Martin Kosek <mkosek@redhat.com> - 3.0.99-3
+- Set min for bind-dyndb-ldap to 2.3-2 to pick up disabling global
+  forwarder per-zone
+
+* Fri Oct 26 2012 Sumit Bose <sbose@redhat.com> - 3.0.99-2
+- Restart httpd in post install of server-trust-ad
+
+* Wed Oct 24 2012 Martin Kosek <mkosek@redhat.com> - 3.0.99-1
+- Add strict Requires for 389-ds-base and policycoreutils to avoid user
+  removing them during package lifetime
+
+* Wed Oct 17 2012 Martin Kosek <mkosek@redhat.com> - 2.99.0-51
+- Print ipa-upgradeconfig errors during RPM update
+
+* Wed Oct 10 2012 Alexander Bokovoy <abokovoy@redhat.com> - 2.99.0-50
+- Make sure server-trust-ad subpackage alternates winbind_krb5_locator.so
+  plugin to /dev/null since they cannot be used when trusts are configured
+
+* Wed Oct 10 2012 Petr Viktorin <pviktori@redhat.com> - 2.99.0-49
+- Add zip dependency, needed for creating unsigned Firefox extensions
+
+* Mon Oct  8 2012 Martin Kosek <mkosek@redhat.com> - 2.99.0-48
+- Add directory /var/lib/ipa/pki-ca/publish for CRL published by pki-ca
+
+* Mon Oct  1 2012 Martin Kosek <mkosek@redhat.com> - 2.99.0-47
+- Require samba packages instead of samba4 packages obsoleted in Fedora 18 and later
+- Add libwbclient-devel BuildRequires to pick up libwbclient.h on Fedora 18 and later
+
+* Tue Sep 18 2012 Petr Viktorin <pviktori@redhat.com> - 2.99.0-46
+- Set certmonger minimum version to 0.60 for Dogtag 10 support.
+
+* Mon Sep 17 2012 Rob Crittenden <rcritten@redhat.com> - 2.99.0-45
+- Set min for 389-ds-base to 1.2.11.14-1 on F17+ to pull in updated
+  RUV code and nsslapd-readonly schema.
+
+* Fri Sep 14 2012 Sumit Bose <sbose@redhat.com> - 2.99.0-44
+- Updated samba4-devel dependency due to API change
+
+* Mon Aug 20 2012 Rob Crittenden <rcritten@redhat.com> - 2.99.0-43
+- Set min for 389-ds-base to 1.2.11.9-1 on F17+ to pull in warning about
+  low nsslapd-cachememsize.
+
+* Mon Aug 20 2012 Tomas Babej <tbabej@redhat.com> - 2.99.0-42
+- Add samba4-winbind to build dependencies for AD server-side code
+
+* Thu Aug 17 2012 Martin Kosek <mkosek@redhat.com> - 2.99.0-41
+- Set min for bind-dyndb-ldap to 1.1.0-0.16.rc1 to pick up complete zone transfer
+  support
+
+* Thu Aug 2 2012 Martin Kosek <mkosek@redhat.com> - 2.99.0-40
+- Set min for bind-dyndb-ldap to 1.1.0-0.15.rc1 to pick up SOA serial autoincrement
+  feature
+
+* Tue Jul 24 2012 Rob Crittenden <rcritten@redhat.com> - 2.99.0-39
+- Set minimum certmonger to 0.58 for dogtag cert renewal
+
+* Wed Jul 18 2012 Alexander Bokovoy <abokovoy@redhat.com> - 2.99.0-38
+- Require samba4-devel >= 4.0.0-128 due to passdb API change in beta4
+
+* Fri Jun 29 2012 Rob Crittenden <rcritten@redhat.com> - 2.99.0-37
+- Add Requires on openssl
+- Set minimum tomcat6 to 6.0.35-4 in F-18
+- Set minimum mod_auth_kerb to 5.4-16 in F-18
+
+* Fri Jun 21 2012 Sumit Bose <sbose@redhat.com> - 2.99.0-36
+- Add extdom extop plugin
+
+* Fri Jun 21 2012 Rob Crittenden <rcritten@redhat.com> - 2.99.0-35
+- Add client requires on libsss-autofs, autofs, libnfsidmap and nfs-utils
+  for configuring automount and NFS.
+
+* Fri Jun 21 2012 Petr Vobornik <pvoborni@redhat.com> - 2.99.0-34
+- Add Web UI reset password pages
+
+* Wed Jun 20 2012 Ondrej Hamada <ohamada@redhat.com> - 2.99.0-33
+- Set min for 389-ds-base to 1.2.11.5-1 on F17 to fix installation issue
+- Set min for 389-ds-base to 1.2.10.10-1 on F16 (and lower) to fix CN case persistence
+
+* Fri Jun 8 2012 Martin Kosek <mkosek@redhat.com> - 2.99.0-32
+- Add directory /var/lib/ipa/sysupgrade for package upgrade metadata
+- Set min for bind-dyndb-ldap to 1.1.0-0.12.rc1 to pick up persistent search
+  related bug fixes
+
+* Mon Jun  4 2012 Alexander Bokovoy <abokovoy@redhat.com> - 2.99.0-31
+- Add python-crypto to build dependencies for AD server-side code
+
+* Tue May 29 2012 Alexander Bokovoy <abokovoy@redhat.com> - 2.99.0-30
+- Add freeipa-server-trust-ad virtual package to capture all required dependencies
+  for Active Directory trust management
+
+* Fri May 11 2012 Martin Kosek <mkosek@redhat.com> - 2.99.0-29
+- Replace used DNS client library (acutil) with python-dns
+
+* Tue Apr 10 2012 Rob Crittenden <rcritten@redhat.com> - 2.99.0-28
+- Set min for selinux-policy to 3.10.0-110 on F-17 to pick up certmonger
+  policy for restarting services.
+- Set min for certmonger to 0.53 so we have the -C option to set restart
+  commands.
+
+* Thu Apr  5 2012 Rob Crittenden <rcritten@redhat.com> - 2.99.0-27
+- Bump minimum version of slapi-nis to 0.40
+
+* Tue Mar 27 2012 Rob Crittenden <rcritten@redhat.com> - 2.99.0-26
+- Add python-krbV Requires on client package
+
+* Wed Mar 26 2012 Rob Crittenden <rcritten@redhat.com> - 2.99.0-25
+- Set min for 389-ds-base to 1.2.10.4-2 to fix upgrade issue
+
+* Fri Mar 23 2012 Petr Viktorin <pviktori@redhat.com> - 2.99.0-24
+- Add python-lxml and python-pyasn1 to BuildRequires
+
+* Wed Mar 19 2012 Martin Kosek <mkosek@redhat.com> - 2.99.0-23
+- Set min for bind-dyndb-ldap and bind to pick up new features and bug fixes
+
+* Thu Mar 1 2012 Jan Cholasta <jcholast@redhat.com> - 2.99.0-22
+- Set min nvr of sssd to 1.8.0 for SSH support
+- Add BuildRequires on sssd >= 1.8.0
+
+* Wed Feb 29 2012 Petr Vobornik <pvoborni@redhat.com> - 2.99.0-21
+- Add Web UI form based login page
+- Removed ipa_migration.css
+
+* Wed Feb 29 2012 Petr Vobornik <pvoborni@redhat.com> - 2.99.0-20
+- Add Web UI logout page
+
+* Mon Feb 27 2012 Rob Crittenden <rcritten@redhat.com> - 2.99.0-19
+- Add Requires to ipa-client on oddjob-mkhomedir
+
+* Fri Feb 24 2012 Martin Kosek <mkosek@redhat.com> - 2.99.0-18
+- Set min for bind-dyndb-ldap to 1.1.0-0.8.a2 to pick up new features
+
+* Thu Feb 23 2012 Rob Crittenden <rcritten@redhat.com> - 2.99.0-17
+- Add Conflicts on mod_ssl
+
+* Thu Feb 16 2012 Rob Crittenden <rcritten@redhat.com> - 2.99.0-16
+- Set min for 389-ds-base to 1.2.10.1-1 to fix install segfault,
+  schema replication.
+
+* Tue Jan 31 2012 Rob Crittenden <rcritten@redhat.com> - 2.99.0-15
+- Set min for krb5-server to 1.9.2-6 to pick up needed s4u2proxy patches
+
+* Wed Jan 11 2012 Rob Crittenden <rcritten@redhat.com> - 2.99.0-14
+- Set min for mod_auth_kerb to 5.4-8 to pick up s4u2proxy support
+
+* Fri Dec 9 2011 Alexander Bokovoy <abokovoy@redhat.com> - 2.99.0-13
+- Fix dependency for samba4-devel package
+
+* Wed Nov 17 2011 Simo Sorce <simo@redhat.com> - 2.99.0-12
+- Add CLDAP plugin
+- Set min nvr of 389-ds-base to 1.2.10-0.5.a5 for SLAPI_PLUGIN_CONFIG_ENTRY
+  support
+
+* Wed Nov 14 2011 Endi S. Dewata <edewata@redhat.com> - 2.99.0-11
+- Make sure changes to extension.js are not removed.
+
+* Wed Oct 26 2011 Endi S. Dewata <edewata@redhat.com> - 2.99.0-10
+- Moved UI images into install/ui/images
+
+* Mon Oct 24 2011 Endi S. Dewata <edewata@redhat.com> - 2.99.0-9
+- Removed hbac-deny-remove.html
+
+* Fri Oct 21 2011 Alexander Bokovoy <abokovoy@redhat.com> - 2.99.0-8
 - Default to systemd for Fedora 16 and onwards
 
-* Fri Oct 14 2011 Rob Crittenden <rcritten@redhat.com> - 2.1.1-3
+* Fri Oct 14 2011 Rob Crittenden <rcritten@redhat.com> - 2.99.0-7
 - Set min nvr of 389-ds-base to 1.2.10-0.4.a4 for limits fixes (740942, 742324)
 
-* Fri Oct  7 2011 Adam Young <ayoung@redhat.com> - 2.1.1-2
+* Fri Oct  7 2011 Adam Young <ayoung@redhat.com> - 2.99.0-6
 - Add explicit dependency on pki-setup.
 
-* Mon Sep 12 2011 Alexander Bokovoy <abokovoy@redhat.com> - 2.1.1-1
+* Tue Sep 13 2011 Alexander Bokovoy <abokovoy@redhat.com> - 2.99.0-5
 - Make sure platform adaptation is packaged in -python sub-package
 
-* Fri Sep 9 2011 Martin Kosek <mkosek@redhat.com> - 2.1.0-4
+* Fri Sep 9 2011 Martin Kosek <mkosek@redhat.com> - 2.99.0-4
 - Add soft dependency for bind and bind-dyndb-ldap required versions
 
-* Wed Aug 31 2011 Rob Crittenden <rcritten@redhat.com> - 2.1.0-3
+* Wed Aug 31 2011 Rob Crittenden <rcritten@redhat.com> - 2.99.0-3
 - Set min nvr of 389-ds-base to 1.2.9.7-1 for BZ 728605
 
-* Mon Aug 29 2011 Rob Crittenden <rcritten@redhat.com> - 2.1.0-2
+* Mon Aug 29 2011 Rob Crittenden <rcritten@redhat.com> - 2.99.0-2
 - Set min nvr of pki-ca to 9.0.12 for fix in BZ 700505
+
+* Wed Aug 25 2011 Simo Sorce <ssorce#redhat.com> - 2.99.0-1
+- Remove ipa_kpasswd.
 
 * Tue Aug 23 2011 Jan Cholasta <jcholast@redhat.com> - 2.1.0-1
 - Add subscription-manager dependency for RHEL.

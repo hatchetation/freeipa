@@ -19,19 +19,20 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 
-import traceback
-
 from ipaserver.plugins.ldap2 import ldap2
-from ipaserver.install import bindinstance, ntpinstance
+from ipaserver.install import service, bindinstance, ntpinstance, httpinstance
 from ipaserver.install.installutils import *
 from ipaserver.install import installutils
 from ipapython import version
 from ipapython import ipautil, sysrestore
 from ipalib import api, errors, util
 from ipapython.config import IPAOptionParser
-from ipalib.constants import DNS_ZONE_REFRESH
+from optparse import OptionGroup, SUPPRESS_HELP
 import krbV
 import ldap
+from ipapython.ipa_log_manager import *
+
+log_file_name = "/var/log/ipaserver-install.log"
 
 def parse_options():
     parser = IPAOptionParser(version=version.VERSION)
@@ -47,17 +48,23 @@ def parse_options():
                       default=False, help="Do not add any DNS forwarders, use root servers instead")
     parser.add_option("--reverse-zone", dest="reverse_zone", help="The reverse DNS zone to use")
     parser.add_option("--no-reverse", dest="no_reverse", action="store_true",
-                      default=False, help="Do not create reverse DNS zone")
-    parser.add_option("--zonemgr", dest="zonemgr", 
-                      help="DNS zone manager e-mail address. Defaults to root")
+                      default=False, help="Do not create new reverse DNS zone")
+    parser.add_option("--zonemgr", action="callback", callback=bindinstance.zonemgr_callback,
+                      type="string",
+                      help="DNS zone manager e-mail address. Defaults to hostmaster@DOMAIN")
+    # this option name has been deprecated, persistent search has been enabled by default
     parser.add_option("--zone-notif", dest="zone_notif",
-                      action="store_true", default=False,
-                      help="Let name server receive notification when a new zone is added." \
-                           "Zone refresh is turned off when zone notification is enabled")
+                      action="store_true", default=False, help=SUPPRESS_HELP)
+    parser.add_option("--no-persistent-search", dest="persistent_search",
+                      default=True, action="store_false",
+                      help="Do not enable persistent search feature in the name server")
     parser.add_option("--zone-refresh", dest="zone_refresh",
-                      default=DNS_ZONE_REFRESH, type="int",
-                      help="A delay between checks for new DNS zones. Defaults to %d" \
-                              % DNS_ZONE_REFRESH)
+                      default=0, type="int",
+                      help="When set to non-zero the name server will use DNS zone "
+                           "detection based on polling instead of a persistent search")
+    parser.add_option("--no-serial-autoincrement", dest="serial_autoincrement",
+                      default=True, action="store_false",
+                      help="Do not enable SOA serial autoincrement")
     parser.add_option("-U", "--unattended", dest="unattended", action="store_true",
                       default=False, help="unattended installation never prompts the user")
 
@@ -75,9 +82,15 @@ def parse_options():
 
     if options.zone_refresh < 0:
         parser.error("negative numbers not allowed for --zone-refresh")
+    elif options.zone_refresh > 0:
+        options.persistent_search = False   # mutually exclusive features
 
-    if options.zone_notif:   # mutually exclusive features
-        options.zone_refresh = 0
+    if options.zone_notif:
+        print >>sys.stderr, "WARNING: --zone-notif option is deprecated and has no effect"
+
+    if options.serial_autoincrement and not options.persistent_search:
+        parser.error('persistent search feature is required for '
+                     'DNS SOA serial autoincrement')
 
     return safe_options, options
 
@@ -87,11 +100,11 @@ def main():
     if os.getegid() != 0:
         sys.exit("Must be root to setup server")
 
-    standard_logging_setup("/var/log/ipaserver-install.log", options.debug, filemode='a')
-    print "\nThe log file for this installation can be found in /var/log/ipaserver-install.log"
+    standard_logging_setup(log_file_name, debug=options.debug, filemode='a')
+    print "\nThe log file for this installation can be found in %s" % log_file_name
 
-    logging.debug('%s was invoked with options: %s' % (sys.argv[0], safe_options))
-    logging.debug("missing options might be asked for interactively later\n")
+    root_logger.debug('%s was invoked with options: %s' % (sys.argv[0], safe_options))
+    root_logger.debug("missing options might be asked for interactively later\n")
 
     installutils.check_server_configuration()
 
@@ -145,7 +158,26 @@ def main():
     else:
         hostaddr = resolve_host(api.env.host)
         try:
-            ip = hostaddr and ipautil.CheckedIPAddress(hostaddr, match_local=True)
+            if len(hostaddr) > 1:
+                print >> sys.stderr, "The server hostname resolves to more than one address:"
+                for addr in hostaddr:
+                    print >> sys.stderr, "  %s" % addr
+
+                if options.ip_address:
+                    if str(options.ip_address) not in hostaddr:
+                        print >> sys.stderr, "Address passed in --ip-address did not match any resolved"
+                        print >> sys.stderr, "address!"
+                        sys.exit(1)
+                    print "Selected IP address:", str(options.ip_address)
+                    ip = options.ip_address
+                else:
+                    if options.unattended:
+                        print >> sys.stderr, "Please use --ip-address option to specify the address"
+                        sys.exit(1)
+                    else:
+                        ip = read_ip_address(api.env.host, fstore)
+            else:
+                ip = hostaddr and ipautil.CheckedIPAddress(hostaddr[0], match_local=True)
         except Exception, e:
             print "Error: Invalid IP Address %s: %s" % (ip, e)
             ip = None
@@ -156,7 +188,7 @@ def main():
         else:
             ip = read_ip_address(api.env.host, fstore)
     ip_address = str(ip)
-    logging.debug("will use ip_address: %s\n", ip_address)
+    root_logger.debug("will use ip_address: %s\n", ip_address)
 
     if options.reverse_zone and not bindinstance.verify_reverse_zone(options.reverse_zone, ip):
         sys.exit(1)
@@ -167,10 +199,10 @@ def main():
         dns_forwarders = options.forwarders
     else:
         dns_forwarders = read_dns_forwarders()
-    logging.debug("will use dns_forwarders: %s\n", str(dns_forwarders))
+    root_logger.debug("will use dns_forwarders: %s\n", str(dns_forwarders))
 
     if bind.dm_password:
-        api.Backend.ldap2.connect(bind_dn="cn=Directory Manager", bind_pw=bind.dm_password)
+        api.Backend.ldap2.connect(bind_dn=DN(('cn', 'Directory Manager')), bind_pw=bind.dm_password)
     else:
         # See if our LDAP server is up and we can talk to it over GSSAPI
         ccache = krbV.default_context().default_ccache().name
@@ -181,8 +213,10 @@ def main():
     else:
         reverse_zone = bindinstance.find_reverse_zone(ip)
         if reverse_zone is None and not options.no_reverse:
-            reverse_zone = bindinstance.get_reverse_zone_default(ip)
-            if not options.unattended and bindinstance.create_reverse():
+            if options.unattended:
+                reverse_zone = util.get_reverse_zone_default(ip)
+            elif bindinstance.create_reverse():
+                reverse_zone = util.get_reverse_zone_default(ip)
                 reverse_zone = bindinstance.read_reverse_zone(reverse_zone, ip)
 
     if reverse_zone is not None:
@@ -199,12 +233,21 @@ def main():
     bind.setup(api.env.host, ip_address, api.env.realm, api.env.domain,
                dns_forwarders, conf_ntp, reverse_zone, zonemgr=options.zonemgr,
                zone_refresh=options.zone_refresh,
-               zone_notif=options.zone_notif)
+               persistent_search=options.persistent_search,
+               serial_autoincrement=options.serial_autoincrement)
     bind.create_instance()
 
+    # Restart http instance to make sure that python-dns has the right resolver
+    # https://bugzilla.redhat.com/show_bug.cgi?id=800368
+    http = httpinstance.HTTPInstance(fstore)
+    service.print_msg("Restarting the web server")
+    http.restart()
 
     print "=============================================================================="
     print "Setup complete"
+    print ""
+    bind.check_global_configuration()
+    print ""
     print ""
     print "\tYou must make sure these network ports are open:"
     print "\t\tTCP Ports:"
@@ -214,26 +257,6 @@ def main():
 
     return 0
 
-try:
-    sys.exit(main())
-except SystemExit, e:
-    sys.exit(e)
-except KeyboardInterrupt:
-    print "Installation cancelled."
-except RuntimeError, e:
-    print str(e)
-except HostnameLocalhost:
-    print "The hostname resolves to the localhost address (127.0.0.1/::1)"
-    print "Please change your /etc/hosts file so that the hostname"
-    print "resolves to the ip address of your network interface."
-    print "The KDC service does not listen on localhost"
-    print ""
-    print "Please fix your /etc/hosts file and restart the setup program"
-except Exception, e:
-    message = "Unexpected error - see ipaserver-install.log for details:\n %s" % str(e)
-    print message
-    message = str(e)
-    for str in traceback.format_tb(sys.exc_info()[2]):
-        message = message + "\n" + str
-    logging.debug(message)
-    sys.exit(1)
+if __name__ == '__main__':
+    installutils.run_script(main, log_file_name=log_file_name,
+        operation_name='ipa-dns-install')

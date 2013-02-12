@@ -20,31 +20,33 @@
 from ipapython import ipautil
 from ipapython.platform import base
 import sys, os, shutil
+from ipalib import api
 
 class SystemdService(base.PlatformService):
     SYSTEMD_ETC_PATH = "/etc/systemd/system/"
     SYSTEMD_LIB_PATH = "/lib/systemd/system/"
     SYSTEMD_SRV_TARGET = "%s.target.wants"
 
-    def __init__(self, service_name):
+    def __init__(self, service_name, systemd_name):
         super(SystemdService, self).__init__(service_name)
-        self.lib_path = os.path.join(self.SYSTEMD_LIB_PATH, self.service_name)
+        self.systemd_name = systemd_name
+        self.lib_path = os.path.join(self.SYSTEMD_LIB_PATH, self.systemd_name)
         self.lib_path_exists = None
 
     def service_instance(self, instance_name):
         if self.lib_path_exists is None:
             self.lib_path_exists = os.path.exists(self.lib_path)
 
-        elements = self.service_name.split("@")
+        elements = self.systemd_name.split("@")
 
         # Short-cut: if there is already exact service name, return it
         if self.lib_path_exists and len(instance_name) == 0:
             if len(elements) == 1:
-                # service name is like pki-cad.target or krb5kdc.service
-                return self.service_name
+                # service name is like pki-tomcatd.target or krb5kdc.service
+                return self.systemd_name
             if len(elements) > 1 and elements[1][0] != '.':
-                # Service name is like pki-cad@pki-ca.service and that file exists
-                return self.service_name
+                # Service name is like pki-tomcatd@pki-tomcat.service and that file exists
+                return self.systemd_name
 
         if len(elements) > 1:
             # We have dynamic service
@@ -58,7 +60,7 @@ class SystemdService(base.PlatformService):
                 if os.path.exists(srv_lib):
                     return tgt_name
 
-        return self.service_name
+        return self.systemd_name
 
     def parse_variables(self, text, separator=None):
         """
@@ -73,16 +75,44 @@ class SystemdService(base.PlatformService):
             return (None,None)
         return dict(map(lambda x: splitter(x, separator=separator), text.split("\n")))
 
+    def __wait_for_open_ports(self, instance_name=""):
+        """
+        If this is a service we need to wait for do so.
+        """
+        ports = None
+        if instance_name in base.wellknownports:
+            ports = base.wellknownports[instance_name]
+        else:
+            elements = self.systemd_name.split("@")
+            if elements[0] in base.wellknownports:
+                ports = base.wellknownports[elements[0]]
+        if ports:
+            ipautil.wait_for_open_ports('localhost', ports, api.env.startup_timeout)
+
     def stop(self, instance_name="", capture_output=True):
         ipautil.run(["/bin/systemctl", "stop", self.service_instance(instance_name)], capture_output=capture_output)
+        if 'context' in api.env and api.env.context in ['ipactl', 'installer']:
+            update_service_list = True
+        else:
+            update_service_list = False
+        super(SystemdService, self).stop(instance_name,update_service_list=update_service_list)
 
-    def start(self, instance_name="", capture_output=True):
+    def start(self, instance_name="", capture_output=True, wait=True):
         ipautil.run(["/bin/systemctl", "start", self.service_instance(instance_name)], capture_output=capture_output)
+        if 'context' in api.env and api.env.context in ['ipactl', 'installer']:
+            update_service_list = True
+        else:
+            update_service_list = False
+        if wait and self.is_running(instance_name):
+            self.__wait_for_open_ports(self.service_instance(instance_name))
+        super(SystemdService, self).start(instance_name, update_service_list=update_service_list)
 
-    def restart(self, instance_name="", capture_output=True):
+    def restart(self, instance_name="", capture_output=True, wait=True):
         # Restart command is broken before systemd-36-3.fc16
         # If you have older systemd version, restart of dependent services will hang systemd indefinetly
         ipautil.run(["/bin/systemctl", "restart", self.service_instance(instance_name)], capture_output=capture_output)
+        if wait and self.is_running(instance_name):
+            self.__wait_for_open_ports(self.service_instance(instance_name))
 
     def is_running(self, instance_name=""):
         ret = True
@@ -122,7 +152,7 @@ class SystemdService(base.PlatformService):
     def enable(self, instance_name=""):
         if self.lib_path_exists is None:
             self.lib_path_exists = os.path.exists(self.lib_path)
-        elements = self.service_name.split("@")
+        elements = self.systemd_name.split("@")
         l = len(elements)
 
         if self.lib_path_exists and (l > 1 and elements[1][0] != '.'):
@@ -137,16 +167,12 @@ class SystemdService(base.PlatformService):
 
         if len(instance_name) > 0 and l > 1:
             # New instance, we need to do following:
-            # 1. Copy <service>@.service to /etc/systemd/system/ if it is not there
-            # 2. Make /etc/systemd/system/<service>.target.wants/ if it is not there
-            # 3. Link /etc/systemd/system/<service>.target.wants/<service>@<instance_name>.service to
-            #    /etc/systemd/system/<service>@.service
-            srv_etc = os.path.join(self.SYSTEMD_ETC_PATH, self.service_name)
+            # 1. Make /etc/systemd/system/<service>.target.wants/ if it is not there
+            # 2. Link /etc/systemd/system/<service>.target.wants/<service>@<instance_name>.service to
+            #    /lib/systemd/system/<service>@.service
             srv_tgt = os.path.join(self.SYSTEMD_ETC_PATH, self.SYSTEMD_SRV_TARGET % (elements[0]))
             srv_lnk = os.path.join(srv_tgt, self.service_instance(instance_name))
             try:
-                if not ipautil.file_exists(srv_etc):
-                    shutil.copy(self.lib_path, srv_etc)
                 if not ipautil.dir_exists(srv_tgt):
                     os.mkdir(srv_tgt)
                 if os.path.exists(srv_lnk):
@@ -156,11 +182,11 @@ class SystemdService(base.PlatformService):
                     # object does not exist _or_ is a broken link
                     if not os.path.islink(srv_lnk):
                         # if it truly does not exist, make a link
-                        os.symlink(srv_etc, srv_lnk)
+                        os.symlink(self.lib_path, srv_lnk)
                     else:
                         # Link exists and it is broken, make new one
                         os.unlink(srv_lnk)
-                        os.symlink(srv_etc, srv_lnk)
+                        os.symlink(self.lib_path, srv_lnk)
                 ipautil.run(["/bin/systemctl", "--system", "daemon-reload"])
             except:
                 pass
@@ -168,11 +194,11 @@ class SystemdService(base.PlatformService):
             self.__enable(instance_name)
 
     def disable(self, instance_name=""):
-        elements = self.service_name.split("@")
+        elements = self.systemd_name.split("@")
         if instance_name != "" and len(elements) > 1:
             # Remove instance, we need to do following:
             #  Remove link from /etc/systemd/system/<service>.target.wants/<service>@<instance_name>.service
-            #  to /etc/systemd/system/<service>@.service
+            #  to /lib/systemd/system/<service>@.service
             srv_tgt = os.path.join(self.SYSTEMD_ETC_PATH, self.SYSTEMD_SRV_TARGET % (elements[0]))
             srv_lnk = os.path.join(srv_tgt, self.service_instance(instance_name))
             try:

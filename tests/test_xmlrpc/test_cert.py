@@ -23,14 +23,17 @@ Test the `ipalib/plugins/cert.py` module against the selfsign plugin.
 import sys
 import os
 import shutil
+from nose.tools import assert_raises  # pylint: disable=E0611
+
 from xmlrpc_test import XMLRPC_test, assert_attr_equal
 from ipalib import api
 from ipalib import errors
+from ipalib import x509
 import tempfile
 from ipapython import ipautil
 import nose
 import base64
-from ipalib.dn import *
+from ipapython.dn import DN
 
 # So we can save the cert from issuance and compare it later
 cert = None
@@ -72,6 +75,8 @@ class test_cert(XMLRPC_test):
         # Create our temporary NSS database
         self.run_certutil(["-N", "-f", self.pwname])
 
+        self.subject = DN(('CN', self.host_fqdn), x509.subject_base())
+
     def tearDown(self):
         super(test_cert, self).tearDown()
         shutil.rmtree(self.reqdir, ignore_errors=True)
@@ -93,7 +98,6 @@ class test_cert(XMLRPC_test):
     """
     host_fqdn = u'ipatestcert.%s' % api.env.domain
     service_princ = u'test/%s@%s' % (host_fqdn, api.env.realm)
-    subject = DN(('CN',host_fqdn),('O',api.env.realm))
 
     def test_1_cert_add(self):
         """
@@ -105,11 +109,8 @@ class test_cert(XMLRPC_test):
         res = api.Command['host_add'](self.host_fqdn, force= True)['result']
 
         csr = unicode(self.generateCSR(str(self.subject)))
-        try:
+        with assert_raises(errors.NotFound):
             res = api.Command['cert_request'](csr, principal=self.service_princ)
-            assert False
-        except errors.NotFound:
-            pass
 
     def test_2_cert_add(self):
         """

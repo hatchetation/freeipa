@@ -20,19 +20,38 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-/* REQUIRES: ipa.js, details.js, search.js, add.js, entity.js */
+/* REQUIRES: ipa.js, details.js, search.js, add.js, facet.js, entity.js */
 
+IPA.hostgroup = {};
 
-IPA.entity_factories.hostgroup = function() {
+IPA.hostgroup.entity = function(spec) {
 
-    return IPA.entity_builder().
-        entity('hostgroup').
-        search_facet({columns:['cn','description']}).
-        details_facet({sections:[{
-            name:'identity',
-            label: IPA.messages.objects.hostgroup.identity,
-            fields:['cn','description']
-        }]}).
+    var that = IPA.entity(spec);
+
+    that.init = function() {
+        that.entity_init();
+
+        that.builder.search_facet({
+            columns: [
+                'cn',
+                'description'
+            ]
+        }).
+        details_facet({
+            sections: [
+                {
+                    name: 'identity',
+                    label: IPA.messages.objects.hostgroup.identity,
+                    fields: [
+                        'cn',
+                        {
+                            type: 'textarea',
+                            name: 'description'
+                        }
+                    ]
+                }
+            ]
+        }).
         association_facet({
             name: 'memberof_hostgroup',
             associator: IPA.serial_associator
@@ -55,10 +74,17 @@ IPA.entity_factories.hostgroup = function() {
         }).
         standard_association_facets().
         adder_dialog({
-            fields:['cn','description']
-        }).
-        build();
+            fields: [
+                'cn',
+                {
+                    type: 'textarea',
+                    name: 'description'
+                }
+            ]
+        });
+    };
+
+    return that;
 };
 
-
-
+IPA.register('hostgroup', IPA.hostgroup.entity);

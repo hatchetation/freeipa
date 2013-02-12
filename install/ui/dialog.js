@@ -1,6 +1,7 @@
 /*jsl:import ipa.js */
 /*  Authors:
  *    Endi Sukma Dewata <edewata@redhat.com>
+ *    Petr Vobornik <pvoborni@redhat.com>
  *
  * Copyright (C) 2010 Red Hat
  * see file 'COPYING' for use and warranty information
@@ -19,7 +20,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-/* REQUIRES: widget.js */
+/* REQUIRES: widget.js, details.js */
 
 IPA.dialog_button = function(spec) {
 
@@ -30,6 +31,7 @@ IPA.dialog_button = function(spec) {
     that.name = spec.name;
     that.label = spec.label || spec.name;
     that.click = spec.click || click;
+    that.visible = spec.visible !== undefined ? spec.visible : true;
 
     function click() {
     }
@@ -58,32 +60,22 @@ IPA.dialog = function(spec) {
 
     var that = {};
 
-    that.entity = spec.entity;
-    that.name = spec.name;
+    that.entity = IPA.get_entity(spec.entity);
+    that.name = spec.name || 'dialog';
     that.id = spec.id;
     that.title = spec.title;
     that.width = spec.width || 500;
     that.height = spec.height;
+    that.close_on_escape = spec.close_on_escape !== undefined ?
+                            spec.close_on_escape : true;
 
+    that.widgets = IPA.widget_container();
+    that.fields = IPA.field_container({ container: that });
     that.buttons = $.ordered_map();
-
-    that.sections = $.ordered_map();
-
-    var init = function() {
-
-        var sections = spec.sections || [];
-
-        for (var i=0; i<sections.length; i++) {
-            var section_spec = sections[i];
-            that.create_section(section_spec);
-        }
-
-        var fields = spec.fields || [];
-
-        // add fields to the default section
-        var section = that.get_section();
-        section.add_fields(fields);
-    };
+    that.policies = IPA.facet_policies({
+        container: that,
+        policies: spec.policies
+    });
 
     that.create_button = function(spec) {
         var factory = spec.factory || IPA.dialog_button;
@@ -100,111 +92,72 @@ IPA.dialog = function(spec) {
         return that.buttons.get(name);
     };
 
-    that.get_field = function(name) {
-        for (var i=0; i<that.sections.length; i++) {
-            var section = that.sections.values[i];
-            var field = section.fields.get(name);
-            if (field) return field;
+    that.field = function(field) {
+        that.fields.add_field(field);
+        return that;
+    };
+
+    that.validate = function() {
+        var valid = true;
+        var fields = that.fields.get_fields();
+        for (var i=0; i<fields.length; i++) {
+            var field = fields[i];
+            valid = field.validate() && field.validate_required() && valid;
         }
+        return valid;
+    };
+
+    that.get_id = function() {
+        if (that.id) return that.id;
+        if (that.name) return that.name;
         return null;
     };
 
-    that.get_fields = function() {
-        var fields = [];
-        for (var i=0; i<that.sections.length; i++) {
-            var section = that.sections.values[i];
-            $.merge(fields, section.fields.values);
-        }
-        return fields;
-    };
-
-    that.add_field = function(field) {
-        field.dialog = that;
-
-        var section = that.get_section();
-        section.add_field(field);
-
-        return field;
-    };
-
-    that.field = function(field) {
-        that.add_field(field);
-        return that;
-    };
-
-    that.is_valid = function() {
-        for (var i=0; i<that.sections.length; i++) {
-            var section = that.sections.values[i];
-            if (!section.is_valid()) return false;
-        }
-        return true;
-    };
-
-    that.add_section = function(section) {
-        that.sections.put(section.name, section);
-        return that;
-    };
-
-    that.section = function(section) {
-        that.add_section(section);
-        return that;
-    };
-
-    that.create_section = function(spec) {
-
-        var factory = spec.factory || IPA.details_table_section;
-        spec.entity = that.entity;
-        spec.undo = false;
-
-        var section = factory(spec);
-        that.add_section(section);
-
-        return section;
-    };
-
-    that.get_section = function(name) {
-
-        if (name) {
-            return that.sections.get(name);
-
-        } else {
-            var length = that.sections.length;
-            if (length) {
-                // get the last section
-                return that.sections.values[length-1];
-            } else {
-                // create a default section
-                return that.create_section({ name: 'general' });
-            }
-        }
-    };
 
     /**
      * Create content layout
      */
     that.create = function() {
 
-        var sections = that.sections.values;
-        for (var i=0; i<sections.length; i++) {
-            var section = sections[i];
+        that.message_container = $('<div/>', {
+            style: 'display: none',
+            'class': 'dialog-message ui-state-highlight ui-corner-all'
+        }).appendTo(that.container);
+
+        var widgets = that.widgets.get_widgets();
+        for (var i=0; i<widgets.length; i++) {
+            var widget = widgets[i];
 
             var div = $('<div/>', {
-                name: section.name,
+                name: widget.name,
                 'class': 'dialog-section'
             }).appendTo(that.container);
 
-            section.create(div);
+            widget.create(div);
         }
 
+        that.policies.post_create();
     };
 
+    that.show_message = function(message) {
+        that.message_container.text(message);
+        that.message_container.css('display', '');
+    };
+
+    that.hide_message = function() {
+        that.message_container.css('display', 'none');
+    };
 
     /**
      * Open dialog
      */
     that.open = function(container) {
 
-        that.container = $('<div/>', { id : that.id });
+        that.container = $('<div/>', {
+            id : that.get_id(),
+            'data-name': that.name
+        });
+
         if (container) {
             container.append(that.container);
         }
@@ -212,25 +165,38 @@ IPA.dialog = function(spec) {
         that.create();
         that.reset();
 
-        // create a map of button labels and handlers
-        var dialog_buttons = {};
-        for (var i=0; i<that.buttons.values.length; i++) {
-            var button = that.buttons.values[i];
-            dialog_buttons[button.label] = button.click;
-        }
-
         that.container.dialog({
             title: that.title,
             modal: true,
+            closeOnEscape: that.close_on_escape,
             width: that.width,
             minWidth: that.width,
             height: that.height,
             minHeight: that.height,
-            buttons: dialog_buttons,
             close: function(event, ui) {
                 that.close();
             }
         });
+
+        that.set_buttons();
+    };
+
+    that.option = function(name, value) {
+        that.container.dialog('option', name, value);
+    };
+
+    that.set_buttons = function() {
+
+        // create a map of button labels and handlers
+        var dialog_buttons = {};
+        for (var i=0; i<that.buttons.values.length; i++) {
+            var button = that.buttons.values[i];
+            if (!button.visible) continue;
+            dialog_buttons[button.label] = button.click;
+        }
+
+        //set buttons to dialog
+        that.option('buttons', dialog_buttons);
 
         // find button elements
         var parent = that.container.parent();
@@ -242,15 +208,21 @@ IPA.dialog = function(spec) {
         });
     };
 
-    that.option = function(name, value) {
-        that.container.dialog('option', name, value);
+    that.display_buttons = function(names) {
+
+        for (var i=0; i<that.buttons.values.length; i++) {
+            var button = that.buttons.values[i];
+
+            button.visible = names.indexOf(button.name) > -1;
+        }
+        that.set_buttons();
     };
 
     that.save = function(record) {
-        var sections = that.sections.values;
-        for (var i=0; i<sections.length; i++) {
-            var section = sections[i];
-            section.save(record);
+        var fields = that.fields.get_fields();
+        for (var i=0; i<fields.length; i++) {
+            var field = fields[i];
+            field.save(record);
         }
     };
 
@@ -260,19 +232,58 @@ IPA.dialog = function(spec) {
     };
 
     that.reset = function() {
-        var sections = that.sections.values;
-        for (var i=0; i<sections.length; i++) {
-            sections[i].reset();
+        var fields = that.fields.get_fields();
+        for (var i=0; i<fields.length; i++) {
+            fields[i].reset();
         }
     };
 
-    init();
+    that.create_builder = function() {
+
+        var widget_builder = IPA.widget_builder({
+            widget_options: {
+                entity: that.entity,
+                facet: that
+            }
+        });
+        var field_builder = IPA.field_builder({
+            field_options: {
+                undo: false,
+                entity: that.entity,
+                facet: that
+            }
+        });
+        var section_builder = IPA.section_builder({
+            container: that,
+            section_factory: IPA.details_table_section_nc,
+            widget_builder: widget_builder,
+            field_builder: field_builder
+        });
+
+        that.builder = IPA.details_builder({
+            container: that,
+            widget_builder: widget_builder,
+            field_builder: field_builder,
+            section_builder: section_builder
+        });
+    };
+
+    that.init = function() {
+
+        that.create_builder();
+        that.builder.build(spec);
+        that.fields.widgets_created();
+        that.policies.init();
+    };
+
+    that.init();
 
     that.dialog_create = that.create;
     that.dialog_open = that.open;
     that.dialog_close = that.close;
     that.dialog_save = that.save;
     that.dialog_reset = that.reset;
+    that.dialog_validate = that.validate;
 
     return that;
 };
@@ -284,6 +295,8 @@ IPA.dialog = function(spec) {
 IPA.adder_dialog = function(spec) {
 
     spec = spec || {};
+
+    spec.name = spec.name || 'adder_dialog';
 
     var that = IPA.dialog(spec);
 
@@ -428,7 +441,7 @@ IPA.adder_dialog = function(spec) {
             'class': 'adder-dialog-buttons'
         }).appendTo(container);
 
-        var p = $('<p/>').appendTo(buttons_panel);
+        var div = $('<div/>').appendTo(buttons_panel);
         IPA.button({
             name: 'add',
             label: '>>',
@@ -437,9 +450,9 @@ IPA.adder_dialog = function(spec) {
                 that.update_buttons();
                 return false;
             }
-        }).appendTo(p);
+        }).appendTo(div);
 
-        p = $('<p/>').appendTo(buttons_panel);
+        div = $('<div/>').appendTo(buttons_panel);
         IPA.button({
             name: 'remove',
             label: '<<',
@@ -448,7 +461,7 @@ IPA.adder_dialog = function(spec) {
                 that.update_buttons();
                 return false;
             }
-        }).appendTo(p);
+        }).appendTo(div);
 
         that.filter_field = $('input[name=filter]', that.container);
 
@@ -482,7 +495,7 @@ IPA.adder_dialog = function(spec) {
 
         var add_button = that.create_button({
             name: 'add',
-            label: IPA.messages.buttons.enroll,
+            label: IPA.messages.buttons.add,
             click: function() {
                 if (!add_button.is_enabled()) return;
                 that.execute();
@@ -556,6 +569,7 @@ IPA.adder_dialog = function(spec) {
 IPA.deleter_dialog =  function (spec) {
 
     spec = spec || {};
+    spec.name = spec.name || 'deleter_dialog';
 
     var that = IPA.dialog(spec);
 
@@ -638,13 +652,13 @@ IPA.deleter_dialog =  function (spec) {
 
 IPA.message_dialog = function(spec) {
 
-    var that = IPA.dialog(spec);
+    spec = spec || {};
 
-    var init = function() {
-        spec = spec || {};
-        that.message = spec.message || '';
-        that.on_ok = spec.on_ok;
-    };
+    spec.name = spec.name || 'message_dialog';
+
+    var that = IPA.dialog(spec);
+    that.message = spec.message || '';
+    that.on_ok = spec.on_ok;
 
     that.create = function() {
         $('<p/>', {
@@ -657,13 +671,89 @@ IPA.message_dialog = function(spec) {
         label: IPA.messages.buttons.ok,
         click: function() {
             that.close();
-            if(that.on_ok) {
+            if (that.on_ok) {
                 that.on_ok();
             }
         }
     });
 
-    init();
+    that.message_dialog_create = that.create;
+
+    return that;
+};
+
+IPA.confirm_dialog = function(spec) {
+
+    spec = spec || {};
+    spec.message = spec.message || IPA.messages.actions.confirm;
+    spec.title = spec.title || IPA.messages.dialogs.confirmation;
+
+    var that = IPA.message_dialog(spec);
+    that.on_cancel = spec.on_cancel;
+    that.ok_label = spec.ok_label || IPA.messages.buttons.ok;
+    that.cancel_label = spec.cancel_label || IPA.messages.buttons.cancel;
+    that.confirmed = false;
+    that.confirm_on_enter = spec.confirm_on_enter !== undefined ? spec.confirm_on_enter : true;
+
+    that.close = function() {
+
+        that.dialog_close();
+        $(document).unbind('keyup', that.on_key_up);
+
+        if (that.confirmed) {
+            if (that.on_ok) {
+                that.on_ok();
+            }
+        } else {
+            if (that.on_cancel) {
+                that.on_cancel();
+            }
+        }
+    };
+
+    that.open = function(container) {
+
+        that.confirmed = false;
+        that.dialog_open(container);
+        $(document).bind('keyup', that.on_key_up);
+    };
+
+    that.on_key_up = function(event) {
+
+        if (event.keyCode === $.ui.keyCode.ENTER) {
+            event.preventDefault();
+            that.confirmed = true;
+            that.close();
+        }
+    };
+
+    that.create_buttons = function() {
+
+        that.buttons.empty();
+
+        that.create_button({
+            name: 'ok',
+            label: that.ok_label,
+            click: function() {
+                that.confirmed = true;
+                that.close();
+            }
+        });
+
+        that.create_button({
+            name: 'cancel',
+            label: that.cancel_label,
+            click: function() {
+                that.confirmed = false;
+                that.close();
+            }
+        });
+    };
+
+    that.create_buttons();
+
+    that.confirm_dialog_close = that.close;
+    that.confirm_dialog_open = that.open;
 
     return that;
 };

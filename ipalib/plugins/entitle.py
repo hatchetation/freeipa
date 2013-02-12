@@ -147,7 +147,8 @@ def get_uuid(ldap):
             entry_attrs, 'ipaentitlementid', api.env.container_entitlements,
         )
         if not ldap.can_read(dn, 'userpkcs12'):
-            raise errors.ACIError(info='not allowed to perform this command')
+            raise errors.ACIError(
+                info=_('not allowed to perform this command'))
 
         if not 'userpkcs12' in result:
             return (None, uuid, None, None)
@@ -318,6 +319,7 @@ class entitle_consume(LDAPUpdate):
         return result
 
     def pre_callback(self, ldap, dn, entry_attrs, attrs_list, *keys, **options):
+        assert isinstance(dn, DN)
         quantity = keys[-1]
 
         os.environ['LANG'] = 'en_US'
@@ -337,7 +339,9 @@ class entitle_consume(LDAPUpdate):
             available = result['quantity'] - result['consumed']
 
             if quantity > available:
-                raise errors.ValidationError(name='quantity', error='There are only %d entitlements left' % available)
+                raise errors.ValidationError(
+                    name='quantity',
+                    error=_('There are only %d entitlements left') % available)
 
             try:
                 cp = UEPConnection(handler='/candlepin', cert_file=certfile, key_file=keyfile)
@@ -361,6 +365,7 @@ class entitle_consume(LDAPUpdate):
         Returning the certificates isn't very interesting. Return the
         status of entitlements instead.
         """
+        assert isinstance(dn, DN)
         if 'usercertificate' in entry_attrs:
             del entry_attrs['usercertificate']
         if 'userpkcs12' in entry_attrs:
@@ -461,6 +466,7 @@ class entitle_find(LDAPSearch):
     def post_callback(self, ldap, entries, truncated, *args, **options):
         if len(entries) == 0:
             raise errors.NotRegisteredError()
+        return truncated
 
 api.register(entitle_find)
 
@@ -503,14 +509,15 @@ class entitle_register(LDAPCreate):
     """
 
     def pre_callback(self, ldap, dn, entry_attrs, attrs_list, *keys, **options):
-        dn = '%s,%s' % (self.obj.container_dn, self.api.env.basedn)
+        dn = DN(self.obj.container_dn, self.api.env.basedn)
         if not ldap.can_add(dn):
-            raise errors.ACIError(info='No permission to register')
+            raise errors.ACIError(info=_('No permission to register'))
         os.environ['LANG'] = 'en_US'
         locale.setlocale(locale.LC_ALL, '')
 
         if 'ipaentitlementid' in options:
-            raise errors.ValidationError(name='ipaentitlementid', error='Registering to specific UUID is not supported yet.')
+            raise errors.ValidationError(name='ipaentitlementid',
+                error=_('Registering to specific UUID is not supported yet.'))
 
         try:
             registrations = api.Command['entitle_find']()
@@ -603,6 +610,7 @@ class entitle_import(LDAPUpdate):
     )
 
     def pre_callback(self, ldap, dn, entry_attrs, attrs_list, *keys, **options):
+        assert isinstance(dn, DN)
         try:
             (db, uuid, certfile, keyfile) = get_uuid(ldap)
             if db is not None:
@@ -621,7 +629,7 @@ class entitle_import(LDAPUpdate):
                     raise errors.CertificateFormatError(error=_('Not an entitlement certificate'))
             except M2Crypto.X509.X509Error:
                 raise errors.CertificateFormatError(error=_('Not an entitlement certificate'))
-            dn = 'ipaentitlementid=%s,%s' % (entry_attrs['ipaentitlementid'], dn)
+            dn = DN(('ipaentitlementid', entry_attrs['ipaentitlementid']), dn)
             (dn, current_attrs) = ldap.get_entry(
                 dn, ['*'], normalize=self.obj.normalize_dn
             )
@@ -642,12 +650,12 @@ class entitle_import(LDAPUpdate):
         If we are adding the first entry there are no updates so EmptyModlist
         will get thrown. Ignore it.
         """
-        if isinstance(exc, errors.EmptyModlist):
-            if not getattr(context, 'entitle_import', False):
-                raise exc
-            return (call_args, {})
-        else:
-            raise exc
+        if call_func.func_name == 'update_entry':
+            if isinstance(exc, errors.EmptyModlist):
+                if not getattr(context, 'entitle_import', False):
+                    raise exc
+                return (call_args, {})
+        raise exc
 
     def execute(self, *keys, **options):
         super(entitle_import, self).execute(*keys, **options)
@@ -688,6 +696,7 @@ class entitle_sync(LDAPUpdate):
     )
 
     def pre_callback(self, ldap, dn, entry_attrs, attrs_list, *keys, **options):
+        assert isinstance(dn, DN)
         os.environ['LANG'] = 'en_US'
         locale.setlocale(locale.LC_ALL, '')
 
@@ -718,6 +727,7 @@ class entitle_sync(LDAPUpdate):
         Returning the certificates isn't very interesting. Return the
         status of entitlements instead.
         """
+        assert isinstance(dn, DN)
         if 'usercertificate' in entry_attrs:
             del entry_attrs['usercertificate']
         if 'userpkcs12' in entry_attrs:
@@ -729,9 +739,10 @@ class entitle_sync(LDAPUpdate):
         return dn
 
     def exc_callback(self, keys, options, exc, call_func, *call_args, **call_kwargs):
-        if isinstance(exc, errors.EmptyModlist):
-            # If there is nothing to change we are already synchronized.
-            return
+        if call_func.func_name == 'update_entry':
+            if isinstance(exc, errors.EmptyModlist):
+                # If there is nothing to change we are already synchronized.
+                return
         raise exc
 
 api.register(entitle_sync)

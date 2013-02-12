@@ -17,12 +17,36 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 from ipalib.plugable import MagicDict
+import json
+import os
 
-# Canonical names of services as IPA wants to see them. As we need to have *some* naming,
-# set them as in Red Hat distributions. Actual implementation should make them available
-# through knownservices.<name> and take care of remapping internally, if needed
-wellknownservices = ['certmonger', 'dirsrv', 'httpd', 'ipa', 'krb5kdc', 'messagebus',
-                     'nslcd', 'nscd', 'ntpd', 'portmap', 'rpcbind', 'kadmin']
+# Canonical names of services as IPA wants to see them. As we need to have
+# *some* naming, set them as in Red Hat distributions. Actual implementation
+# should make them available through knownservices.<name> and take care of
+# re-mapping internally, if needed
+wellknownservices = ['certmonger', 'dirsrv', 'httpd', 'ipa', 'krb5kdc',
+                     'messagebus', 'nslcd', 'nscd', 'ntpd', 'portmap',
+                     'rpcbind', 'kadmin', 'sshd', 'autofs', 'rpcgssd',
+                     'rpcidmapd', 'pki_tomcatd', 'pki-cad', 'chronyd']
+
+# System may support more time&date services. FreeIPA supports ntpd only, other
+# services will be disabled during IPA installation
+timedate_services = ['ntpd', 'chronyd']
+
+
+# The common ports for these services. This is used to wait for the
+# service to become available.
+wellknownports = {
+    'dirsrv@PKI-IPA.service': [7389],
+    'PKI-IPA': [7389],
+    'dirsrv': [389], # this is only used if the incoming instance name is blank
+    'pki-cad': [9180, 9443, 9444],
+    'pki-tomcatd@pki-tomcat.service': [8080, 8443],
+    'pki-tomcat': [8080, 8443],
+    'pki-tomcatd': [8080, 8443],  # used if the incoming instance name is blank
+}
+
+SVC_LIST_FILE = "/var/run/ipa/services.list"
 
 class AuthConfig(object):
     """
@@ -30,14 +54,17 @@ class AuthConfig(object):
     system authentication resources. In Red Hat systems this is done with
     authconfig(8) utility.
 
-    AuthConfig class is nothing more than a tool to gather configuration options
-    and execute their processing. These options then converted by an actual implementation
-    to series of a system calls to appropriate utilities performing real configuration.
+    AuthConfig class is nothing more than a tool to gather configuration
+    options and execute their processing. These options then converted by
+    an actual implementation to series of a system calls to appropriate
+    utilities performing real configuration.
 
-    IPA *expects* names of AuthConfig's options to follow authconfig(8) naming scheme!
+    IPA *expects* names of AuthConfig's options to follow authconfig(8)
+    naming scheme!
 
-    Actual implementation should be done in ipapython/platform/<platform>.py by inheriting from
-    platform.AuthConfig and redefining __build_args() and execute() methods.
+    Actual implementation should be done in ipapython/platform/<platform>.py
+    by inheriting from platform.AuthConfig and redefining __build_args()
+    and execute() methods.
 
     from ipapython.platform import platform
     class PlatformAuthConfig(platform.AuthConfig):
@@ -50,9 +77,11 @@ class AuthConfig(object):
     authconfig = PlatformAuthConfig
     ....
 
-    See ipapython/platform/redhat.py for a sample implementation that uses authconfig(8) as its backend.
+    See ipapython/platform/redhat.py for a sample implementation that uses
+    authconfig(8) as its backend.
 
-    From IPA code perspective, the authentication configuration should be done with use of ipapython.services.authconfig:
+    From IPA code perspective, the authentication configuration should be
+    done with use of ipapython.services.authconfig:
 
     from ipapython import services as ipaservices
     auth_config = ipaservices.authconfig()
@@ -66,8 +95,8 @@ class AuthConfig(object):
                 add_parameter("nisdomain","foobar")
     auth_config.execute()
 
-    If you need to re-use existing AuthConfig instance for multiple runs, make sure to
-    call 'AuthConfig.reset()' between the runs.
+    If you need to re-use existing AuthConfig instance for multiple runs,
+    make sure to call 'AuthConfig.reset()' between the runs.
     """
 
     def __init__(self):
@@ -103,21 +132,64 @@ class AuthConfig(object):
 
 class PlatformService(object):
     """
-    PlatformService abstracts out external process running on the system which is possible
-    to administer (start, stop, check status, etc).
+    PlatformService abstracts out external process running on the system
+    which is possible to administer (start, stop, check status, etc).
 
     """
 
     def __init__(self, service_name):
         self.service_name = service_name
 
-    def start(self, instance_name="", capture_output=True):
+    def start(self, instance_name="", capture_output=True, wait=True,
+        update_service_list=True):
+        """
+        When a service is started record the fact in a special file.
+        This allows ipactl stop to always stop all services that have
+        been started via ipa tools
+        """
+        if not update_service_list:
+            return
+        svc_list = []
+        try:
+            f = open(SVC_LIST_FILE, 'r')
+            svc_list = json.load(f)
+        except Exception:
+            # not fatal, may be the first service
+            pass
+
+        if self.service_name not in svc_list:
+            svc_list.append(self.service_name)
+
+        f = open(SVC_LIST_FILE, 'w')
+        json.dump(svc_list, f)
+        f.flush()
+        f.close()
         return
 
-    def stop(self, instance_name="", capture_output=True):
+    def stop(self, instance_name="", capture_output=True, update_service_list=True):
+        """
+        When a service is stopped remove it from the service list file.
+        """
+        if not update_service_list:
+            return
+        svc_list = []
+        try:
+            f = open(SVC_LIST_FILE, 'r')
+            svc_list = json.load(f)
+        except Exception:
+            # not fatal, may be the first service
+            pass
+
+        while self.service_name in svc_list:
+            svc_list.remove(self.service_name)
+
+        f = open(SVC_LIST_FILE, 'w')
+        json.dump(svc_list, f)
+        f.flush()
+        f.close()
         return
 
-    def restart(self, instance_name="", capture_output=True):
+    def restart(self, instance_name="", capture_output=True, wait=True):
         return
 
     def is_running(self, instance_name=""):
@@ -141,10 +213,14 @@ class PlatformService(object):
     def remove(self, instance_name=""):
         return
 
+    def get_config_dir(self, instance_name=""):
+        return
+
 class KnownServices(MagicDict):
     """
-    KnownServices is an abstract class factory that should give out instances of well-known
-    platform services. Actual implementation must create these instances as its own attributes
-    on first access (or instance creation) and cache them.
+    KnownServices is an abstract class factory that should give out instances
+    of well-known platform services. Actual implementation must create these
+    instances as its own attributes on first access (or instance creation)
+    and cache them.
     """
 

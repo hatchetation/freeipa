@@ -22,6 +22,8 @@
 All constants centralised in one file.
 """
 import socket
+from ipapython.dn import DN
+from ipapython.version import VERSION
 try:
     FQDN = socket.getfqdn()
 except:
@@ -59,75 +61,74 @@ CLI_TAB = '  '  # Two spaces
 # The section to read in the config files, i.e. [global]
 CONFIG_SECTION = 'global'
 
-# Log format for stderr:
-FORMAT_STDERR = ': '.join([
-    'ipa',
-    '%(levelname)s',
-    '%(message)s',
-])
-
-# Log format for log file:
-FORMAT_FILE = '\t'.join([
-    '%(created)f',
-    '%(process)d',
-    '%(threadName)s',
-    '%(levelname)s',
-    '%(message)s',
-])
-
-
 # The default configuration for api.env
 # This is a tuple instead of a dict so that it is immutable.
 # To create a dict with this config, just "d = dict(DEFAULT_CONFIG)".
 DEFAULT_CONFIG = (
+    ('version', VERSION),
+
     # Domain, realm, basedn:
     ('domain', 'example.com'),
     ('realm', 'EXAMPLE.COM'),
-    ('basedn', 'dc=example,dc=com'),
+    ('basedn', DN(('dc', 'example'), ('dc', 'com'))),
 
     # LDAP containers:
-    ('container_accounts', 'cn=accounts'),
-    ('container_user', 'cn=users,cn=accounts'),
-    ('container_group', 'cn=groups,cn=accounts'),
-    ('container_service', 'cn=services,cn=accounts'),
-    ('container_host', 'cn=computers,cn=accounts'),
-    ('container_hostgroup', 'cn=hostgroups,cn=accounts'),
-    ('container_rolegroup', 'cn=roles,cn=accounts'),
-    ('container_permission', 'cn=permissions,cn=pbac'),
-    ('container_privilege', 'cn=privileges,cn=pbac'),
-    ('container_automount', 'cn=automount'),
-    ('container_policies', 'cn=policies'),
-    ('container_configs', 'cn=configs,cn=policies'),
-    ('container_roles', 'cn=roles,cn=policies'),
-    ('container_applications', 'cn=applications,cn=configs,cn=policies'),
-    ('container_policygroups', 'cn=policygroups,cn=configs,cn=policies'),
-    ('container_policylinks', 'cn=policylinks,cn=configs,cn=policies'),
-    ('container_netgroup', 'cn=ng,cn=alt'),
-    ('container_hbac', 'cn=hbac'),
-    ('container_hbacservice', 'cn=hbacservices,cn=hbac'),
-    ('container_hbacservicegroup', 'cn=hbacservicegroups,cn=hbac'),
-    ('container_dns', 'cn=dns'),
-    ('container_virtual', 'cn=virtual operations,cn=etc'),
-    ('container_sudorule', 'cn=sudorules,cn=sudo'),
-    ('container_sudocmd', 'cn=sudocmds,cn=sudo'),
-    ('container_sudocmdgroup', 'cn=sudocmdgroups,cn=sudo'),
-    ('container_entitlements', 'cn=entitlements,cn=etc'),
-    ('container_automember', 'cn=automember,cn=etc'),
+    ('container_accounts', DN(('cn', 'accounts'))),
+    ('container_user', DN(('cn', 'users'), ('cn', 'accounts'))),
+    ('container_group', DN(('cn', 'groups'), ('cn', 'accounts'))),
+    ('container_service', DN(('cn', 'services'), ('cn', 'accounts'))),
+    ('container_host', DN(('cn', 'computers'), ('cn', 'accounts'))),
+    ('container_hostgroup', DN(('cn', 'hostgroups'), ('cn', 'accounts'))),
+    ('container_rolegroup', DN(('cn', 'roles'), ('cn', 'accounts'))),
+    ('container_permission', DN(('cn', 'permissions'), ('cn', 'pbac'))),
+    ('container_privilege', DN(('cn', 'privileges'), ('cn', 'pbac'))),
+    ('container_automount', DN(('cn', 'automount'))),
+    ('container_policies', DN(('cn', 'policies'))),
+    ('container_configs', DN(('cn', 'configs'), ('cn', 'policies'))),
+    ('container_roles', DN(('cn', 'roles'), ('cn', 'policies'))),
+    ('container_applications', DN(('cn', 'applications'), ('cn', 'configs'), ('cn', 'policies'))),
+    ('container_policygroups', DN(('cn', 'policygroups'), ('cn', 'configs'), ('cn', 'policies'))),
+    ('container_policylinks', DN(('cn', 'policylinks'), ('cn', 'configs'), ('cn', 'policies'))),
+    ('container_netgroup', DN(('cn', 'ng'), ('cn', 'alt'))),
+    ('container_hbac', DN(('cn', 'hbac'))),
+    ('container_hbacservice', DN(('cn', 'hbacservices'), ('cn', 'hbac'))),
+    ('container_hbacservicegroup', DN(('cn', 'hbacservicegroups'), ('cn', 'hbac'))),
+    ('container_dns', DN(('cn', 'dns'))),
+    ('container_virtual', DN(('cn', 'virtual operations'), ('cn', 'etc'))),
+    ('container_sudorule', DN(('cn', 'sudorules'), ('cn', 'sudo'))),
+    ('container_sudocmd', DN(('cn', 'sudocmds'), ('cn', 'sudo'))),
+    ('container_sudocmdgroup', DN(('cn', 'sudocmdgroups'), ('cn', 'sudo'))),
+    ('container_entitlements', DN(('cn', 'entitlements'), ('cn', 'etc'))),
+    ('container_automember', DN(('cn', 'automember'), ('cn', 'etc'))),
+    ('container_selinux', DN(('cn', 'usermap'), ('cn', 'selinux'))),
+    ('container_s4u2proxy', DN(('cn', 's4u2proxy'), ('cn', 'etc'))),
+    ('container_cifsdomains', DN(('cn', 'ad'), ('cn', 'etc'))),
+    ('container_trusts', DN(('cn', 'trusts'))),
+    ('container_adtrusts', DN(('cn', 'ad'), ('cn', 'trusts'))),
+    ('container_ranges', DN(('cn', 'ranges'), ('cn', 'etc'))),
+    ('container_dna', DN(('cn', 'dna'), ('cn', 'ipa'), ('cn', 'etc'))),
+    ('container_dna_posix_ids', DN(('cn', 'posix-ids'), ('cn', 'dna'), ('cn', 'ipa'), ('cn', 'etc'))),
 
     # Ports, hosts, and URIs:
     # FIXME: let's renamed xmlrpc_uri to rpc_xml_uri
     ('xmlrpc_uri', 'http://localhost:8888/ipa/xml'),
     ('rpc_json_uri', 'http://localhost:8888/ipa/json'),
     ('ldap_uri', 'ldap://localhost:389'),
+    # Time to wait for a service to start, in seconds
+    ('startup_timeout', 120),
 
     # Web Application mount points
     ('mount_ipa', '/ipa/'),
-    ('mount_xmlserver', 'xml'),
-    ('mount_jsonserver', 'json'),
 
     # WebUI stuff:
     ('webui_prod', True),
-    ('webui_assets_dir', None),
+
+    # Session stuff:
+
+    # Maximum time before a session expires forcing credentials to be reacquired.
+    ('session_auth_duration', '20 minutes'),
+    # How a session expiration is computed, see SessionManager.set_session_expiration_time()
+    ('session_duration_type', 'inactivity_timeout'),
 
     # Debugging:
     ('verbose', 0),
@@ -140,20 +141,23 @@ DEFAULT_CONFIG = (
     ('ca_port', 80),
     ('ca_agent_port', 443),
     ('ca_ee_port', 443),
-    ('ca_install_port', 9180),
-    ('ca_agent_install_port', 9443),
-    ('ca_ee_install_port', 9444),
+    # For the following ports, None means a default specific to the installed
+    # Dogtag version.
+    ('ca_install_port', None),
+    ('ca_agent_install_port', None),
+    ('ca_ee_install_port', None),
 
 
     # Special CLI:
     ('prompt_all', False),
     ('interactive', True),
     ('fallback', True),
+    ('delegate', False),
 
     # Enable certain optional plugins:
     ('enable_ra', False),
     ('ra_plugin', 'selfsign'),
-    ('wait_for_attr', False),
+    ('dogtag_version', 9),
 
     # Used when verifying that the API hasn't changed. Not for production.
     ('validate_api', False),
@@ -188,6 +192,7 @@ DEFAULT_CONFIG = (
     ('confdir', object),  # Directory containing config files
     ('conf', object),  # File containing context specific config
     ('conf_default', object),  # File containing context independent config
+    ('plugins_on_demand', object),  # Whether to finalize plugins on-demand (bool)
 
     # Set in Env._finalize_core():
     ('in_server', object),  # Whether or not running in-server (bool)
@@ -195,6 +200,3 @@ DEFAULT_CONFIG = (
     ('log', object),  # Path to context specific log file
 
 )
-
-# Default DNS zone refresh interval in seconds (0 = disabled)
-DNS_ZONE_REFRESH = 30

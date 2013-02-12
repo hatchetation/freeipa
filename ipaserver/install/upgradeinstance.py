@@ -21,7 +21,8 @@ import os
 import sys
 import shutil
 import random
-import logging
+import traceback
+from ipapython.ipa_log_manager import *
 
 from ipaserver.install import installutils
 from ipaserver.install import dsinstance
@@ -58,18 +59,29 @@ class IPAUpgrade(service.Service):
         self.modified = False
         self.badsyntax = False
         self.upgradefailed = False
+        self.serverid = serverid
+
+    def __start_nowait(self):
+        # Don't wait here because we've turned off port 389. The connection
+        # we make will wait for the socket.
+        super(IPAUpgrade, self).start(wait=False)
+
+    def __stop_instance(self):
+        """Stop only the main DS instance"""
+        super(IPAUpgrade, self).stop(self.serverid)
 
     def create_instance(self):
-        self.step("stopping directory server", self.stop)
+        self.step("stopping directory server", self.__stop_instance)
         self.step("saving configuration", self.__save_config)
         self.step("disabling listeners", self.__disable_listeners)
-        self.step("starting directory server", self.start)
+        self.step("starting directory server", self.__start_nowait)
         self.step("upgrading server", self.__upgrade)
-        self.step("stopping directory server", self.stop)
+        self.step("stopping directory server", self.__stop_instance)
         self.step("restoring configuration", self.__restore_config)
         self.step("starting directory server", self.start)
 
-        self.start_creation("Upgrading IPA:")
+        self.start_creation(start_message="Upgrading IPA:",
+                            show_service_name=False)
 
     def __save_config(self):
         shutil.copy2(self.filename, self.savefilename)
@@ -100,18 +112,20 @@ class IPAUpgrade(service.Service):
 
     def __upgrade(self):
         try:
-            ld = ldapupdate.LDAPUpdate(dm_password='', ldapi=True, live_run=self.live_run)
+            ld = ldapupdate.LDAPUpdate(dm_password='', ldapi=True, live_run=self.live_run, plugins=True)
             if len(self.files) == 0:
                 self.files = ld.get_all_files(ldapupdate.UPDATES_DIR)
             self.modified = ld.update(self.files)
-        except ldapupdate.BadSyntax:
+        except ldapupdate.BadSyntax, e:
+            root_logger.error('Bad syntax in upgrade %s' % str(e))
             self.modified = False
             self.badsyntax = True
         except Exception, e:
             # Bad things happened, return gracefully
             self.modified = False
             self.upgradefailed = True
-            logging.error('Upgrade failed with %s' % str(e))
+            root_logger.error('Upgrade failed with %s' % str(e))
+            root_logger.debug('%s', traceback.format_exc())
 
 def main():
     if os.getegid() != 0:

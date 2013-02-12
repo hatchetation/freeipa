@@ -1,0 +1,68 @@
+dn: cn=schema
+add:attributeTypes: (2.16.840.1.113730.3.8.11.2 NAME 'ipaNTSecurityIdentifier' DESC 'NT Security ID' EQUALITY caseIgnoreIA5Match OREDRING caseIgnoreIA5OrderingMatch SUBSTR caseIgnoreIA5SubstringsMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.26 SINGLE-VALUE X-ORIGIN 'IPA v3' )
+add:attributeTypes: (2.16.840.1.113730.3.8.11.23 NAME 'ipaNTTrustedDomainSID' DESC 'NT Trusted Domain Security ID' EQUALITY caseIgnoreIA5Match OREDRING caseIgnoreIA5OrderingMatch SUBSTR caseIgnoreIA5SubstringsMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.26 SINGLE-VALUE X-ORIGIN 'IPA v3' )
+add:attributeTypes: (2.16.840.1.113730.3.8.11.3 NAME 'ipaNTFlatName' DESC 'Flat/Netbios Name' EQUALITY caseIgnoreMatch OREDRING caseIgnoreOrderingMatch SUBSTR caseIgnoreSubstringsMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'IPA v3' )
+add:attributeTypes: (2.16.840.1.113730.3.8.11.4 NAME 'ipaNTFallbackPrimaryGroup' DESC 'Fallback Group to set the Primary group Security Identifier for users with UPGs' SUP distinguishedName X-ORIGIN 'IPA v3' )
+add:attributeTypes: (2.16.840.1.113730.3.8.11.5 NAME 'ipaNTHash' DESC 'NT Hash of user password' EQUALITY octetStringMatch OREDRING octetStringOrderingMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.40 SINGLE-VALUE X-ORIGIN 'IPA v3' )
+add:attributeTypes: (2.16.840.1.113730.3.8.11.6 NAME 'ipaNTLogonScript' DESC 'User Logon Script Name' EQUALITY caseIgnoreMatch OREDRING caseIgnoreOrderingMatch SUBSTR caseIgnoreSubstringsMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'IPA v3' )
+add:attributeTypes: (2.16.840.1.113730.3.8.11.7 NAME 'ipaNTProfilePath' DESC 'User Profile Path' EQUALITY caseIgnoreMatch OREDRING caseIgnoreOrderingMatch SUBSTR caseIgnoreSubstringsMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'IPA v3' )
+add:attributeTypes: (2.16.840.1.113730.3.8.11.8 NAME 'ipaNTHomeDirectory' DESC 'User Home Directory Path' EQUALITY caseIgnoreMatch OREDRING caseIgnoreOrderingMatch SUBSTR caseIgnoreSubstringsMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'IPA v3' )
+add:attributeTypes: (2.16.840.1.113730.3.8.11.9 NAME 'ipaNTHomeDirectoryDrive' DESC 'User Home Drive Letter' EQUALITY caseIgnoreMatch OREDRING caseIgnoreOrderingMatch SUBSTR caseIgnoreSubstringsMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'IPA v3' )
+add:attributeTypes: (2.16.840.1.113730.3.8.11.10 NAME 'ipaNTDomainGUID' DESC 'NT Domain GUID' EQUALITY caseIgnoreIA5Match OREDRING caseIgnoreIA5OrderingMatch SUBSTR caseIgnoreIA5SubstringsMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.26 SINGLE-VALUE X-ORIGIN 'IPA v3' )
+add:attributeTypes: ( 2.16.840.1.113730.3.8.11.11 NAME 'ipaNTTrustType' DESC 'Type of trust' EQUALITY integerMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE )
+add:attributeTypes: ( 2.16.840.1.113730.3.8.11.12 NAME 'ipaNTTrustAttributes' DESC 'Trust attributes for a trusted domain' EQUALITY integerMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE )
+add:attributeTypes: ( 2.16.840.1.113730.3.8.11.13 NAME 'ipaNTTrustDirection' DESC 'Direction of a trust' EQUALITY integerMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE )
+add:attributeTypes: ( 2.16.840.1.113730.3.8.11.14 NAME 'ipaNTTrustPartner' DESC 'Fully qualified name of the domain with which a trust exists' EQUALITY caseIgnoreMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.15{128} )
+add:attributeTypes: ( 2.16.840.1.113730.3.8.11.15 NAME 'ipaNTTrustAuthOutgoing' DESC 'Authentication information for the outgoing portion of a trust' EQUALITY octetStringMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.40 )
+add:attributeTypes: ( 2.16.840.1.113730.3.8.11.16 NAME 'ipaNTTrustAuthIncoming' DESC 'Authentication information for the incoming portion of a trust' EQUALITY octetStringMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.40 )
+add:attributeTypes: ( 2.16.840.1.113730.3.8.11.17 NAME 'ipaNTTrustForestTrustInfo' DESC 'Forest trust information for a trusted domain object' EQUALITY octetStringMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.40 )
+add:attributeTypes: ( 2.16.840.1.113730.3.8.11.18 NAME 'ipaNTTrustPosixOffset' DESC 'POSIX offset of a trust' EQUALITY integerMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE )
+add:attributeTypes: ( 2.16.840.1.113730.3.8.11.19 NAME 'ipaNTSupportedEncryptionTypes' DESC 'Supported encryption types of a trust' EQUALITY integerMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE )
+add:objectClasses: (2.16.840.1.113730.3.8.12.2 NAME 'ipaNTUserAttrs' SUP top AUXILIARY MUST ( ipaNTSecurityIdentifier ) MAY ( ipaNTHash $$ ipaNTLogonScript $$ ipaNTProfilePath $$ ipaNTHomeDirectory $$ ipaNTHomeDirectoryDrive ) X-ORIGIN 'IPA v3' )
+add:objectClasses: (2.16.840.1.113730.3.8.12.3 NAME 'ipaNTGroupAttrs' SUP top AUXILIARY MUST ( ipaNTSecurityIdentifier ) X-ORIGIN 'IPA v3' )
+add:objectClasses: (2.16.840.1.113730.3.8.12.4 NAME 'ipaNTDomainAttrs' SUP top AUXILIARY MUST ( ipaNTSecurityIdentifier $$ ipaNTFlatName $$ ipaNTDomainGUID ) MAY ( ipaNTFallbackPrimaryGroup ) X-ORIGIN 'IPA v3' )
+replace:objectClasses: (2.16.840.1.113730.3.8.12.5 NAME 'ipaNTTrustedDomain' SUP top STRUCTURAL DESC 'Trusted Domain Object' MUST ( cn ) MAY ( ipaNTTrustType $$ ipaNTTrustAttributes $$ ipaNTTrustDirection $$ ipaNTTrustPartner $$ ipaNTFlatName $$ ipaNTTrustAuthOutgoing $$ ipaNTTrustAuthIncoming $$ ipaNTSecurityIdentifier $$ ipaNTTrustForestTrustInfo $$ ipaNTTrustPosixOffset $$ ipaNTSupportedEncryptionTypes) )::objectClasses: (2.16.840.1.113730.3.8.12.5 NAME 'ipaNTTrustedDomain' SUP top STRUCTURAL DESC 'Trusted Domain Object' MUST ( cn ) MAY ( ipaNTTrustType $$ ipaNTTrustAttributes $$ ipaNTTrustDirection $$ ipaNTTrustPartner $$ ipaNTFlatName $$ ipaNTTrustAuthOutgoing $$ ipaNTTrustAuthIncoming $$ ipaNTTrustedDomainSID $$ ipaNTTrustForestTrustInfo $$ ipaNTTrustPosixOffset $$ ipaNTSupportedEncryptionTypes) )
+add:objectClasses: (2.16.840.1.113730.3.8.12.5 NAME 'ipaNTTrustedDomain' SUP top STRUCTURAL DESC 'Trusted Domain Object' MUST ( cn ) MAY ( ipaNTTrustType $$ ipaNTTrustAttributes $$ ipaNTTrustDirection $$ ipaNTTrustPartner $$ ipaNTFlatName $$ ipaNTTrustAuthOutgoing $$ ipaNTTrustAuthIncoming $$ ipaNTTrustedDomainSID $$ ipaNTTrustForestTrustInfo $$ ipaNTTrustPosixOffset $$ ipaNTSupportedEncryptionTypes) )
+
+dn: cn=trust admins,cn=groups,cn=accounts,$SUFFIX
+default: objectClass: top
+default: objectClass: groupofnames
+default: objectClass: ipausergroup
+default: objectClass: nestedgroup
+default: objectClass: ipaobject
+default: cn: trust admins
+default: description: Trusts administrators group
+default: member: uid=admin,cn=users,cn=accounts,$SUFFIX
+default: nsAccountLock: FALSE
+default: ipaUniqueID: autogenerate
+
+dn: cn=adtrust agents,cn=sysaccounts,cn=etc,$SUFFIX
+default: objectClass: GroupOfNames
+default: objectClass: top
+default: cn: adtrust agents
+
+dn: cn=trusts,$SUFFIX
+default: objectClass: top
+default: objectClass: nsContainer
+default: cn: trusts
+
+# Trust management
+# 1. cn=adtrust agents,cn=sysaccounts,cn=etc,$SUFFIX can manage trusts, to allow modification via CIFS
+# 2. cn=trust admins,cn=groups,cn=accounts,$SUFFIX can manage trusts (via ipa tools)
+dn: cn=trusts,$SUFFIX
+add:aci: '(target = "ldap:///cn=trusts,$SUFFIX")(targetattr = "ipaNTTrustType || ipaNTTrustAttributes || ipaNTTrustDirection || ipaNTTrustPartner || ipaNTFlatName || ipaNTTrustAuthOutgoing || ipaNTTrustAuthIncoming || ipaNTSecurityIdentifier || ipaNTTrustForestTrustInfo || ipaNTTrustPosixOffset || ipaNTSupportedEncryptionTypes || krbPrincipalName || krbLastPwdChange || krbTicketFlags || krbLoginFailedCount || krbExtraData || krbPrincipalKey")(version 3.0;acl "Allow trust system user to create and delete trust accounts and cross realm principals"; allow (read,write,add,delete) groupdn="ldap:///cn=adtrust agents,cn=sysaccounts,cn=etc,$SUFFIX";)'
+add:aci: '(target = "ldap:///cn=trusts,$SUFFIX")(targetattr = "ipaNTTrustType || ipaNTTrustAttributes || ipaNTTrustDirection || ipaNTTrustPartner || ipaNTFlatName || ipaNTTrustAuthOutgoing || ipaNTTrustAuthIncoming || ipaNTSecurityIdentifier || ipaNTTrustForestTrustInfo || ipaNTTrustPosixOffset || ipaNTSupportedEncryptionTypes")(version 3.0;acl "Allow trust admins manage trust accounts"; allow (read,write,add,delete) groupdn="ldap:///cn=trust admins,cn=groups,cn=accounts,$SUFFIX";)'
+
+# Samba user should be able to read NT passwords to authenticate
+# Add ipaNTHash to global ACIs, leave DNS tree out of global allow access rule
+dn: $SUFFIX
+add:aci: '(targetattr = "ipaNTHash")(version 3.0; acl "Samba system principals can read and write NT passwords"; allow (read,write) groupdn="ldap:///cn=adtrust agents,cn=sysaccounts,cn=etc,$SUFFIX";)'
+remove:aci: '(targetattr = "ipaNTHash")(version 3.0; acl "Samba system principals can read NT passwords"; allow (read) groupdn="ldap:///cn=adtrust agents,cn=sysaccounts,cn=etc,$SUFFIX";)'
+replace:aci:'(targetattr != "userPassword || krbPrincipalKey || sambaLMPassword || sambaNTPassword || passwordHistory || krbMKey || userPKCS12")(version 3.0; acl "Enable Anonymous access"; allow (read, search, compare) userdn = "ldap:///anyone";)::(target != "ldap:///idnsname=*,cn=dns,$SUFFIX")(targetattr != "userPassword || krbPrincipalKey || sambaLMPassword || sambaNTPassword || passwordHistory || krbMKey || userPKCS12 || ipaNTHash")(version 3.0; acl "Enable Anonymous access"; allow (read, search, compare) userdn = "ldap:///anyone";)'
+replace:aci:'(targetattr != "userPassword || krbPrincipalKey || sambaLMPassword || sambaNTPassword || passwordHistory || krbMKey || krbPrincipalName || krbCanonicalName || krbUPEnabled || krbTicketPolicyReference || krbPrincipalExpiration || krbPasswordExpiration || krbPwdPolicyReference || krbPrincipalType || krbPwdHistory || krbLastPwdChange || krbPrincipalAliases || krbExtraData || krbLastSuccessfulAuth || krbLastFailedAuth || krbLoginFailedCount || krbTicketFlags || ipaUniqueId || memberOf || serverHostName || enrolledBy")(version 3.0; acl "Admin can manage any entry"; allow (all) groupdn = "ldap:///cn=admins,cn=groups,cn=accounts,$SUFFIX";)::(targetattr != "userPassword || krbPrincipalKey || sambaLMPassword || sambaNTPassword || passwordHistory || krbMKey || krbPrincipalName || krbCanonicalName || krbUPEnabled || krbTicketPolicyReference || krbPrincipalExpiration || krbPasswordExpiration || krbPwdPolicyReference || krbPrincipalType || krbPwdHistory || krbLastPwdChange || krbPrincipalAliases || krbExtraData || krbLastSuccessfulAuth || krbLastFailedAuth || krbLoginFailedCount || krbTicketFlags || ipaUniqueId || memberOf || serverHostName || enrolledBy || ipaNTHash")(version 3.0; acl "Admin can manage any entry"; allow (all) groupdn = "ldap:///cn=admins,cn=groups,cn=accounts,$SUFFIX";)'
+replace:aci:'(targetattr = "userPassword || krbPrincipalKey || sambaLMPassword || sambaNTPassword || passwordHistory")(version 3.0; acl "Admins can write passwords"; allow (add,delete,write) groupdn="ldap:///cn=admins,cn=groups,cn=accounts,$SUFFIX";)::(targetattr = "userPassword || krbPrincipalKey || sambaLMPassword || sambaNTPassword || passwordHistory || ipaNTHash")(version 3.0; acl "Admins can write passwords"; allow (add,delete,write) groupdn="ldap:///cn=admins,cn=groups,cn=accounts,$SUFFIX";)'
+replace:aci:'(targetattr = "userPassword || krbPrincipalKey || sambaLMPassword || sambaNTPassword || passwordHistory")(version 3.0; acl "Password change service can read/write passwords"; allow (read, write) userdn="ldap:///krbprincipalname=kadmin/changepw@$REALM,cn=$REALM,cn=kerberos,$SUFFIX";)::(targetattr = "userPassword || krbPrincipalKey || sambaLMPassword || sambaNTPassword || passwordHistory || ipaNTHash")(version 3.0; acl "Password change service can read/write passwords"; allow (read, write) userdn="ldap:///krbprincipalname=kadmin/changepw@$REALM,cn=$REALM,cn=kerberos,$SUFFIX";)'
+
+# Add the default PAC type to configuration
+dn: cn=ipaConfig,cn=etc,$SUFFIX
+addifnew: ipaKrbAuthzData: MS-PAC

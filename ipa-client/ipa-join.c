@@ -108,7 +108,7 @@ static int check_perms(const char *keytab)
                 break;
             default:
                 fprintf(stderr,
-                        _("access() on %s failed: errno = %d\n"),
+                        _("access() on %1$s failed: errno = %2$d\n"),
                         keytab, errno);
                 break;
         }
@@ -166,8 +166,8 @@ callRPC(char * user_agent,
     memset(curlXportParmsP, 0, sizeof(*curlXportParmsP));
 
     /* Have curl do SSL certificate validation */
-    curlXportParmsP->no_ssl_verifypeer = 1;
-    curlXportParmsP->no_ssl_verifyhost = 1;
+    curlXportParmsP->no_ssl_verifypeer = 0;
+    curlXportParmsP->no_ssl_verifyhost = 0;
     curlXportParmsP->cainfo = "/etc/ipa/ca.crt";
     curlXportParmsP->user_agent = user_agent;
     /* Enable GSSAPI credentials delegation */
@@ -276,16 +276,52 @@ fail:
     return NULL;
 }
 
+/*
+ * Given a list of naming contexts check each one to see if it has
+ * an IPA v2 server in it. The first one we find wins.
+ */
+static int
+check_ipa_server(LDAP *ld, char **ldap_base, struct berval **vals)
+{
+    struct berval **infovals;
+    LDAPMessage *entry, *res = NULL;
+    char *info_attrs[] = {"info", NULL};
+    int i, ret = 0;
+
+    for (i = 0; !*ldap_base && vals[i]; i++) {
+        ret = ldap_search_ext_s(ld, vals[i]->bv_val,
+                                LDAP_SCOPE_BASE, "(info=IPA*)", info_attrs,
+                                0, NULL, NULL, NULL, 0, &res);
+
+        if (ret != LDAP_SUCCESS) {
+            break;
+        }
+
+        entry = ldap_first_entry(ld, res);
+        infovals = ldap_get_values_len(ld, entry, info_attrs[0]);
+        if (!strcmp(infovals[0]->bv_val, "IPA V2.0"))
+            *ldap_base = strdup(vals[i]->bv_val);
+        ldap_msgfree(res);
+        res = NULL;
+    }
+
+    return ret;
+}
+
+/*
+ * Determine the baseDN of the remote server. Look first for a
+ * defaultNamingContext, otherwise fall back to reviewing each
+ * namingContext.
+ */
 static int
 get_root_dn(const char *ipaserver, char **ldap_base)
 {
     LDAP *ld = NULL;
-    char *root_attrs[] = {"namingContexts", NULL};
-    char *info_attrs[] = {"info", NULL};
+    char *root_attrs[] = {"namingContexts", "defaultNamingContext", NULL};
     LDAPMessage *entry, *res = NULL;
     struct berval **ncvals;
-    struct berval **infovals;
-    int i, ret, rval = 0;
+    struct berval **defvals;
+    int ret, rval = 0;
 
     ld = connect_ldap(ipaserver, NULL, NULL);
     if (!ld) {
@@ -298,7 +334,7 @@ get_root_dn(const char *ipaserver, char **ldap_base)
                             NULL, NULL, NULL, 0, &res);
 
     if (ret != LDAP_SUCCESS) {
-        fprintf(stderr, _("Search for %s on rootdse failed with error %d"),
+        fprintf(stderr, _("Search for %1$s on rootdse failed with error %2$d\n"),
                 root_attrs[0], ret);
         rval = 14;
         goto done;
@@ -306,32 +342,26 @@ get_root_dn(const char *ipaserver, char **ldap_base)
 
    *ldap_base = NULL;
 
-    /* loop through to find the IPA context */
     entry = ldap_first_entry(ld, res);
-    ncvals = ldap_get_values_len(ld, entry, root_attrs[0]);
-    if (!ncvals) {
-        fprintf(stderr, _("No values for %s"), root_attrs[0]);
-        rval = 14;
-        goto done;
-    }
-    for (i = 0; !*ldap_base && ncvals[i]; i++) {
-        ret = ldap_search_ext_s(ld, ncvals[i]->bv_val,
-                                LDAP_SCOPE_BASE, "(info=IPA*)", info_attrs,
-                                0, NULL, NULL, NULL, 0, &res);
 
-        if (ret != LDAP_SUCCESS) {
-            break;
+    defvals = ldap_get_values_len(ld, entry, root_attrs[1]);
+    if (defvals) {
+        ret = check_ipa_server(ld, ldap_base, defvals);
+    }
+    ldap_value_free_len(defvals);
+
+    /* loop through to find the IPA context */
+    if (ret == LDAP_SUCCESS &&  !*ldap_base) {
+        ncvals = ldap_get_values_len(ld, entry, root_attrs[0]);
+        if (!ncvals) {
+            fprintf(stderr, _("No values for %s"), root_attrs[0]);
+            rval = 14;
+            ldap_value_free_len(ncvals);
+            goto done;
         }
-
-        entry = ldap_first_entry(ld, res);
-        infovals = ldap_get_values_len(ld, entry, info_attrs[0]);
-        if (!strcmp(infovals[0]->bv_val, "IPA V2.0"))
-            *ldap_base = strdup(ncvals[i]->bv_val);
-        ldap_msgfree(res);
-        res = NULL;
+        ret = check_ipa_server(ld, ldap_base, ncvals);
+        ldap_value_free_len(ncvals);
     }
-
-    ldap_value_free_len(ncvals);
 
     if (ret != LDAP_SUCCESS) {
         fprintf(stderr, _("Search for IPA namingContext failed with error %d\n"), ret);
@@ -705,6 +735,13 @@ unenroll_host(const char *server, const char *hostname, const char *ktname, int 
     char * url = NULL;
     char * user_agent = NULL;
 
+    /* Start up our XML-RPC client library. */
+    xmlrpc_client_init(XMLRPC_CLIENT_NO_FLAGS, NAME, VERSION);
+
+    xmlrpc_env_init(&env);
+
+    xmlrpc_client_setup_global_const(&env);
+
     if (server) {
         ipaserver = strdup(server);
     } else {
@@ -723,6 +760,11 @@ unenroll_host(const char *server, const char *hostname, const char *ktname, int 
         host = strdup(uinfo.nodename);
     } else {
         host = strdup(hostname);
+    }
+
+    if (NULL == host) {
+        rval = 3;
+        goto cleanup;
     }
 
     if (NULL == strstr(host, ".")) {
@@ -771,7 +813,7 @@ unenroll_host(const char *server, const char *hostname, const char *ktname, int 
     krberr = krb5_parse_name(krbctx, principal, &princ);
     if (krberr != 0) {
         if (!quiet)
-            fprintf(stderr, _("Error parsing \"%s\": %s.\n"),
+            fprintf(stderr, _("Error parsing \"%1$s\": %2$s.\n"),
                             principal, error_message(krberr));
         return krberr;
     }
@@ -815,13 +857,6 @@ unenroll_host(const char *server, const char *hostname, const char *ktname, int 
     krb5_cc_close(krbctx, ccache);
     ccache = NULL;
     putenv("KRB5CCNAME=MEMORY:ipa-join");
-
-    /* Start up our XML-RPC client library. */
-    xmlrpc_client_init(XMLRPC_CLIENT_NO_FLAGS, NAME, VERSION);
-
-    xmlrpc_env_init(&env);
-
-    xmlrpc_client_setup_global_const(&env);
 
 #if 1
     ret = asprintf(&url, "https://%s:443/ipa/xml", ipaserver);
@@ -933,6 +968,12 @@ join(const char *server, const char *hostname, const char *bindpw, const char *b
 
     if (NULL == strstr(host, ".")) {
         fprintf(stderr, _("The hostname must be fully-qualified: %s\n"), host);
+        rval = 16;
+        goto cleanup;
+    }
+
+    if ((!strcmp(host, "localhost")) || (!strcmp(host, "localhost.localdomain"))){
+        fprintf(stderr, _("The hostname must not be: %s\n"), host);
         rval = 16;
         goto cleanup;
     }

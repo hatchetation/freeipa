@@ -39,6 +39,7 @@ from ipalib import Backend
 from ipalib import errors
 from ipalib import x509
 from ipalib import pkcs10
+from ipapython.dn import DN, EditableDN, RDN
 from ipapython.certdb import get_ca_nickname
 import subprocess
 import os
@@ -86,22 +87,20 @@ class ra(rabase.rabase):
         """
         try:
             config = api.Command['config_show']()['result']
-            subject_base = config.get('ipacertificatesubjectbase')[0]
+            subject_base = EditableDN(config.get('ipacertificatesubjectbase')[0])
             hostname = get_csr_hostname(csr)
-            base = re.split(',\s*(?=\w+=)', subject_base)
-            base.insert(0,'CN=%s' % hostname)
-            subject_base = ",".join(base)
+            subject_base.insert(0, RDN(('CN', hostname)))
             request = pkcs10.load_certificate_request(csr)
             # python-nss normalizes the request subject
-            request_subject = str(pkcs10.get_subject(request))
+            request_subject = DN(str(pkcs10.get_subject(request)))
 
-            if str(subject_base).lower() != request_subject.lower():
+            if subject_base != request_subject:
                 raise errors.CertificateOperationError(error=_('Request subject "%(request_subject)s" does not match the form "%(subject_base)s"') % \
                 {'request_subject' : request_subject, 'subject_base' : subject_base})
         except errors.CertificateOperationError, e:
             raise e
         except NSPRError, e:
-            raise errors.CertificateOperationError(error=_('unable to decode csr: %s' % e))
+            raise errors.CertificateOperationError(error=_('unable to decode csr: %s') % e)
 
         # certutil wants the CSR to have have a header and footer. Add one
         # if it isn't there.
@@ -209,7 +208,8 @@ class ra(rabase.rabase):
             serial = x509.get_serial_number(cert)
         except NSPRError, e:
             self.log.error('Unable to decode certificate in entry: %s' % str(e))
-            raise errors.CertificateOperationError(error='Unable to decode certificate in entry: %s' % str(e))
+            raise errors.CertificateOperationError(
+                error=_('Unable to decode certificate in entry: %s') % str(e))
 
         # To make it look like dogtag return just the base64 data.
         cert = cert.replace('\n','')
@@ -221,6 +221,7 @@ class ra(rabase.rabase):
 
         cmd_result = {}
         cmd_result['serial_number'] = unicode(serial) # convert long to decimal unicode string
+        cmd_result['serial_number_hex'] = u'0x%X' % serial
         cmd_result['certificate']   = unicode(cert)
         cmd_result['subject']       = unicode(subject)
 

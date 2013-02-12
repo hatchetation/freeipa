@@ -42,15 +42,29 @@ from ipalib import api
 from ipalib import _
 from ipalib import util
 from ipalib import errors
+from ipapython.dn import DN
 
 PEM = 0
 DER = 1
 
 PEM_REGEX = re.compile(r'(?<=-----BEGIN CERTIFICATE-----).*?(?=-----END CERTIFICATE-----)', re.DOTALL)
 
-def valid_issuer(issuer, realm):
-    return issuer in ('CN=%s Certificate Authority' % realm,
-                      'CN=Certificate Authority,O=%s' % realm,)
+_subject_base = None
+
+def subject_base():
+    global _subject_base
+
+    if _subject_base is None:
+        config = api.Command['config_show']()['result']
+        _subject_base = DN(config['ipacertificatesubjectbase'][0])
+
+    return _subject_base
+
+def valid_issuer(issuer):
+    if api.env.ra_plugin == 'dogtag':
+        return DN(issuer) == DN(('CN', 'Certificate Authority'), subject_base())
+    else:
+        return DN(issuer) == DN(('CN', '%s Certificate Authority' % api.env.realm))
 
 def strip_header(pem):
     """
@@ -77,18 +91,18 @@ def load_certificate(data, datatype=PEM, dbdir=None):
         data = strip_header(data)
         data = base64.b64decode(data)
 
-    if dbdir is None:
-        if 'in_tree' in api.env:
-            if api.env.in_tree:
-                dbdir = api.env.dot_ipa + os.sep + 'alias'
+    if not nss.nss_is_initialized():
+        if dbdir is None:
+            if 'in_tree' in api.env:
+                if api.env.in_tree:
+                    dbdir = api.env.dot_ipa + os.sep + 'alias'
+                else:
+                    dbdir = "/etc/httpd/alias"
+                nss.nss_init(dbdir)
             else:
-                dbdir = "/etc/httpd/alias"
-            nss.nss_init(dbdir)
+                nss.nss_init_nodb()
         else:
-            nss.nss_init_nodb()
-    else:
-        nss.nss_init(dbdir)
-
+            nss.nss_init(dbdir)
 
     return nss.Certificate(buffer(data))
 
@@ -125,14 +139,28 @@ def get_subject(certificate, datatype=PEM, dbdir=None):
     """
 
     nsscert = load_certificate(certificate, datatype, dbdir)
-    return nsscert.subject
+    subject = nsscert.subject
+    del(nsscert)
+    return subject
+
+def get_issuer(certificate, datatype=PEM, dbdir=None):
+    """
+    Load an X509.3 certificate and get the issuer.
+    """
+
+    nsscert = load_certificate(certificate, datatype, dbdir)
+    issuer = nsscert.issuer
+    del(nsscert)
+    return issuer
 
 def get_serial_number(certificate, datatype=PEM, dbdir=None):
     """
     Return the decimal value of the serial number.
     """
     nsscert = load_certificate(certificate, datatype, dbdir)
-    return nsscert.serial_number
+    serial_number = nsscert.serial_number
+    del(nsscert)
+    return serial_number
 
 def make_pem(data):
     """
@@ -173,7 +201,8 @@ def normalize_certificate(rawcert):
         serial = unicode(get_serial_number(dercert, DER))
     except NSPRError, nsprerr:
         if nsprerr.errno == -8183: # SEC_ERROR_BAD_DER
-            raise errors.CertificateFormatError(error='improperly formatted DER-encoded certificate')
+            raise errors.CertificateFormatError(
+                error=_('improperly formatted DER-encoded certificate'))
         else:
             raise errors.CertificateFormatError(error=str(nsprerr))
 
@@ -207,9 +236,10 @@ def verify_cert_subject(ldap, hostname, dercert):
     nsscert = load_certificate(dercert, datatype=DER)
     subject = str(nsscert.subject)
     issuer = str(nsscert.issuer)
+    del(nsscert)
 
     # Handle both supported forms of issuer, from selfsign and dogtag.
-    if (not valid_issuer(issuer, api.env.realm)):
+    if (not valid_issuer(issuer)):
         raise errors.CertificateOperationError(error=_('Issuer "%(issuer)s" does not match the expected issuer') % \
         {'issuer' : issuer})
 

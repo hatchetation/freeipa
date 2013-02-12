@@ -19,24 +19,41 @@
 
 import socket
 import os
-import logging
-import ipapython.dnsclient
+from ipapython.ipa_log_manager import *
 import tempfile
 import ldap
 from ldap import LDAPError
+from dns import resolver, rdatatype
+from dns.exception import DNSException
+
 from ipapython.ipautil import run, CalledProcessError, valid_ip, get_ipa_basedn, \
                               realm_to_suffix, format_netloc
+from ipapython.dn import DN
 
+CACERT = '/etc/ipa/ca.crt'
 
 NOT_FQDN = -1
 NO_LDAP_SERVER = -2
 REALM_NOT_FOUND = -3
 NOT_IPA_SERVER = -4
 NO_ACCESS_TO_LDAP = -5
+NO_TLS_LDAP = -6
 BAD_HOST_CONFIG = -10
 UNKNOWN_ERROR = -15
 
-class IPADiscovery:
+error_names = {
+    0: 'Success',
+    NOT_FQDN: 'NOT_FQDN',
+    NO_LDAP_SERVER: 'NO_LDAP_SERVER',
+    REALM_NOT_FOUND: 'REALM_NOT_FOUND',
+    NOT_IPA_SERVER: 'NOT_IPA_SERVER',
+    NO_ACCESS_TO_LDAP: 'NO_ACCESS_TO_LDAP',
+    NO_TLS_LDAP: 'NO_TLS_LDAP',
+    BAD_HOST_CONFIG: 'BAD_HOST_CONFIG',
+    UNKNOWN_ERROR: 'UNKNOWN_ERROR',
+}
+
+class IPADiscovery(object):
 
     def __init__(self):
         self.realm = None
@@ -44,12 +61,18 @@ class IPADiscovery:
         self.server = None
         self.basedn = None
 
+        self.realm_source = None
+        self.domain_source = None
+        self.server_source = None
+        self.basedn_source = None
+
     def __get_resolver_domains(self):
         """
         Read /etc/resolv.conf and return all the domains found in domain and
         search.
 
-        Returns a list
+        Returns a list of (domain, info) pairs. The info contains a reason why
+        the domain is returned.
         """
         domains = []
         domain = None
@@ -60,12 +83,14 @@ class IPADiscovery:
 
             for line in lines:
                 if line.lower().startswith('domain'):
-                    domain = line.split(None)[-1]
+                    domain = (line.split()[-1],
+                        'local domain from /etc/resolv.conf')
                 elif line.lower().startswith('search'):
-                    domains = domains + line.split(None)[1:]
+                    domains += [(d, 'search domain from /etc/resolv.conf') for
+                        d in line.split()[1:]]
         except:
             pass
-        if domain and not domain in domains:
+        if domain:
             domains = [domain] + domains
         return domains
 
@@ -84,20 +109,29 @@ class IPADiscovery:
     def getBaseDN(self):
         return self.basedn
 
-    def check_domain(self, domain):
+    def check_domain(self, domain, tried, reason):
         """
         Given a domain search it for SRV records, breaking it down to search
         all subdomains too.
 
         Returns a tuple (server, domain) or (None,None) if a SRV record
         isn't found.
+
+        :param tried: A set of domains that were tried already
+        :param reason: Reason this domain is searched (included in the log)
         """
         server = None
+        root_logger.debug('Start searching for LDAP SRV record in "%s" (%s) ' +
+                          'and its sub-domains', domain, reason)
         while not server:
-            logging.debug("[ipadnssearchldap("+domain+")]")
-            server = self.ipadnssearchldap(domain)
+            if domain in tried:
+                root_logger.debug("Already searched %s; skipping", domain)
+                break
+            tried.add(domain)
+
+            server = self.ipadns_search_srv(domain, '_ldap._tcp', 389)
             if server:
-                return (server, domain)
+                return (server[0], domain)
             else:
                 p = domain.find(".")
                 if p == -1: #no ldap server found and last component of the domain already tested
@@ -105,12 +139,14 @@ class IPADiscovery:
                 domain = domain[p+1:]
         return (None, None)
 
-    def search(self, domain = "", server = "", hostname=None):
-        qname = ""
-        results = []
-        result = []
-        krbret = []
-        ldapret = []
+    def search(self, domain = "", server = "", hostname=None, ca_cert_path=None):
+        root_logger.debug("[IPA Discovery]")
+        root_logger.debug(
+            'Starting IPA discovery with domain=%s, server=%s, hostname=%s',
+            domain, server, hostname)
+
+        if type(server) in (list, tuple):
+            server = server[0]
 
         if not server:
 
@@ -119,6 +155,7 @@ class IPADiscovery:
                 # get the local host name
                 if not hostname:
                     hostname = socket.getfqdn()
+                    root_logger.debug('Hostname: %s', hostname)
                 if not hostname:
                     return BAD_HOST_CONFIG
 
@@ -132,129 +169,153 @@ class IPADiscovery:
                 domain = hostname[p+1:]
 
                 # Get the list of domains from /etc/resolv.conf, we'll search
-                # them all. We search the domain of our hostname first though,
-                # even if that means searching it twice. This is to avoid the
-                # situation where domain isn't set in /etc/resolv.conf and
-                # the search list has the hostname domain not first. We could
-                # end up with the wrong SRV record.
+                # them all. We search the domain of our hostname first though.
+                # This is to avoid the situation where domain isn't set in
+                # /etc/resolv.conf and the search list has the hostname domain
+                # not first. We could end up with the wrong SRV record.
                 domains = self.__get_resolver_domains()
-                domains = [domain] + domains
-                for domain in domains:
-                    (server, domain) = self.check_domain(domain)
+                domains = [(domain, 'domain of the hostname')] + domains
+                tried = set()
+                for domain, reason in domains:
+                    server, domain = self.check_domain(domain, tried, reason)
                     if server:
                         self.server = server
                         self.domain = domain
+                        self.server_source = self.domain_source = (
+                            'Discovered LDAP SRV records from %s (%s)' %
+                                (domain, reason))
                         break
                 if not self.domain: #no ldap server found
+                    root_logger.debug('No LDAP server found')
                     return NO_LDAP_SERVER
             else:
-                logging.debug("[ipadnssearchldap]")
-                self.server = self.ipadnssearchldap(domain)
-                if self.server:
+                root_logger.debug("Search for LDAP SRV record in %s", domain)
+                server = self.ipadns_search_srv(domain, '_ldap._tcp', 389)
+                if server:
+                    self.server = server[0]
                     self.domain = domain
+                    self.server_source = self.domain_source = (
+                        'Discovered LDAP SRV records from %s' % domain)
                 else:
+                    self.server = None
+                    root_logger.debug('No LDAP server found')
                     return NO_LDAP_SERVER
 
-        else: #server forced on us, this means DNS doesn't work :/
+        else:
 
+            root_logger.debug("Server and domain forced")
             self.domain = domain
             self.server = server
+            self.domain_source = self.server_source = 'Forced'
 
         #search for kerberos
-        logging.debug("[ipadnssearchkrb]")
-        krbret = self.ipadnssearchkrb(self.domain)
-        if not server and not krbret[0]:
+        root_logger.debug("[Kerberos realm search]")
+        krb_realm, kdc = self.ipadnssearchkrb(self.domain)
+        if not server and not krb_realm:
             return REALM_NOT_FOUND
 
-        self.realm = krbret[0]
-        self.kdc = krbret[1]
+        self.realm = krb_realm
+        self.kdc = kdc
+        self.realm_source = self.kdc_source = (
+            'Discovered Kerberos DNS records from %s' % self.domain)
 
-        logging.debug("[ipacheckldap]")
-        # check ldap now
-        ldapret = self.ipacheckldap(self.server, self.realm)
+        root_logger.debug("[LDAP server check]")
+        root_logger.debug('Verifying that %s (realm %s) is an IPA server',
+            self.server, self.realm)
+        # We may have received multiple servers corresponding to the domain
+        # Iterate through all of those to check if it is IPA LDAP server
+        ldapret = [NOT_IPA_SERVER]
+        ldapaccess = True
+        if self.server:
+            # check ldap now
+            ldapret = self.ipacheckldap(self.server, self.realm, ca_cert_path=ca_cert_path)
 
-        if ldapret[0] == 0:
-            self.server = ldapret[1]
-            self.realm = ldapret[2]
+            if ldapret[0] == 0:
+                self.server = ldapret[1]
+                self.realm = ldapret[2]
+                self.server_source = self.realm_source = (
+                    'Discovered from LDAP DNS records in %s' % self.server)
+            elif ldapret[0] == NO_ACCESS_TO_LDAP or ldapret[0] == NO_TLS_LDAP:
+                ldapaccess = False
 
-        if ldapret[0] == NO_ACCESS_TO_LDAP and self.realm is None:
+        # If one of LDAP servers checked rejects access (maybe anonymous
+        # bind is disabled), assume realm and basedn generated off domain.
+        # Note that in case ldapret[0] == 0 and ldapaccess == False (one of
+        # servers didn't provide access but another one succeeded), self.realm
+        # will be set already to a proper value above, self.basdn will be
+        # initialized during the LDAP check itself and we'll skip these two checks.
+        if not ldapaccess and self.realm is None:
             # Assume realm is the same as domain.upper()
             self.realm = self.domain.upper()
-            logging.debug("Assuming realm is the same as domain: %s" % self.realm)
+            self.realm_source = 'Assumed same as domain'
+            root_logger.debug(
+                "Assuming realm is the same as domain: %s", self.realm)
 
-        if ldapret[0] == NO_ACCESS_TO_LDAP and self.basedn is None:
+        if not ldapaccess and self.basedn is None:
             # Generate suffix from realm
             self.basedn = realm_to_suffix(self.realm)
-            logging.debug("Generate basedn from realm: %s" % self.basedn)
+            self.basedn_source = 'Generated from Kerberos realm'
+            root_logger.debug("Generated basedn from realm: %s" % self.basedn)
+
+        root_logger.debug(
+            "Discovery result: %s; server=%s, domain=%s, kdc=%s, basedn=%s",
+            error_names.get(ldapret[0], ldapret[0]),
+            self.server, self.domain, self.kdc, self.basedn)
 
         return ldapret[0]
 
-    def ipacheckldap(self, thost, trealm):
+    def ipacheckldap(self, thost, trealm, ca_cert_path=None):
         """
         Given a host and kerberos realm verify that it is an IPA LDAP
-        server hosting the realm. The connection is an SSL connection
-        so the remote IPA CA cert must be available at
-        http://HOST/ipa/config/ca.crt
+        server hosting the realm.
 
         Returns a list [errno, host, realm] or an empty list on error.
         Errno is an error number:
             0 means all ok
             1 means we could not check the info in LDAP (may happend when
-                anonymous binds are siabled)
+                anonymous binds are disabled)
             2 means the server is certainly not an IPA server
         """
 
-        lret = []
-        lres = []
-        lattr = ""
-        linfo = ""
         lrealms = []
 
         i = 0
 
-        # Get the CA certificate
-        try:
-            # Create TempDir
-            temp_ca_dir = tempfile.mkdtemp()
-        except OSError, e:
-            raise RuntimeError("Creating temporary directory failed: %s" % str(e))
-
-        try:
-            run(["/usr/bin/wget", "-O", "%s/ca.crt" % temp_ca_dir, "-T", "15", "-t", "2",
-                 "http://%s/ipa/config/ca.crt" % format_netloc(thost)])
-        except CalledProcessError, e:
-            logging.debug('Retrieving CA from %s failed.\n%s' % (thost, str(e)))
-            return [NOT_IPA_SERVER]
-
         #now verify the server is really an IPA server
         try:
-            logging.debug("Init ldap with: ldap://"+format_netloc(thost, 389))
-            lh = ldap.initialize("ldap://"+format_netloc(thost, 389))
-            ldap.set_option(ldap.OPT_X_TLS_REQUIRE_CERT, True)
-            ldap.set_option(ldap.OPT_X_TLS_CACERTFILE, "%s/ca.crt" % temp_ca_dir)
+            ldap_url = "ldap://" + format_netloc(thost, 389)
+            root_logger.debug("Init LDAP connection with: %s", ldap_url)
+            lh = ldap.initialize(ldap_url)
+            if ca_cert_path:
+                ldap.set_option(ldap.OPT_X_TLS_REQUIRE_CERT, True)
+                ldap.set_option(ldap.OPT_X_TLS_CACERTFILE, ca_cert_path)
+                lh.set_option(ldap.OPT_X_TLS_DEMAND, True)
+                lh.start_tls_s()
             lh.set_option(ldap.OPT_PROTOCOL_VERSION, 3)
-            lh.set_option(ldap.OPT_X_TLS_DEMAND, True)
-            lh.start_tls_s()
             lh.simple_bind_s("","")
 
             # get IPA base DN
-            logging.debug("Search LDAP server for IPA base DN")
+            root_logger.debug("Search LDAP server for IPA base DN")
             basedn = get_ipa_basedn(lh)
 
             if basedn is None:
+                root_logger.debug("The server is not an IPA server")
                 return [NOT_IPA_SERVER]
 
             self.basedn = basedn
+            self.basedn_source = 'From IPA server %s' % ldap_url
 
             #search and return known realms
-            logging.debug("Search for (objectClass=krbRealmContainer) in "+self.basedn+"(sub)")
-            lret = lh.search_s("cn=kerberos,"+self.basedn, ldap.SCOPE_SUBTREE, "(objectClass=krbRealmContainer)")
+            root_logger.debug(
+                "Search for (objectClass=krbRealmContainer) in %s (sub)",
+                self.basedn)
+            lret = lh.search_s(str(DN(('cn', 'kerberos'), self.basedn)), ldap.SCOPE_SUBTREE, "(objectClass=krbRealmContainer)")
             if not lret:
                 #something very wrong
                 return [REALM_NOT_FOUND]
-            logging.debug("Found: "+str(lret))
 
             for lres in lret:
+                root_logger.debug("Found: %s", lres[0])
                 for lattr in lres[1]:
                     if lattr.lower() == "cn":
                         lrealms.append(lres[1][lattr][0])
@@ -278,62 +339,61 @@ class IPADiscovery:
 
         except LDAPError, err:
             if isinstance(err, ldap.TIMEOUT):
-                logging.error("LDAP Error: timeout")
+                root_logger.error("LDAP Error: timeout")
                 return [NO_LDAP_SERVER]
 
             if isinstance(err, ldap.INAPPROPRIATE_AUTH):
-                logging.debug("LDAP Error: Anonymous acces not allowed")
+                root_logger.debug("LDAP Error: Anonymous acces not allowed")
                 return [NO_ACCESS_TO_LDAP]
 
-            logging.error("LDAP Error: %s: %s" %
+            # We should only get UNWILLING_TO_PERFORM if the remote LDAP server
+            # has minssf > 0 and we have attempted a non-TLS connection.
+            if ca_cert_path is None and isinstance(err, ldap.UNWILLING_TO_PERFORM):
+                root_logger.debug("LDAP server returned UNWILLING_TO_PERFORM. This likely means that minssf is enabled")
+                return [NO_TLS_LDAP]
+
+            root_logger.error("LDAP Error: %s: %s" %
                (err.args[0]['desc'], err.args[0].get('info', '')))
             return [UNKNOWN_ERROR]
 
-        finally:
-            os.remove("%s/ca.crt" % temp_ca_dir)
-            os.rmdir(temp_ca_dir)
 
+    def ipadns_search_srv(self, domain, srv_record_name, default_port,
+                          break_on_first=True):
+        """
+        Search for SRV records in given domain. When no record is found,
+        en empty list is returned
 
-    def ipadnssearchldap(self, tdomain):
-        servers = ""
-        rserver = ""
+        :param domain: Search domain name
+        :param srv_record_name: SRV record name, e.g. "_ldap._tcp"
+        :param default_port: When default_port is not None, it is being
+                    checked with the port in SRV record and if they don't
+                    match, the port from SRV record is appended to
+                    found hostname in this format: "hostname:port"
+        :param break_on_first: break on the first find and return just one
+                    entry
+        """
+        servers = []
 
-        qname = "_ldap._tcp."+tdomain
-        # terminate the name
-        if not qname.endswith("."):
-            qname += "."
-        results = ipapython.dnsclient.query(qname, ipapython.dnsclient.DNS_C_IN, ipapython.dnsclient.DNS_T_SRV)
+        qname = '%s.%s' % (srv_record_name, domain)
 
-        for result in results:
-            if result.dns_type == ipapython.dnsclient.DNS_T_SRV:
-                rserver = result.rdata.server.rstrip(".")
-                if result.rdata.port and result.rdata.port != 389:
-                    rserver += ":" + str(result.rdata.port)
-                if servers:
-                    servers += "," + rserver
-                else:
-                    servers = rserver
-                break
+        root_logger.debug("Search DNS for SRV record of %s", qname)
 
-        return servers
+        try:
+            answers = resolver.query(qname, rdatatype.SRV)
+        except DNSException, e:
+            root_logger.debug("DNS record not found: %s", e.__class__.__name__)
+            answers = []
 
-    def ipadnssearchntp(self, tdomain):
-        servers = ""
-        rserver = ""
-
-        qname = "_ntp._udp."+tdomain
-        # terminate the name
-        if not qname.endswith("."):
-            qname += "."
-        results = ipapython.dnsclient.query(qname, ipapython.dnsclient.DNS_C_IN, ipapython.dnsclient.DNS_T_SRV)
-
-        for result in results:
-            if result.dns_type == ipapython.dnsclient.DNS_T_SRV:
-                rserver = result.rdata.server.rstrip(".")
-                if servers:
-                    servers += "," + rserver
-                else:
-                    servers = rserver
+        for answer in answers:
+            root_logger.debug("DNS record found: %s", answer)
+            server = str(answer.target).rstrip(".")
+            if not server:
+                root_logger.debug("Cannot parse the hostname from SRV record: %s", answer)
+                continue
+            if default_port is not None and answer.port != default_port:
+                server = "%s:%s" % (server, str(answer.port))
+            servers.append(server)
+            if break_on_first:
                 break
 
         return servers
@@ -343,35 +403,33 @@ class IPADiscovery:
         kdc = None
         # now, check for a Kerberos realm the local host or domain is in
         qname = "_kerberos." + tdomain
-        # terminate the name
-        if not qname.endswith("."):
-            qname += "."
-        results = ipapython.dnsclient.query(qname, ipapython.dnsclient.DNS_C_IN, ipapython.dnsclient.DNS_T_TXT)
 
-        for result in results:
-            if result.dns_type == ipapython.dnsclient.DNS_T_TXT:
-                realm = result.rdata.data
+        root_logger.debug("Search DNS for TXT record of %s", qname)
+
+        try:
+            answers = resolver.query(qname, rdatatype.TXT)
+        except DNSException, e:
+            root_logger.debug("DNS record not found: %s", e.__class__.__name__)
+            answers = []
+
+        for answer in answers:
+            root_logger.debug("DNS record found: %s", answer)
+            if answer.strings:
+                realm = answer.strings[0]
                 if realm:
                     break
 
         if realm:
             # now fetch server information for the realm
-            qname = "_kerberos._udp." + realm.lower()
-            # terminate the name
-            if not qname.endswith("."):
-                qname += "."
-            results = ipapython.dnsclient.query(qname, ipapython.dnsclient.DNS_C_IN, ipapython.dnsclient.DNS_T_SRV)
-            for result in results:
-                if result.dns_type == ipapython.dnsclient.DNS_T_SRV:
-                    qname = result.rdata.server.rstrip(".")
-                    if result.rdata.port and result.rdata.port != 88:
-                        qname += ":" + str(result.rdata.port)
-                    if kdc:
-                        kdc += "," + qname
-                    else:
-                        kdc = qname
+            domain = realm.lower()
 
-            if not kdc:
-                logging.debug("SRV record for KDC not found! Realm: %s, SRV record: %s" % (realm, qname))
+            kdc = self.ipadns_search_srv(domain, '_kerberos._udp', 88,
+                    break_on_first=False)
 
-        return [realm, kdc]
+            if kdc:
+                kdc = ','.join(kdc)
+            else:
+                root_logger.debug("SRV record for KDC not found! Realm: %s, SRV record: %s" % (realm, qname))
+                kdc = None
+
+        return realm, kdc

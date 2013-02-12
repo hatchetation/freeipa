@@ -21,28 +21,40 @@
 import sys
 import socket
 
-import os, pwd, traceback, logging, shutil
+import os, pwd, shutil
 import grp
 from optparse import OptionGroup
+from contextlib import contextmanager
+
+import dns.resolver
+import dns.reversename
+import dns.exception
 
 from ipapython import ipautil
 
 from ipaserver.install import dsinstance, installutils, krbinstance, service
 from ipaserver.install import bindinstance, httpinstance, ntpinstance, certs
-from ipaserver.install.replication import replica_conn_check
+from ipaserver.install import memcacheinstance
+from ipaserver.install.replication import replica_conn_check, ReplicationManager
 from ipaserver.install.installutils import HostnameLocalhost, resolve_host
 from ipaserver.install.installutils import ReplicaConfig, expand_replica_info, read_replica_info
 from ipaserver.install.installutils import get_host_name, BadHostError
 from ipaserver.plugins.ldap2 import ldap2
 from ipaserver.install import cainstance
-from ipapython import version
 from ipalib import api, errors, util
+from ipapython import version
 from ipapython.config import IPAOptionParser
 from ipapython import sysrestore
 from ipapython import services as ipaservices
+from ipapython.ipa_log_manager import *
+from ipapython import dogtag
+from ipapython.dn import DN
+import ipaclient.ntpconf
 
-CACERT="/etc/ipa/ca.crt"
-REPLICA_INFO_TOP_DIR=None
+log_file_name = "/var/log/ipareplica-install.log"
+CACERT = "/etc/ipa/ca.crt"
+REPLICA_INFO_TOP_DIR = None
+DIRMAN_DN = DN(('cn', 'directory manager'))
 
 def parse_options():
     usage = "%prog [options] REPLICA_FILE"
@@ -51,6 +63,9 @@ def parse_options():
     basic_group = OptionGroup(parser, "basic options")
     basic_group.add_option("--setup-ca", dest="setup_ca", action="store_true",
                       default=False, help="configure a dogtag CA")
+    basic_group.add_option("--ip-address", dest="ip_address",
+                      type="ip", ip_local=True,
+                      help="Replica server IP Address")
     basic_group.add_option("-p", "--password", dest="password", sensitive=True,
                       help="Directory Manager (existing master) password")
     basic_group.add_option("-w", "--admin-password", dest="admin_password", sensitive=True,
@@ -59,6 +74,12 @@ def parse_options():
                       help="do not configure ntp", default=True)
     basic_group.add_option("--no-ui-redirect", dest="ui_redirect", action="store_false",
                       default=True, help="Do not automatically redirect to the Web UI")
+    basic_group.add_option("--ssh-trust-dns", dest="trust_sshfp", default=False, action="store_true",
+                      help="configure OpenSSH client to trust DNS SSHFP records")
+    basic_group.add_option("--no-ssh", dest="conf_ssh", default=True, action="store_false",
+                      help="do not configure OpenSSH client")
+    basic_group.add_option("--no-sshd", dest="conf_sshd", default=True, action="store_false",
+                      help="do not configure OpenSSH server")
     basic_group.add_option("--skip-conncheck", dest="skip_conncheck", action="store_true",
                       default=False, help="skip connection check to remote master")
     basic_group.add_option("-d", "--debug", dest="debug", action="store_true",
@@ -70,6 +91,8 @@ def parse_options():
     cert_group = OptionGroup(parser, "certificate system options")
     cert_group.add_option("--no-pkinit", dest="setup_pkinit", action="store_false",
                       default=True, help="disables pkinit setup steps")
+    cert_group.add_option("--skip-schema-check", dest="skip_schema_check", action="store_true",
+                      default=False, help="skip check for updated CA DS schema on the remote master")
     parser.add_option_group(cert_group)
 
     dns_group = OptionGroup(parser, "DNS options")
@@ -81,10 +104,12 @@ def parse_options():
                       default=False, help="Do not add any DNS forwarders, use root servers instead")
     dns_group.add_option("--reverse-zone", dest="reverse_zone", help="The reverse DNS zone to use")
     dns_group.add_option("--no-reverse", dest="no_reverse", action="store_true",
-                      default=False, help="Do not create reverse DNS zone")
+                      default=False, help="Do not create new reverse DNS zone")
     dns_group.add_option("--no-host-dns", dest="no_host_dns", action="store_true",
                       default=False,
                       help="Do not use DNS for hostname lookup during installation")
+    dns_group.add_option("--no-dns-sshfp", dest="create_sshfp", default=True, action="store_false",
+                      help="do not automatically create DNS SSHFP records")
     parser.add_option_group(dns_group)
 
     options, args = parser.parse_args()
@@ -119,7 +144,6 @@ def set_owner(config, dir):
     os.chown(dir, pw.pw_uid, pw.pw_gid)
 
 def install_replica_ds(config):
-    dsinstance.check_existing_installation()
     dsinstance.check_ports()
 
     # if we have a pkcs12 file, create the cert db from
@@ -140,8 +164,6 @@ def install_replica_ds(config):
 
 def install_krb(config, setup_pkinit=False):
     krb = krbinstance.KrbInstance()
-    ldappwd_filename = config.dir + "/ldappwd"
-    kpasswd_filename = config.dir + "/kpasswd.keytab"
 
     #pkinit files
     pkcs12_info = None
@@ -152,8 +174,9 @@ def install_krb(config, setup_pkinit=False):
     krb.create_replica(config.realm_name,
                        config.master_host_name, config.host_name,
                        config.domain_name, config.dirman_password,
-                       ldappwd_filename, kpasswd_filename,
                        setup_pkinit, pkcs12_info)
+
+    return krb
 
 def install_ca_cert(config):
     cafile = config.dir + "/ca.crt"
@@ -176,6 +199,9 @@ def install_http(config, auto_redirect):
         pkcs12_info = (config.dir + "/httpcert.p12",
                        config.dir + "/http_pin.txt")
 
+    memcache = memcacheinstance.MemcacheInstance()
+    memcache.create_instance('MEMCACHE', config.host_name, config.dirman_password, ipautil.realm_to_suffix(config.realm_name))
+
     http = httpinstance.HTTPInstance()
     http.create_instance(config.realm_name, config.host_name, config.domain_name, config.dirman_password, False, pkcs12_info, self_signed_ca=True, auto_redirect=auto_redirect)
 
@@ -184,92 +210,98 @@ def install_http(config, auto_redirect):
         try:
             shutil.copy(config.dir + "/preferences.html", "/usr/share/ipa/html/preferences.html")
             shutil.copy(config.dir + "/configure.jar", "/usr/share/ipa/html/configure.jar")
+            if ipautil.file_exists(config.dir + "/krb.js"):
+                shutil.copy(
+                    config.dir + "/krb.js", "/usr/share/ipa/html/krb.js")
+                shutil.copy(
+                    config.dir + "/kerberosauth.xpi",
+                    "/usr/share/ipa/html/kerberosauth.xpi")
         except Exception, e:
             print "error copying files: " + str(e)
             sys.exit(1)
 
+    http.setup_firefox_extension(config.realm_name, config.domain_name)
+
+    return http
+
 def install_bind(config, options):
-    api.Backend.ldap2.connect(bind_dn="cn=Directory Manager",
+    api.Backend.ldap2.connect(bind_dn=DIRMAN_DN,
                               bind_pw=config.dirman_password)
     if options.forwarders:
         forwarders = options.forwarders
     else:
         forwarders = ()
     bind = bindinstance.BindInstance(dm_password=config.dirman_password)
-    ip_address = resolve_host(config.host_name)
-    if not ip_address:
-        sys.exit("Unable to resolve IP address for host name")
-    ip = ipautil.CheckedIPAddress(ip_address, match_local=True)
-    ip_address = str(ip)
 
     if options.reverse_zone:
-        if not bindinstance.verify_reverse_zone(options.reverse_zone, ip):
+        if not bindinstance.verify_reverse_zone(options.reverse_zone, config.ip):
             sys.exit(1)
         reverse_zone = bindinstance.normalize_zone(options.reverse_zone)
     else:
-        reverse_zone = bindinstance.find_reverse_zone(ip)
+        reverse_zone = bindinstance.find_reverse_zone(config.ip)
         if reverse_zone is None and not options.no_reverse:
-            reverse_zone = bindinstance.get_reverse_zone_default(ip)
+            reverse_zone = util.get_reverse_zone_default(config.ip)
             if not options.unattended and bindinstance.create_reverse():
-                reverse_zone = bindinstance.read_reverse_zone(reverse_zone, ip)
+                reverse_zone = bindinstance.read_reverse_zone(reverse_zone, config.ip)
 
     if reverse_zone is not None:
         print "Using reverse zone %s" % reverse_zone
 
-    bind.setup(config.host_name, ip_address, config.realm_name,
-               config.domain_name, forwarders, options.conf_ntp, reverse_zone)
+    bind.setup(config.host_name, config.ip_address, config.realm_name,
+               config.domain_name, forwarders, options.conf_ntp, reverse_zone,
+               ca_configured=options.setup_ca)
     bind.create_instance()
+
+    print ""
+    bind.check_global_configuration()
+    print ""
+
+
+@contextmanager
+def temporary_ldap2_connection(host_name, bind_pw, bind_dn=DIRMAN_DN):
+    """Context in which the ldap2 backend is connected to the given host
+
+    When the context is entered, forcefully change the ldap2's URI and connect
+    with the given password.
+    When it's exited, disconnect and restore ldap2 to previous configuration.
+
+    Needed to use the standard IPA tools on the remote master, before the
+    DS on localhost is installed.
+    """
+    # TODO: We shouldn't have to resort to such hacks
+    cur_uri = api.Backend.ldap2.ldap_uri
+    # ldap2 is finalized at this point, so use __setattr__ directly
+    object.__setattr__(api.Backend.ldap2, 'ldap_uri',
+                       'ldaps://%s' % ipautil.format_netloc(host_name))
+    api.Backend.ldap2.connect(bind_dn=DIRMAN_DN, bind_pw=bind_pw,
+                              tls_cacertfile=CACERT)
+    yield
+
+    api.Backend.ldap2.disconnect()
+    #set it back to the default
+    object.__setattr__(api.Backend.ldap2, 'ldap_uri', cur_uri)
+
 
 def install_dns_records(config, options):
 
     if not bindinstance.dns_container_exists(config.master_host_name,
-                                             util.realm_to_suffix(config.realm_name),
+                                             ipautil.realm_to_suffix(config.realm_name),
                                              dm_password=config.dirman_password):
         return
 
     # We have to force to connect to the remote master because we do this step
     # before our DS server is installed.
-    cur_uri = api.Backend.ldap2.ldap_uri
-    object.__setattr__(api.Backend.ldap2, 'ldap_uri',
-                       'ldaps://%s' % ipautil.format_netloc(config.master_host_name))
-    api.Backend.ldap2.connect(bind_dn="cn=Directory Manager",
-                              bind_pw=config.dirman_password,
-                              tls_cacertfile=CACERT)
-    bind = bindinstance.BindInstance(dm_password=config.dirman_password)
-    ip_address = resolve_host(config.host_name)
-    if not ip_address:
-        sys.exit("Unable to resolve IP address for host name")
-    ip = ipautil.CheckedIPAddress(ip_address, match_local=True)
-    ip_address = str(ip)
-    reverse_zone = bindinstance.find_reverse_zone(ip)
+    with temporary_ldap2_connection(
+            config.master_host_name, config.dirman_password):
+        bind = bindinstance.BindInstance(dm_password=config.dirman_password)
+        reverse_zone = bindinstance.find_reverse_zone(config.ip)
 
-    bind.add_master_dns_records(config.host_name, ip_address,
-                                config.realm_name, config.domain_name,
-                                reverse_zone, options.conf_ntp)
-
-    #set it back to the default
-    api.Backend.ldap2.disconnect()
-    object.__setattr__(api.Backend.ldap2, 'ldap_uri', cur_uri)
+        bind.add_master_dns_records(config.host_name, config.ip_address,
+                                    config.realm_name, config.domain_name,
+                                    reverse_zone, options.conf_ntp,
+                                    options.setup_ca)
 
 def check_dirsrv():
-    serverids = dsinstance.check_existing_installation()
-    if serverids:
-        print ""
-        print "An existing Directory Server has been detected."
-        if not ipautil.user_input("Do you wish to remove it and create a new one?", False):
-            print ""
-            print "Only a single Directory Server instance is allowed on an IPA"
-            print "server, the one used by IPA itself."
-            sys.exit(1)
-
-        try:
-            ipaservices.knownservices.dirsrv.stop()
-        except:
-            pass
-
-        for serverid in serverids:
-            dsinstance.erase_ds_instance_data(serverid)
-
     (ds_unsecure, ds_secure) = dsinstance.check_ports()
     if not ds_unsecure or not ds_secure:
         print "IPA requires ports 389 and 636 for the Directory Server."
@@ -285,27 +317,138 @@ def check_bind():
         print "Aborting installation"
         sys.exit(1)
 
+
+def check_dns_resolution(host_name, dns_servers):
+    """Check forward and reverse resolution of host_name using dns_servers
+    """
+    # Point the resolver at specified DNS server
+    server_ips = []
+    for dns_server in dns_servers:
+        try:
+            server_ips = list(
+                a[4][0] for a in socket.getaddrinfo(dns_server, None))
+        except socket.error:
+            pass
+        else:
+            break
+    if not server_ips:
+        root_logger.error(
+            'Could not resolve any DNS server hostname: %s', dns_servers)
+        return False
+    resolver = dns.resolver.Resolver()
+    resolver.nameservers = server_ips
+
+    root_logger.debug('Search DNS server %s (%s) for %s',
+        dns_server, server_ips, host_name)
+
+    # Get IP addresses of host_name
+    addresses = set()
+    for rtype in 'A', 'AAAA':
+        try:
+            result = resolver.query(host_name, rtype)
+        except dns.exception.DNSException:
+            rrset = []
+        else:
+            rrset = result.rrset
+        if rrset:
+            addresses.update(r.address for r in result.rrset)
+
+    if not addresses:
+        root_logger.error(
+            'Could not resolve hostname %s using DNS. '
+            'Clients may not function properly. '
+            'Please check your DNS setup. '
+            '(Note that this check queries IPA DNS directly and '
+            'ignores /etc/hosts.)',
+            host_name)
+        return False
+
+    no_errors = True
+
+    # Check each of the IP addresses
+    checked = set()
+    for address in addresses:
+        if address in checked:
+            continue
+        checked.add(address)
+        try:
+            root_logger.debug('Check reverse address %s (%s)',
+                address, host_name)
+            revname = dns.reversename.from_address(address)
+            rrset = resolver.query(revname, 'PTR').rrset
+        except Exception, e:
+            root_logger.debug('Check failed: %s %s', type(e).__name__, e)
+            root_logger.error(
+                'Reverse DNS resolution of address %s (%s) failed. '
+                'Clients may not function properly. '
+                'Please check your DNS setup. '
+                '(Note that this check queries IPA DNS directly and '
+                'ignores /etc/hosts.)',
+                address, host_name)
+            no_errors = False
+        else:
+            host_name_obj = dns.name.from_text(host_name)
+            if rrset:
+                names = [r.target.to_text() for r in rrset]
+            else:
+                names = []
+            root_logger.debug(
+                'Address %s resolves to: %s. ', address, ', '.join(names))
+            if not rrset or not any(
+                    r.target == host_name_obj for r in rrset):
+                root_logger.error(
+                    'The IP address %s of host %s resolves to: %s. '
+                    'Clients may not function properly. '
+                    'Please check your DNS setup. '
+                    '(Note that this check queries IPA DNS directly and '
+                    'ignores /etc/hosts.)',
+                    address, host_name, ', '.join(names))
+                no_errors = False
+
+    return no_errors
+
+
 def main():
+    ipaservices.check_selinux_status()
     safe_options, options, filename = parse_options()
-    installutils.standard_logging_setup("/var/log/ipareplica-install.log", options.debug)
-    logging.debug('%s was invoked with argument "%s" and options: %s' % (sys.argv[0], filename, safe_options))
+
+    if os.geteuid() != 0:
+        sys.exit("\nYou must be root to run this script.\n")
+
+    standard_logging_setup(log_file_name, debug=options.debug)
+    root_logger.debug('%s was invoked with argument "%s" and options: %s' % (sys.argv[0], filename, safe_options))
 
     if not ipautil.file_exists(filename):
         sys.exit("Replica file %s does not exist" % filename)
 
     client_fstore = sysrestore.FileStore('/var/lib/ipa-client/sysrestore')
     if client_fstore.has_files():
-        sys.exit("IPA client is already configured on this system.\n"
-                 + "Please uninstall it first before configuring the replica.")
+        sys.exit("IPA client is already configured on this system.\n" +
+            "Please uninstall it first before configuring the replica, " +
+            "using 'ipa-client-install --uninstall'.")
 
     global sstore
     sstore = sysrestore.StateFile('/var/lib/ipa/sysrestore')
+
+    global fstore
+    fstore = sysrestore.FileStore('/var/lib/ipa/sysrestore')
 
     # check the bind is installed
     if options.setup_dns:
         check_bind()
 
     check_dirsrv()
+
+    if options.conf_ntp:
+        try:
+            ipaclient.ntpconf.check_timedate_services()
+        except ipaclient.ntpconf.NTPConflictingService, e:
+            print "WARNING: conflicting time&date synchronization service '%s'" \
+                  " will" % e.conflicting_service
+            print "be disabled in favor of ntpd"
+            print ""
+        except ipaclient.ntpconf.NTPConfigurationError:
+            pass
 
     # get the directory manager password
     dirman_password = options.password
@@ -328,16 +471,20 @@ def main():
 
     config = ReplicaConfig()
     read_replica_info(dir, config)
+    root_logger.debug('Installing replica file with version %d (0 means no version in prepared file).' % config.version)
+    if config.version and config.version > version.NUM_VERSION:
+        root_logger.error('A replica file from a newer release (%d) cannot be installed on an older version (%d)' % (config.version, version.NUM_VERSION))
+        sys.exit(1)
     config.dirman_password = dirman_password
     try:
         host = get_host_name(options.no_host_dns)
     except BadHostError, e:
-        logging.error(str(e))
+        root_logger.error(str(e))
         sys.exit(1)
     if config.host_name != host:
         try:
             print "This replica was created for '%s' but this machine is named '%s'" % (config.host_name, host)
-            if not ipautil.user_input("This may cause problems. Continue?", True):
+            if not ipautil.user_input("This may cause problems. Continue?", False):
                 sys.exit(0)
             config.host_name = host
             print ""
@@ -346,10 +493,25 @@ def main():
     config.dir = dir
     config.setup_ca = options.setup_ca
 
+    installutils.verify_fqdn(config.master_host_name, options.no_host_dns)
+
+    portfile = config.dir + "/dogtag_directory_port.txt"
+    if not ipautil.file_exists(portfile):
+        dogtag_master_ds_port = str(dogtag.Dogtag9Constants.DS_PORT)
+    else:
+        with open(portfile) as fd:
+            dogtag_master_ds_port = fd.read()
 
     # check connection
     if not options.skip_conncheck:
-        replica_conn_check(config.master_host_name, config.host_name, config.realm_name, options.setup_ca, options.admin_password)
+        replica_conn_check(
+            config.master_host_name, config.host_name, config.realm_name,
+            options.setup_ca, dogtag_master_ds_port, options.admin_password)
+
+
+    # check replica host IP resolution
+    config.ip = installutils.get_server_ip_address(config.host_name, fstore, True, options)
+    config.ip_address = str(config.ip)
 
     # Create the management framework config file
     # Note: We must do this before bootstraping and finalizing ipalib.api
@@ -357,36 +519,38 @@ def main():
     try:
         fd = open("/etc/ipa/default.conf", "w")
         fd.write("[global]\n")
-        fd.write("host=" + config.host_name + "\n")
-        fd.write("basedn=" + util.realm_to_suffix(config.realm_name) + "\n")
-        fd.write("realm=" + config.realm_name + "\n")
-        fd.write("domain=" + config.domain_name + "\n")
+        fd.write("host=%s\n" % config.host_name)
+        fd.write("basedn=%s\n" % str(ipautil.realm_to_suffix(config.realm_name)))
+        fd.write("realm=%s\n" % config.realm_name)
+        fd.write("domain=%s\n" % config.domain_name)
         fd.write("xmlrpc_uri=https://%s/ipa/xml\n" % ipautil.format_netloc(config.host_name))
         fd.write("ldap_uri=ldapi://%%2fvar%%2frun%%2fslapd-%s.socket\n" % dsinstance.realm_to_serverid(config.realm_name))
         if ipautil.file_exists(config.dir + "/cacert.p12"):
             fd.write("enable_ra=True\n")
             fd.write("ra_plugin=dogtag\n")
+            fd.write("dogtag_version=%s\n" %
+                dogtag.install_constants.DOGTAG_VERSION)
         fd.write("mode=production\n")
         fd.close()
     finally:
         os.umask(old_umask)
 
-    api.bootstrap(in_server=True)
+    api.bootstrap(in_server=True, context='installer')
     api.finalize()
 
     # Create DS group if it doesn't exist yet
     try:
         grp.getgrnam(dsinstance.DS_GROUP)
-        logging.debug("ds group %s exists" % dsinstance.DS_GROUP)
+        root_logger.debug("ds group %s exists" % dsinstance.DS_GROUP)
         group_exists = True
     except KeyError:
         group_exists = False
         args = ["/usr/sbin/groupadd", "-r", dsinstance.DS_GROUP]
         try:
             ipautil.run(args)
-            logging.debug("done adding DS group")
+            root_logger.debug("done adding DS group")
         except ipautil.CalledProcessError, e:
-            logging.critical("failed to add DS group: %s" % e)
+            root_logger.critical("failed to add DS group: %s" % e)
     sstore.backup_state("install", "group_exists", group_exists)
 
     #Automatically disable pkinit w/ dogtag until that is supported
@@ -397,53 +561,99 @@ def main():
     # Install CA cert so that we can do SSL connections with ldap
     install_ca_cert(config)
 
-    # Try out the password
     ldapuri = 'ldaps://%s' % ipautil.format_netloc(config.master_host_name)
+    replman = conn = None
     try:
+        # Try out the password
         conn = ldap2(shared_instance=False, ldap_uri=ldapuri, base_dn='')
-        conn.connect(bind_dn='cn=directory manager',
-                     bind_pw=config.dirman_password,
+        conn.connect(bind_dn=DIRMAN_DN, bind_pw=config.dirman_password,
                      tls_cacertfile=CACERT)
+        replman = ReplicationManager(config.realm_name, config.master_host_name,
+                                     config.dirman_password)
+        found = False
         try:
-            entry = conn.find_entries(u'fqdn=%s' % host, ['dn', 'fqdn'], u'%s,%s' % (api.env.container_host, api.env.basedn))
-            print "The host %s already exists on the master server. Depending on your configuration, you may perform the following:\n" % host
-            print "Remove the replication agreement, if any:"
-            print "    %% ipa-replica-manage del %s" % host
-            print "Remove the host entry:"
+            entry = conn.find_entries(u'fqdn=%s' % host, ['dn', 'fqdn'], DN(api.env.container_host, api.env.basedn))
+            print "The host %s already exists on the master server.\nYou should remove it before proceeding:" % host
             print "    %% ipa host-del %s" % host
-            sys.exit(3)
+            found = True
         except errors.NotFound:
             pass
-        conn.disconnect()
+
+        # If remote host has DNS, check forward/reverse resolution
+        with temporary_ldap2_connection(
+                config.master_host_name, config.dirman_password):
+            dns_masters = api.Object['dnsrecord'].get_dns_masters()
+        if dns_masters:
+            if not options.no_host_dns:
+                master = config.master_host_name
+                root_logger.debug('Check forward/reverse DNS resolution')
+                resolution_ok = (
+                    check_dns_resolution(master, dns_masters) and
+                    check_dns_resolution(config.host_name, dns_masters))
+                if not resolution_ok and not options.unattended:
+                    if not ipautil.user_input("Continue?", False):
+                        sys.exit(0)
+        else:
+            root_logger.debug('No IPA DNS servers, '
+                'skipping forward/reverse resolution check')
+
+        # Check that we don't already have a replication agreement
+        try:
+            (agreement_cn, agreement_dn) = replman.agreement_dn(host)
+            entry = conn.get_entry(agreement_dn, ['*'])
+            print "A replication agreement for this host already exists. It needs to be removed. Run this on the master that generated the info file:"
+            print "    %% ipa-replica-manage del %s --force" % host
+            found = True
+        except errors.NotFound:
+            pass
+        if found:
+            sys.exit(3)
     except errors.ACIError:
         sys.exit("\nThe password provided is incorrect for LDAP server %s" % config.master_host_name)
     except errors.LDAPError:
         sys.exit("\nUnable to connect to LDAP server %s" % config.master_host_name)
+    finally:
+        if conn and conn.isconnected():
+            conn.disconnect()
+        if replman and replman.conn:
+            replman.conn.unbind_s()
+
+    if options.skip_schema_check:
+        root_logger.info("Skipping CA DS schema check")
+    else:
+        cainstance.replica_ca_install_check(config, dogtag_master_ds_port)
 
     # Configure ntpd
     if options.conf_ntp:
+        ipaclient.ntpconf.force_ntpd(sstore)
         ntp = ntpinstance.NTPInstance()
         ntp.create_instance()
-
-    # Configure the CA if necessary
-    (CA, cs) = cainstance.install_replica_ca(config)
-
-    # Always try to install DNS records
-    install_dns_records(config, options)
 
     # Configure dirsrv
     ds = install_replica_ds(config)
 
+    # Configure the CA if necessary
+    (CA, cs) = cainstance.install_replica_ca(config, dogtag_master_ds_port)
+
+    # Always try to install DNS records
+    install_dns_records(config, options)
+
     # We need to ldap_enable the CA now that DS is up and running
     if CA and config.setup_ca:
         CA.ldap_enable('CA', config.host_name, config.dirman_password,
-                       util.realm_to_suffix(config.realm_name))
-        cs.add_simple_service('dogtagldap/%s@%s' % (config.host_name, config.realm_name))
-        cs.add_cert_to_service()
+                       ipautil.realm_to_suffix(config.realm_name))
+        if not dogtag.install_constants.SHARED_DB:
+            cs.add_simple_service('dogtagldap/%s@%s' %
+                (config.host_name, config.realm_name))
+            cs.add_cert_to_service()
+        else:
+            CA.enable_client_auth_to_db()
+            CA.restart()
 
-    install_krb(config, setup_pkinit=options.setup_pkinit)
-    install_http(config, auto_redirect=options.ui_redirect)
+    krb = install_krb(config, setup_pkinit=options.setup_pkinit)
+    http = install_http(config, auto_redirect=options.ui_redirect)
     if CA:
+        CA.configure_certmonger_renewal()
         CA.import_ra_cert(dir + "/ra.p12")
         CA.fix_ra_perms()
         ipaservices.knownservices.httpd.restart()
@@ -456,62 +666,56 @@ def main():
     service.print_msg("Applying LDAP updates")
     ds.apply_updates()
 
-    ipaservices.knownservices.dirsrv.restart()
-    ipaservices.knownservices.krb5kdc.restart()
-    ipaservices.knownservices.httpd.restart()
+    # Restart ds and krb after configurations have been changed
+    service.print_msg("Restarting the directory server")
+    ds.restart()
+
+    service.print_msg("Restarting the KDC")
+    krb.restart()
 
     if options.setup_dns:
         install_bind(config, options)
 
+    # Restart httpd to pick up the new IPA configuration
+    service.print_msg("Restarting the web server")
+    http.restart()
+
     # Call client install script
     try:
-        ipautil.run(["/usr/sbin/ipa-client-install", "--on-master", "--unattended", "--domain", config.domain_name, "--server", config.host_name, "--realm", config.realm_name])
+        args = ["/usr/sbin/ipa-client-install", "--on-master", "--unattended", "--domain", config.domain_name, "--server", config.host_name, "--realm", config.realm_name]
+        if not options.create_sshfp:
+            args.append("--no-dns-sshfp")
+        if options.trust_sshfp:
+            args.append("--ssh-trust-dns")
+        if not options.conf_ssh:
+            args.append("--no-ssh")
+        if not options.conf_sshd:
+            args.append("--no-sshd")
+        ipautil.run(args)
     except Exception, e:
         print "Configuration of client side components failed!"
         print "ipa-client-install returned: " + str(e)
         raise RuntimeError("Failed to configure the client")
 
     ds.replica_populate()
-    ds.init_memberof()
 
     #Everything installed properly, activate ipa service.
     ipaservices.knownservices.ipa.enable()
 
-try:
-    if not os.geteuid()==0:
-        sys.exit("\nYou must be root to run this script.\n")
+fail_message = '''
+Your system may be partly configured.
+Run /usr/sbin/ipa-server-install --uninstall to clean up.
+'''
 
-    main()
-    sys.exit(0)
-except SystemExit, e:
-    sys.exit(e)
-except socket.error, (errno, errstr):
-    print errstr
-except HostnameLocalhost:
-    print "The hostname resolves to the localhost address (127.0.0.1/::1)"
-    print "Please change your /etc/hosts file so that the hostname"
-    print "resolves to the ip address of your network interface."
-    print ""
-    print "Please fix your /etc/hosts file and restart the setup program"
-except Exception, e:
-    print "creation of replica failed: %s" % str(e)
-    message = str(e)
-    for str in traceback.format_tb(sys.exc_info()[2]):
-        message = message + "\n" + str
-    logging.debug(message)
-except KeyboardInterrupt:
-    print "Installation cancelled." 
-finally:
-    # always try to remove decrypted replica file
+if __name__ == '__main__':
     try:
-        if REPLICA_INFO_TOP_DIR:
-            shutil.rmtree(REPLICA_INFO_TOP_DIR)
-    except OSError:
-        pass
-
-print ""
-print "Your system may be partly configured." 
-print "Run /usr/sbin/ipa-server-install --uninstall to clean up."
-
-# the only way to get here is on error or ^C
-sys.exit(1)
+        installutils.run_script(main, log_file_name=log_file_name,
+                operation_name='ipa-replica-install',
+                fail_message=fail_message)
+    finally:
+        # always try to remove decrypted replica file
+        try:
+            if REPLICA_INFO_TOP_DIR:
+                shutil.rmtree(REPLICA_INFO_TOP_DIR)
+        except OSError:
+            pass

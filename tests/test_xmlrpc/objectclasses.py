@@ -31,6 +31,8 @@ user_base = [
     u'krbprincipalaux',
     u'krbticketpolicyaux',
     u'ipaobject',
+    u'ipasshuser',
+    u'ipaSshGroupOfPubKeys',
 ]
 
 user = user_base + [u'mepOriginEntry']
@@ -43,7 +45,12 @@ group = [
     u'ipaobject',
 ]
 
+externalgroup = group + [u'ipaexternalgroup']
+
 host = [
+    u'ipasshhost',
+    u'ipaSshGroupOfPubKeys',
+    u'ieee802device',
     u'ipaobject',
     u'nshost',
     u'ipahost',
@@ -88,6 +95,7 @@ service = [
     u'ipaobject',
     u'ipaservice',
     u'pkiuser',
+    u'ipakrbprincipal',
     u'top',
 ]
 
@@ -123,5 +131,26 @@ netgroup = [
 
 automember = [
     u'top',
-    u'automemberregexrule'
+    u'automemberregexrule',
+]
+
+selinuxusermap = [
+    u'ipaassociation',
+    u'ipaselinuxusermap',
+]
+
+hbacrule = [
+    u'ipaassociation',
+    u'ipahbacrule',
+]
+
+dnszone = [
+    u'top',
+    u'idnsrecord',
+    u'idnszone',
+]
+
+dnsrecord = [
+    u'top',
+    u'idnsrecord',
 ]

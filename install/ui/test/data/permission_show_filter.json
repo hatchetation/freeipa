@@ -8,13 +8,17 @@
                 "businesscategory": "rscwo",
                 "cn": "rscwo",
                 "description": "rscwo",
+                "filter": "rscwo",
                 "member": "rscwo",
                 "nsaccountlock": "rscwo",
                 "o": "rscwo",
                 "objectclass": "rscwo",
                 "ou": "rscwo",
                 "owner": "rscwo",
-                "seealso": "rscwo"
+                "seealso": "rscwo",
+                "subtree": "rscwo",
+                "targetgroup": "rscwo",
+                "type": "rscwo"
             },
             "cn": [
                 "filter"
@@ -22,7 +26,7 @@
             "description": [
                 "Filter Permission"
             ],
-            "dn": "cn=filter,cn=permissions,cn=pbac,dc=ipa",
+            "dn": "cn=filter,cn=permissions,cn=pbac,dc=example,dc=com",
             "filter": "(ou=Engineering)",
             "objectclass": [
                 "groupofnames",

@@ -18,7 +18,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-jQuery.ordered_map = jQuery.fn.ordered_map = function() {
+jQuery.ordered_map = jQuery.fn.ordered_map = function(map) {
 
     var that = {};
 
@@ -36,15 +36,65 @@ jQuery.ordered_map = jQuery.fn.ordered_map = function() {
     };
 
     that.put = function(key, value) {
-        that.keys.push(key);
-        that.values.push(value);
+
+        var i = that.get_key_index(key);
+        if (i >= 0) {
+            that.values[i] = value;
+        } else {
+            that.keys.push(key);
+            that.values.push(value);
+            that.length = that.keys.length;
+        }
+
         that.map[key] = value;
-        that.length = that.keys.length;
+
+        return that;
+    };
+
+    that.put_map = function(map) {
+
+        if (typeof map !== 'object') return that;
+
+        for (name in map) {
+
+            if (map.hasOwnProperty(name)) {
+                that.put(name, map[name]);
+            }
+        }
+
+        return that;
+    };
+
+    that.put_array = function(array, key_name, operation) {
+
+        var i, item, type, key;
+
+        array = array || [];
+
+        for (i=0; i<array.length; i++) {
+            item = array[i];
+            type = typeof item;
+            if (type === 'string') {
+                key = item;
+            } if (type === 'object') {
+                key = item[key_name];
+            }
+
+            if (operation) {
+                item = operation(item);
+            }
+
+            if (key) {
+                that.put(key, item);
+            }
+        }
+
+        return that;
     };
 
     that.remove = function(key) {
 
-        var i = that.keys.indexOf(key);
+        var i = that.get_key_index(key);
         if (i<0) return null;
 
         that.keys.splice(i, 1);
@@ -61,7 +111,45 @@ jQuery.ordered_map = jQuery.fn.ordered_map = function() {
         that.values = [];
         that.map = {};
         that.length = that.keys.length;
+        return that;
     };
+
+    that.get_key_index = function(key) {
+        return that.keys.indexOf(key);
+    };
+
+    that.get_key_by_index = function(index) {
+        return that.keys[index];
+    };
+
+    that.get_value_by_index = function(index) {
+        return that.values[index];
+    };
+
+    that.sort = function() {
+        var keys = that.keys.slice(0);
+        keys.sort();
+        return that.trim(keys);
+    };
+
+    that.slice = function(start, end) {
+        var keys = that.keys.slice(start, end);
+        return that.trim(keys);
+    };
+
+    that.trim = function(keys) {
+        var new_map = $.ordered_map();
+
+        for (var i=0; i<keys.length; i++) {
+            var key = keys[i];
+            var value = that.get(key);
+            new_map.put(key, value);
+        }
+
+        return new_map;
+    };
+
+    that.put_map(map);
 
     return that;
 };

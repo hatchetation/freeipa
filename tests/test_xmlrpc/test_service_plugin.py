@@ -24,9 +24,10 @@ Test the `ipalib/plugins/service.py` module.
 from ipalib import api, errors, x509
 from tests.test_xmlrpc.xmlrpc_test import Declarative, fuzzy_uuid, fuzzy_hash
 from tests.test_xmlrpc.xmlrpc_test import fuzzy_digits, fuzzy_date, fuzzy_issuer
+from tests.test_xmlrpc.xmlrpc_test import fuzzy_hex
 from tests.test_xmlrpc import objectclasses
 import base64
-from ipalib.dn import *
+from ipapython.dn import DN
 
 fqdn1 = u'testhost1.%s' % api.env.domain
 fqdn2 = u'testhost2.%s' % api.env.domain
@@ -60,21 +61,24 @@ class test_service(Declarative):
         dict(
             desc='Try to retrieve non-existent %r' % service1,
             command=('service_show', [service1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(
+                reason=u'%s: service not found' % service1),
         ),
 
 
         dict(
             desc='Try to update non-existent %r' % service1,
             command=('service_mod', [service1], dict(usercertificate=servercert)),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(
+                reason=u'%s: service not found' % service1),
         ),
 
 
         dict(
             desc='Try to delete non-existent %r' % service1,
             command=('service_del', [service1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(
+                reason=u'%s: service not found' % service1),
         ),
 
 
@@ -91,7 +95,7 @@ class test_service(Declarative):
                 value=fqdn1,
                 summary=u'Added host "%s"' % fqdn1,
                 result=dict(
-                    dn=lambda x: DN(x) == host1dn,
+                    dn=host1dn,
                     fqdn=[fqdn1],
                     description=[u'Test host 1'],
                     l=[u'Undisclosed location 1'],
@@ -119,7 +123,7 @@ class test_service(Declarative):
                 value=fqdn2,
                 summary=u'Added host "%s"' % fqdn2,
                 result=dict(
-                    dn=lambda x: DN(x) == host2dn,
+                    dn=host2dn,
                     fqdn=[fqdn2],
                     description=[u'Test host 2'],
                     l=[u'Undisclosed location 2'],
@@ -147,7 +151,7 @@ class test_service(Declarative):
                 value=fqdn3.lower(),
                 summary=u'Added host "%s"' % fqdn3.lower(),
                 result=dict(
-                    dn=lambda x: DN(x) == host3dn,
+                    dn=host3dn,
                     fqdn=[fqdn3.lower()],
                     description=[u'Test host 3'],
                     l=[u'Undisclosed location 3'],
@@ -173,7 +177,7 @@ class test_service(Declarative):
                 value=service1,
                 summary=u'Added service "%s"' % service1,
                 result=dict(
-                    dn=lambda x: DN(x) == service1dn,
+                    dn=service1dn,
                     krbprincipalname=[service1],
                     objectclass=objectclasses.service,
                     ipauniqueid=[fuzzy_uuid],
@@ -190,7 +194,8 @@ class test_service(Declarative):
                     force=True,
                 ),
             ),
-            expected=errors.DuplicateEntry(),
+            expected=errors.DuplicateEntry(
+                message=u'service with name "%s" already exists' % service1),
         ),
 
 
@@ -201,7 +206,7 @@ class test_service(Declarative):
                 value=service1,
                 summary=None,
                 result=dict(
-                    dn=lambda x: DN(x) == service1dn,
+                    dn=service1dn,
                     krbprincipalname=[service1],
                     has_keytab=False,
                     managedby_host=[fqdn1],
@@ -217,8 +222,9 @@ class test_service(Declarative):
                 value=service1,
                 summary=None,
                 result=dict(
-                    dn=lambda x: DN(x) == service1dn,
+                    dn=service1dn,
                     krbprincipalname=[service1],
+                    ipakrbprincipalalias=[service1],
                     objectclass=objectclasses.service,
                     ipauniqueid=[fuzzy_uuid],
                     managedby_host=[fqdn1],
@@ -237,7 +243,7 @@ class test_service(Declarative):
                 summary=u'1 service matched',
                 result=[
                     dict(
-                        dn=lambda x: DN(x) == service1dn,
+                        dn=service1dn,
                         krbprincipalname=[service1],
                         managedby_host=[fqdn1],
                         has_keytab=False,
@@ -256,8 +262,9 @@ class test_service(Declarative):
                 summary=u'1 service matched',
                 result=[
                     dict(
-                        dn=lambda x: DN(x) == service1dn,
+                        dn=service1dn,
                         krbprincipalname=[service1],
+                        ipakrbprincipalalias=[service1],
                         objectclass=objectclasses.service,
                         ipauniqueid=[fuzzy_uuid],
                         has_keytab=False,
@@ -270,12 +277,12 @@ class test_service(Declarative):
 
         dict(
             desc='Add non-existent host to %r' % service1,
-            command=('service_add_host', [service1], dict(host='notfound')),
+            command=('service_add_host', [service1], dict(host=u'notfound')),
             expected=dict(
                 failed=dict(managedby=dict(host=[(u'notfound', u'no such entry')])),
                 completed=0,
                 result=dict(
-                    dn=lambda x: DN(x) == service1dn,
+                    dn=service1dn,
                     krbprincipalname=[service1],
                     managedby_host=[fqdn1],
                 ),
@@ -285,12 +292,12 @@ class test_service(Declarative):
 
         dict(
             desc='Remove non-existent host from %r' % service1,
-            command=('service_remove_host', [service1], dict(host='notfound')),
+            command=('service_remove_host', [service1], dict(host=u'notfound')),
             expected=dict(
                 failed=dict(managedby=dict(host=[(u'notfound', u'This entry is not a member')])),
                 completed=0,
                 result=dict(
-                    dn=lambda x: DN(x) == service1dn,
+                    dn=service1dn,
                     krbprincipalname=[service1],
                     managedby_host=[fqdn1],
                 ),
@@ -305,7 +312,7 @@ class test_service(Declarative):
                 failed=dict(managedby=dict(host=[])),
                 completed=1,
                 result=dict(
-                    dn=lambda x: DN(x) == service1dn,
+                    dn=service1dn,
                     krbprincipalname=[service1],
                     managedby_host=[fqdn1, fqdn2],
                 ),
@@ -320,7 +327,7 @@ class test_service(Declarative):
                 failed=dict(managedby=dict(host=[])),
                 completed=1,
                 result=dict(
-                    dn=lambda x: DN(x) == service1dn,
+                    dn=service1dn,
                     krbprincipalname=[service1],
                     managedby_host=[fqdn1],
                 ),
@@ -335,7 +342,7 @@ class test_service(Declarative):
                 failed=dict(managedby=dict(host=[])),
                 completed=1,
                 result=dict(
-                    dn=lambda x: DN(x) == service1dn,
+                    dn=service1dn,
                     krbprincipalname=[service1],
                     managedby_host=[fqdn1, fqdn3.lower()],
                 ),
@@ -350,7 +357,7 @@ class test_service(Declarative):
                 failed=dict(managedby=dict(host=[])),
                 completed=1,
                 result=dict(
-                    dn=lambda x: DN(x) == service1dn,
+                    dn=service1dn,
                     krbprincipalname=[service1],
                     managedby_host=[fqdn1],
                 ),
@@ -361,7 +368,9 @@ class test_service(Declarative):
         dict(
             desc='Update %r with a bad certificate' % service1,
             command=('service_mod', [service1], dict(usercertificate=badservercert)),
-            expected=errors.CertificateOperationError(error='exact error msg not needed'),
+            expected=errors.CertificateOperationError(
+                error=u'Issuer "CN=IPA Test Certificate Authority" does not ' +
+                    u'match the expected issuer'),
         ),
 
 
@@ -377,9 +386,45 @@ class test_service(Declarative):
                     managedby_host=[fqdn1],
                     valid_not_before=fuzzy_date,
                     valid_not_after=fuzzy_date,
-                    subject=lambda x: DN(x) == \
-                        DN(('CN',api.env.host),('O',api.env.realm)),
+                    subject=DN(('CN',api.env.host),x509.subject_base()),
                     serial_number=fuzzy_digits,
+                    serial_number_hex=fuzzy_hex,
+                    md5_fingerprint=fuzzy_hash,
+                    sha1_fingerprint=fuzzy_hash,
+                    issuer=fuzzy_issuer,
+                ),
+            ),
+        ),
+
+
+        dict(
+            desc='Try to update %r with invalid ipakrbauthz data '
+                 'combination' % service1,
+            command=('service_mod', [service1],
+                dict(ipakrbauthzdata=[u'MS-PAC', u'NONE'])),
+            expected=errors.ValidationError(name='ipakrbauthzdata',
+                error=u'NONE value cannot be combined with other PAC types')
+        ),
+
+
+        dict(
+            desc='Update %r with valid ipakrbauthz data '
+                 'combination' % service1,
+            command=('service_mod', [service1],
+                dict(ipakrbauthzdata=[u'MS-PAC'])),
+            expected=dict(
+                value=service1,
+                summary=u'Modified service "%s"' % service1,
+                result=dict(
+                    usercertificate=[base64.b64decode(servercert)],
+                    krbprincipalname=[service1],
+                    managedby_host=[fqdn1],
+                    ipakrbauthzdata=[u'MS-PAC'],
+                    valid_not_before=fuzzy_date,
+                    valid_not_after=fuzzy_date,
+                    subject=DN(('CN',api.env.host),x509.subject_base()),
+                    serial_number=fuzzy_digits,
+                    serial_number_hex=fuzzy_hex,
                     md5_fingerprint=fuzzy_hash,
                     sha1_fingerprint=fuzzy_hash,
                     issuer=fuzzy_issuer,
@@ -395,18 +440,19 @@ class test_service(Declarative):
                 value=service1,
                 summary=None,
                 result=dict(
-                    dn=lambda x: DN(x) == service1dn,
+                    dn=service1dn,
                     usercertificate=[base64.b64decode(servercert)],
                     krbprincipalname=[service1],
                     has_keytab=False,
                     managedby_host=[fqdn1],
+                    ipakrbauthzdata=[u'MS-PAC'],
                     # These values come from the servercert that is in this
                     # test case.
                     valid_not_before=fuzzy_date,
                     valid_not_after=fuzzy_date,
-                    subject=lambda x: DN(x) == \
-                        DN(('CN',api.env.host),('O',api.env.realm)),
+                    subject=DN(('CN',api.env.host),x509.subject_base()),
                     serial_number=fuzzy_digits,
+                    serial_number_hex=fuzzy_hex,
                     md5_fingerprint=fuzzy_hash,
                     sha1_fingerprint=fuzzy_hash,
                     issuer=fuzzy_issuer,
@@ -429,21 +475,24 @@ class test_service(Declarative):
         dict(
             desc='Try to retrieve non-existent %r' % service1,
             command=('service_show', [service1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(
+                reason=u'%s: service not found' % service1),
         ),
 
 
         dict(
             desc='Try to update non-existent %r' % service1,
             command=('service_mod', [service1], dict(usercertificate=servercert)),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(
+                reason=u'%s: service not found' % service1),
         ),
 
 
         dict(
             desc='Try to delete non-existent %r' % service1,
             command=('service_del', [service1], {}),
-            expected=errors.NotFound(reason='no such entry'),
+            expected=errors.NotFound(
+                reason=u'%s: service not found' % service1),
         ),
 
 
@@ -466,5 +515,36 @@ class test_service(Declarative):
             command=('service_add', [hostprincipal1], {}),
             expected=errors.HostService()
         ),
+
+
+        # These tests will only succeed when running against lite-server.py
+        # on same box as IPA install.
+        dict(
+            desc='Delete the current host (master?) %s HTTP service, should be caught' % api.env.host,
+            command=('service_del', ['HTTP/%s' % api.env.host], {}),
+            expected=errors.ValidationError(name='principal', error='This principal is required by the IPA master'),
+        ),
+
+
+        dict(
+            desc='Delete the current host (master?) %s ldap service, should be caught' % api.env.host,
+            command=('service_del', ['ldap/%s' % api.env.host], {}),
+            expected=errors.ValidationError(name='principal', error='This principal is required by the IPA master'),
+        ),
+
+
+        dict(
+            desc='Disable the current host (master?) %s HTTP service, should be caught' % api.env.host,
+            command=('service_disable', ['HTTP/%s' % api.env.host], {}),
+            expected=errors.ValidationError(name='principal', error='This principal is required by the IPA master'),
+        ),
+
+
+        dict(
+            desc='Disable the current host (master?) %s ldap service, should be caught' % api.env.host,
+            command=('service_disable', ['ldap/%s' % api.env.host], {}),
+            expected=errors.ValidationError(name='principal', error='This principal is required by the IPA master'),
+        ),
+
 
     ]

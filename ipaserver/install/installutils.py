@@ -17,7 +17,6 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 
-import logging
 import socket
 import errno
 import getpass
@@ -31,12 +30,29 @@ import netaddr
 import time
 import tempfile
 import shutil
-from ConfigParser import SafeConfigParser
+from ConfigParser import SafeConfigParser, NoOptionError
+import traceback
+import textwrap
 
-from ipapython import ipautil, dnsclient, sysrestore
+from dns import resolver, rdatatype
+from dns.exception import DNSException
+import ldap
+
+from ipapython import ipautil, sysrestore, admintool, dogtag
+from ipapython.admintool import ScriptError
+from ipapython.ipa_log_manager import *
+from ipalib.util import validate_hostname
+from ipapython import config
+from ipalib import errors
+from ipapython.dn import DN
 
 # Used to determine install status
-IPA_MODULES = ['httpd', 'ipa_kpasswd', 'dirsrv', 'pki-cad', 'pkids', 'install', 'krb5kdc', 'ntpd', 'named']
+IPA_MODULES = [
+    'httpd', 'kadmin', 'dirsrv', 'pki-cad', 'pki-tomcatd', 'install',
+    'krb5kdc', 'ntpd', 'named', 'ipa_memcached']
+if not dogtag.install_constants.SHARED_DB:
+    IPA_MODULES.append('pkids')
+
 
 class BadHostError(Exception):
     pass
@@ -61,8 +77,11 @@ class ReplicaConfig:
         self.dirman_password = ""
         self.host_name = ""
         self.dir = ""
-        self.subject_base = ""
+        self.subject_base = None
         self.setup_ca = False
+        self.version = 0
+
+    subject_base = ipautil.dn_attribute_property('_subject_base')
 
 def get_fqdn():
     fqdn = ""
@@ -74,60 +93,6 @@ def get_fqdn():
         except:
             fqdn = ""
     return fqdn
-
-def verify_dns_records(host_name, responses, resaddr, family):
-    familykw = { 'ipv4' : {
-                             'dns_type' : dnsclient.DNS_T_A,
-                             'socket_family' : socket.AF_INET,
-                          },
-                 'ipv6' : {
-                             'dns_type' : dnsclient.DNS_T_AAAA,
-                             'socket_family' : socket.AF_INET6,
-                          },
-               }
-
-    family = family.lower()
-    if family not in familykw.keys():
-        raise RuntimeError("Unknown faimily %s\n" % family)
-
-    rec = None
-    for rsn in responses:
-        if rsn.dns_type == familykw[family]['dns_type']:
-            rec = rsn
-            break
-
-    if rec == None:
-        raise IOError(errno.ENOENT,
-                      "Warning: Hostname (%s) not found in DNS" % host_name)
-
-    if family == 'ipv4':
-        familykw[family]['address'] = socket.inet_ntop(socket.AF_INET,
-                                                       struct.pack('!L',rec.rdata.address))
-    else:
-        familykw[family]['address'] = socket.inet_ntop(socket.AF_INET6,
-                                                       struct.pack('!16B', *rec.rdata.address))
-
-    # Check that DNS address is the same is address returned via standard glibc calls
-    dns_addr = netaddr.IPAddress(familykw[family]['address'])
-    if dns_addr.format() != resaddr:
-        raise RuntimeError("The network address %s does not match the DNS lookup %s. Check /etc/hosts and ensure that %s is the IP address for %s" % (dns_addr.format(), resaddr, dns_addr.format(), host_name))
-
-    rs = dnsclient.query(dns_addr.reverse_dns, dnsclient.DNS_C_IN, dnsclient.DNS_T_PTR)
-    if len(rs) == 0:
-        raise RuntimeError("Cannot find Reverse Address for %s (%s)" % (host_name, dns_addr.format()))
-
-    rev = None
-    for rsn in rs:
-        if rsn.dns_type == dnsclient.DNS_T_PTR:
-            rev = rsn
-            break
-
-    if rev == None:
-        raise RuntimeError("Cannot find Reverse Address for %s (%s)" % (host_name, dns_addr.format()))
-
-    if rec.dns_name != rev.rdata.ptrdname:
-        raise RuntimeError("The DNS forward record %s does not match the reverse address %s" % (rec.dns_name, rev.rdata.ptrdname))
-
 
 def verify_fqdn(host_name, no_host_dns=False, local_hostname=True):
     """
@@ -151,9 +116,17 @@ def verify_fqdn(host_name, no_host_dns=False, local_hostname=True):
     if ipautil.valid_ip(host_name):
         raise BadHostError("IP address not allowed as a hostname")
 
+    try:
+        # make sure that the host name meets the requirements in ipalib
+        validate_hostname(host_name)
+    except ValueError, e:
+        raise BadHostError("Invalid hostname '%s', %s" % (host_name, unicode(e)))
+
     if local_hostname:
         try:
+            root_logger.debug('Check if %s is a primary hostname for localhost', host_name)
             ex_name = socket.gethostbyaddr(host_name)
+            root_logger.debug('Primary hostname for localhost: %s', ex_name[0])
             if host_name != ex_name[0]:
                 raise HostLookupError("The host name %s does not match the primary host name %s. "\
                         "Please check /etc/hosts or DNS name resolution" % (host_name, ex_name[0]))
@@ -165,43 +138,41 @@ def verify_fqdn(host_name, no_host_dns=False, local_hostname=True):
         return
 
     try:
+        root_logger.debug('Search DNS for %s', host_name)
         hostaddr = socket.getaddrinfo(host_name, None)
-    except:
+    except Exception, e:
+        root_logger.debug('Search failed: %s', e)
         raise HostForwardLookupError("Unable to resolve host name, check /etc/hosts or DNS name resolution")
 
     if len(hostaddr) == 0:
         raise HostForwardLookupError("Unable to resolve host name, check /etc/hosts or DNS name resolution")
 
+    # Verify this is NOT a CNAME
+    try:
+        root_logger.debug('Check if %s is not a CNAME', host_name)
+        resolver.query(host_name, rdatatype.CNAME)
+        raise HostReverseLookupError("The IPA Server Hostname cannot be a CNAME, only A and AAAA names are allowed.")
+    except DNSException:
+        pass
+
+    # list of verified addresses to prevent multiple searches for the same address
+    verified = set()
     for a in hostaddr:
-        if a[4][0] == '127.0.0.1' or a[4][0] == '::1':
-            raise HostForwardLookupError("The IPA Server hostname must not resolve to localhost (%s). A routable IP address must be used. Check /etc/hosts to see if %s is an alias for %s" % (a[4][0], host_name, a[4][0]))
+        address = a[4][0]
+        if address in verified:
+            continue
+        if address == '127.0.0.1' or address == '::1':
+            raise HostForwardLookupError("The IPA Server hostname must not resolve to localhost (%s). A routable IP address must be used. Check /etc/hosts to see if %s is an alias for %s" % (address, host_name, address))
         try:
-            resaddr = a[4][0]
-            revname = socket.gethostbyaddr(a[4][0])[0]
-        except:
+            root_logger.debug('Check reverse address of %s', address)
+            revname = socket.gethostbyaddr(address)[0]
+        except Exception, e:
+            root_logger.debug('Check failed: %s', e)
             raise HostReverseLookupError("Unable to resolve the reverse ip address, check /etc/hosts or DNS name resolution")
+        root_logger.debug('Found reverse name: %s', revname)
         if revname != host_name:
             raise HostReverseLookupError("The host name %s does not match the reverse lookup %s" % (host_name, revname))
-
-    # Verify this is NOT a CNAME
-    rs = dnsclient.query(host_name+".", dnsclient.DNS_C_IN, dnsclient.DNS_T_CNAME)
-    if len(rs) != 0:
-        for rsn in rs:
-            if rsn.dns_type == dnsclient.DNS_T_CNAME:
-                raise HostReverseLookupError("The IPA Server Hostname cannot be a CNAME, only A and AAAA names are allowed.")
-
-    # Verify that it is a DNS A or AAAA record
-    rs = dnsclient.query(host_name+".", dnsclient.DNS_C_IN, dnsclient.DNS_T_A)
-    if len([ rec for rec in rs if rec.dns_type is not dnsclient.DNS_T_SOA ]) > 0:
-        verify_dns_records(host_name, rs, resaddr, 'ipv4')
-        return
-
-    rs = dnsclient.query(host_name+".", dnsclient.DNS_C_IN, dnsclient.DNS_T_AAAA)
-    if len([ rec for rec in rs if rec.dns_type is not dnsclient.DNS_T_SOA ]) > 0:
-        verify_dns_records(host_name, rs, resaddr, 'ipv6')
-        return
-    else:
-        print "Warning: Hostname (%s) not found in DNS" % host_name
+        verified.add(address)
 
 def record_in_hosts(ip, host_name=None, file="/etc/hosts"):
     """
@@ -283,57 +254,6 @@ def read_dns_forwarders():
         print "No DNS forwarders configured"
 
     return addrs
-
-def port_available(port):
-    """Try to bind to a port on the wildcard host
-       Return 1 if the port is available
-       Return 0 if the port is in use
-    """
-    rv = 1
-
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        fcntl.fcntl(s, fcntl.F_SETFD, fcntl.FD_CLOEXEC)
-        s.bind(('', port))
-        s.close()
-    except socket.error, e:
-        if e[0] == errno.EADDRINUSE:
-            rv = 0
-
-    if rv:
-        try:
-            s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            fcntl.fcntl(s, fcntl.F_SETFD, fcntl.FD_CLOEXEC)
-            s.bind(('', port))
-            s.close()
-        except socket.error, e:
-            if e[0] == errno.EADDRINUSE:
-                rv = 0
-
-    return rv
-
-def standard_logging_setup(log_filename, debug=False, filemode='w'):
-    old_umask = os.umask(077)
-    # Always log everything (i.e., DEBUG) to the log
-    # file.
-    logging.basicConfig(level=logging.DEBUG,
-                        format='%(asctime)s %(levelname)s %(message)s',
-                        filename=log_filename,
-                        filemode=filemode)
-    os.umask(old_umask)
-
-    console = logging.StreamHandler()
-    # If the debug option is set, also log debug messages to the console
-    if debug:
-        console.setLevel(logging.DEBUG)
-    else:
-        # Otherwise, log critical and error messages
-        console.setLevel(logging.ERROR)
-    formatter = logging.Formatter('%(name)-12s: %(levelname)-8s %(message)s')
-    console.setFormatter(formatter)
-    logging.getLogger('').addHandler(console)
 
 def get_password(prompt):
     if os.isatty(sys.stdin.fileno()):
@@ -445,7 +365,8 @@ def get_directive(filename, directive, separator=' '):
     return None
 
 def kadmin(command):
-    ipautil.run(["kadmin.local", "-q", command])
+    ipautil.run(["kadmin.local", "-q", command,
+                                 "-x", "ipa-setup-override-restrictions"])
 
 def kadmin_addprinc(principal):
     kadmin("addprinc -randkey " + principal)
@@ -458,74 +379,27 @@ def create_keytab(path, principal):
         if ipautil.file_exists(path):
             os.remove(path)
     except os.error:
-        logging.critical("Failed to remove %s." % path)
+        root_logger.critical("Failed to remove %s." % path)
 
     kadmin("ktadd -k " + path + " " + principal)
-
-def wait_for_open_ports(host, ports, timeout=0):
-    """
-    Wait until the specified port(s) on the remote host are open. Timeout
-    in seconds may be specified to limit the wait.
-    """
-    if not isinstance(ports, (tuple, list)):
-        ports = [ports]
-
-    op_timeout = time.time() + timeout
-    ipv6_failover = False
-
-    for port in ports:
-        while True:
-            try:
-                if ipv6_failover:
-                    s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-                else:
-                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.connect((host, port))
-                s.close()
-                break;
-            except socket.error, e:
-                if e.errno == 111:  # 111: Connection refused
-                    if timeout and time.time() > op_timeout: # timeout exceeded
-                        raise e
-                    time.sleep(1)
-                elif not ipv6_failover: # fallback to IPv6 connection
-                    ipv6_failover = True
-                else:
-                    raise e
-
-def wait_for_open_socket(socket_name, timeout=0):
-    """
-    Wait until the specified socket on the local host is open. Timeout
-    in seconds may be specified to limit the wait.
-    """
-    op_timeout = time.time() + timeout
-
-    while True:
-        try:
-            s = socket.socket(socket.AF_UNIX)
-            s.connect(socket_name)
-            s.close()
-            break;
-        except socket.error, e:
-            if e.errno in (2,111):  # 111: Connection refused, 2: File not found
-                if timeout and time.time() > op_timeout: # timeout exceeded
-                    raise e
-                time.sleep(1)
-            else:
-                raise e
 
 def resolve_host(host_name):
     try:
         addrinfos = socket.getaddrinfo(host_name, None,
                                        socket.AF_UNSPEC, socket.SOCK_STREAM)
+
+        ip_list = []
+
         for ai in addrinfos:
             ip = ai[4][0]
             if ip == "127.0.0.1" or ip == "::1":
                 raise HostnameLocalhost("The hostname resolves to the localhost address")
 
-        return addrinfos[0][4][0]
-    except:
-        return None
+            ip_list.append(ip)
+
+        return ip_list
+    except socket.error:
+        return []
 
 def get_host_name(no_host_dns):
     """
@@ -539,6 +413,90 @@ def get_host_name(no_host_dns):
     hostname = get_fqdn()
     verify_fqdn(hostname, no_host_dns)
     return hostname
+
+def get_server_ip_address(host_name, fstore, unattended, options):
+    # Check we have a public IP that is associated with the hostname
+    try:
+        hostaddr = resolve_host(host_name)
+    except HostnameLocalhost:
+        print >> sys.stderr, "The hostname resolves to the localhost address (127.0.0.1/::1)"
+        print >> sys.stderr, "Please change your /etc/hosts file so that the hostname"
+        print >> sys.stderr, "resolves to the ip address of your network interface."
+        print >> sys.stderr, "The KDC service does not listen on localhost"
+        print >> sys.stderr, ""
+        print >> sys.stderr, "Please fix your /etc/hosts file and restart the setup program"
+        sys.exit(1)
+
+    ip_add_to_hosts = False
+
+    if len(hostaddr) > 1:
+        print >> sys.stderr, "The server hostname resolves to more than one address:"
+        for addr in hostaddr:
+            print >> sys.stderr, "  %s" % addr
+
+        if options.ip_address:
+            if str(options.ip_address) not in hostaddr:
+                print >> sys.stderr, "Address passed in --ip-address did not match any resolved"
+                print >> sys.stderr, "address!"
+                sys.exit(1)
+            print "Selected IP address:", str(options.ip_address)
+            ip = options.ip_address
+        else:
+            if unattended:
+                print >> sys.stderr, "Please use --ip-address option to specify the address"
+                sys.exit(1)
+            else:
+                ip = read_ip_address(host_name, fstore)
+    elif len(hostaddr) == 1:
+        try:
+            ip = ipautil.CheckedIPAddress(hostaddr[0], match_local=True)
+        except ValueError, e:
+            sys.exit("Invalid IP Address %s for %s: %s" % (hostaddr[0], host_name, unicode(e)))
+    else:
+        # hostname is not resolvable
+        ip = options.ip_address
+        ip_add_to_hosts = True
+
+    if ip is None:
+        print "Unable to resolve IP address for host name"
+        if unattended:
+            sys.exit(1)
+
+    if options.ip_address:
+        if options.ip_address != ip and not options.setup_dns:
+            print >>sys.stderr, "Error: the hostname resolves to an IP address that is different"
+            print >>sys.stderr, "from the one provided on the command line.  Please fix your DNS"
+            print >>sys.stderr, "or /etc/hosts file and restart the installation."
+            sys.exit(1)
+
+        ip = options.ip_address
+
+    if ip is None:
+        ip = read_ip_address(host_name, fstore)
+        root_logger.debug("read ip_address: %s\n" % str(ip))
+
+    ip_address = str(ip)
+
+    # check /etc/hosts sanity, add a record when needed
+    hosts_record = record_in_hosts(ip_address)
+
+    if hosts_record is None:
+        if ip_add_to_hosts:
+            print "Adding ["+ip_address+" "+host_name+"] to your /etc/hosts file"
+            fstore.backup_file("/etc/hosts")
+            add_record_to_hosts(ip_address, host_name)
+    else:
+        primary_host = hosts_record[1][0]
+        if primary_host != host_name:
+            print >>sys.stderr, "Error: there is already a record in /etc/hosts for IP address %s:" \
+                    % ip_address
+            print >>sys.stderr, hosts_record[0], " ".join(hosts_record[1])
+            print >>sys.stderr, "Chosen hostname %s does not match configured canonical hostname %s" \
+                    % (host_name, primary_host)
+            print >>sys.stderr, "Please fix your /etc/hosts file and restart the installation."
+            sys.exit(1)
+
+    return ip
 
 def expand_replica_info(filename, password):
     """
@@ -570,6 +528,10 @@ def read_replica_info(dir, rconfig):
     rconfig.domain_name = config.get("realm", "domain_name")
     rconfig.host_name = config.get("realm", "destination_host")
     rconfig.subject_base = config.get("realm", "subject_base")
+    try:
+        rconfig.version = int(config.get("realm", "version"))
+    except NoOptionError:
+        pass
 
 def check_server_configuration():
     """
@@ -595,7 +557,7 @@ def remove_file(filename):
         if os.path.exists(filename):
             os.unlink(filename)
     except Exception, e:
-        logging.error('Error removing %s: %s' % (filename, str(e)))
+        root_logger.error('Error removing %s: %s' % (filename, str(e)))
 
 def rmtree(path):
     """
@@ -605,7 +567,7 @@ def rmtree(path):
         if os.path.exists(path):
             shutil.rmtree(path)
     except Exception, e:
-        logging.error('Error removing %s: %s' % (path, str(e)))
+        root_logger.error('Error removing %s: %s' % (path, str(e)))
 
 def is_ipa_configured():
     """
@@ -619,15 +581,126 @@ def is_ipa_configured():
 
     for module in IPA_MODULES:
         if sstore.has_state(module):
-            logging.debug('%s is configured' % module)
+            root_logger.debug('%s is configured' % module)
             installed = True
         else:
-            logging.debug('%s is not configured' % module)
+            root_logger.debug('%s is not configured' % module)
 
     if fstore.has_files():
-        logging.debug('filestore has files')
+        root_logger.debug('filestore has files')
         installed = True
     else:
-        logging.debug('filestore is tracking no files')
+        root_logger.debug('filestore is tracking no files')
 
     return installed
+
+
+def run_script(main_function, operation_name, log_file_name=None,
+        fail_message=None):
+    """Run the given function as a command-line utility
+
+    This function:
+
+    - Runs the given function
+    - Formats any errors
+    - Exits with the appropriate code
+
+    :param main_function: Function to call
+    :param log_file_name: Name of the log file (displayed on unexpected errors)
+    :param operation_name: Name of the script
+    :param fail_message: Optional message displayed on failure
+    """
+
+    root_logger.info('Starting script: %s', operation_name)
+    try:
+        try:
+            return_value = main_function()
+        except BaseException, e:
+            if isinstance(e, SystemExit) and (e.code is None or e.code == 0):
+                # Not an error after all
+                root_logger.info('The %s command was successful',
+                    operation_name)
+            else:
+                # Log at the INFO level, which is not output to the console
+                # (unless in debug/verbose mode), but is written to a logfile
+                # if one is open.
+                tb = sys.exc_info()[2]
+                root_logger.info('\n'.join(traceback.format_tb(tb)))
+                root_logger.info('The %s command failed, exception: %s: %s',
+                    operation_name, type(e).__name__, e)
+                exception = e
+                if fail_message and not isinstance(e, SystemExit):
+                    print fail_message
+                raise
+        else:
+            if return_value:
+                root_logger.info('The %s command failed, return value %s',
+                    operation_name, return_value)
+            else:
+                root_logger.info('The %s command was successful',
+                    operation_name)
+            sys.exit(return_value)
+
+    except BaseException, error:
+        message, exitcode = handle_error(error, log_file_name)
+        if message:
+            print >> sys.stderr, message
+        sys.exit(exitcode)
+
+
+def handle_error(error, log_file_name=None):
+    """Handle specific errors. Returns a message and return code"""
+
+    if isinstance(error, SystemExit):
+        if isinstance(error.code, int):
+            return None, error.code
+        elif error.code is None:
+            return None, 0
+        else:
+            return str(error), 1
+    if isinstance(error, RuntimeError):
+        return str(error), 1
+    if isinstance(error, KeyboardInterrupt):
+        return "Cancelled.", 1
+
+    if isinstance(error, admintool.ScriptError):
+        return error.msg, error.rval
+
+    if isinstance(error, socket.error):
+        return error, 1
+
+    if isinstance(error, ldap.INVALID_CREDENTIALS):
+        return "Invalid password", 1
+    if isinstance(error, ldap.INSUFFICIENT_ACCESS):
+        return "Insufficient access", 1
+    if isinstance(error, ldap.LOCAL_ERROR):
+        return error.args[0]['info'], 1
+    if isinstance(error, ldap.SERVER_DOWN):
+        return error.args[0]['desc'], 1
+    if isinstance(error, ldap.LDAPError):
+        return 'LDAP error: %s\n%s' % (
+            type(error).__name__, error.args[0]['info']), 1
+
+    if isinstance(error, config.IPAConfigError):
+        message = "An IPA server to update cannot be found. Has one been configured yet?"
+        message += "\nThe error was: %s" % error
+        return message, 1
+    if isinstance(error, errors.LDAPError):
+        return "An error occurred while performing operations: %s" % error, 1
+
+    if isinstance(error, HostnameLocalhost):
+        message = textwrap.dedent("""
+            The hostname resolves to the localhost address (127.0.0.1/::1)
+            Please change your /etc/hosts file so that the hostname
+            resolves to the ip address of your network interface.
+
+            Please fix your /etc/hosts file and restart the setup program
+            """).strip()
+        return message, 1
+
+    if log_file_name:
+        message = "Unexpected error - see %s for details:" % log_file_name
+    else:
+        message = "Unexpected error"
+    message += '\n%s: %s' % (type(error).__name__, error)
+    return message, 1

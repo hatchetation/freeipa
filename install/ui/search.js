@@ -4,6 +4,7 @@
  *    Pavel Zuna <pzuna@redhat.com>
  *    Adam Young <ayoung@redhat.com>
  *    Endi S. Dewata <edewata@redhat.com>
+ *    Petr Vobornik <pvoborni@redhat.com>
  *
  * Copyright (C) 2010 Red Hat
  * see file 'COPYING' for use and warranty information
@@ -24,99 +25,65 @@
 
 /* REQUIRES: ipa.js */
 
-IPA.search_facet = function(spec) {
+IPA.search_facet = function(spec, no_init) {
 
     spec = spec || {};
 
     spec.name = spec.name || 'search';
-    spec.managed_entity_name = spec.managed_entity_name || spec.entity.name;
+    spec.managed_entity = spec.managed_entity ? IPA.get_entity(spec.managed_entity) : spec.entity;
 
     spec.disable_breadcrumb =
         spec.disable_breadcrumb === undefined ? true : spec.disable_breadcrumb;
     spec.disable_facet_tabs =
         spec.disable_facet_tabs === undefined ? true : spec.disable_facet_tabs;
 
-    var that = IPA.table_facet(spec);
+    spec.actions = spec.actions || [];
+    spec.actions.unshift(
+        IPA.refresh_action,
+        IPA.batch_remove_action,
+        IPA.add_action);
 
-    that.search_all = spec.search_all || false;
-    that.selectable = spec.selectable;
-
-    function get_values() {
-        return that.table.get_selected_values();
-    }
-
-    that.get_values = spec.get_values || get_values;
-
-    function initialize_table_columns(){
-        that.managed_entity = IPA.get_entity(that.managed_entity_name);
-        var entity = that.managed_entity;
-
-        that.table = IPA.table_widget({
-            'class': 'content-table',
-            name: 'search',
-            label: entity.metadata.label,
-            entity: entity,
-            search_all: that.search_all,
-            scrollable: true,
-            selectable: that.selectable
+    spec.control_buttons = spec.control_buttons || [];
+    spec.control_buttons.unshift(
+        {
+            name: 'refresh',
+            label: IPA.messages.buttons.refresh,
+            icon: 'reset-icon'
+        },
+        {
+            name: 'remove',
+            label: IPA.messages.buttons.remove,
+            icon: 'remove-icon'
+        },
+        {
+            name: 'add',
+            label: IPA.messages.buttons.add,
+            icon: 'add-icon'
         });
 
-        var columns = that.columns.values;
-        for (var i=0; i<columns.length; i++) {
-            var column = columns[i];
-            column.entity = entity;
-            var param_info = IPA.get_entity_param(entity.name, column.name);
-            column.primary_key = param_info && param_info['primary_key'];
-            column.link = column.primary_key;
+    spec.state = spec.state || {};
+    spec.state.evaluators = spec.state.evaluators || [];
+    spec.state.evaluators.push(
+        IPA.selected_state_evaluator,
+        IPA.self_service_state_evaluator);
 
-            if (column.link) {
-                column.link_handler = function(value) {
-                    IPA.nav.show_page(entity.name, 'default', value);
-                    return false;
-                };
-            }
+    var that = IPA.table_facet(spec, true);
 
-            that.table.add_column(column);
-        }
-
-        that.table.select_changed = function() {
-            that.select_changed();
-        };
-
-        that.table.refresh = function() {
-            that.refresh();
-        };
-
-        that.table.load = function(result) {
-            that.table.empty();
-
-            for (var i = 0; i<result.length; i++) {
-                var record = that.table.get_record(result[i], 0);
-                that.table.add_record(record);
-            }
-
-            that.table.unselect_all();
-        };
-    }
-
-    that.create_content = function(container) {
-        /*should be in the initialize section, but can not, due to
-          get_entity circular references.*/
-        initialize_table_columns();
-        that.table.create(container);
-    };
+    that.deleter_dialog = spec.deleter_dialog || IPA.search_deleter_dialog;
 
     that.create_header = function(container) {
 
         that.facet_create_header(container);
 
-        var span = $('<div/>', {
+        var div = $('<div/>', {
             'class': 'right-aligned-facet-controls'
         }).appendTo(that.controls);
 
+        div.append(IPA.create_network_spinner());
+
         var filter_container = $('<div/>', {
             'class': 'search-filter'
-        }).appendTo(span);
+        }).appendTo(div);
 
         that.filter = $('<input/>', {
             type: 'text',
@@ -139,66 +106,41 @@ IPA.search_facet = function(spec) {
             }
         }).appendTo(filter_container);
 
-        span.append(IPA.create_network_spinner());
-
-        that.remove_button = IPA.action_button({
-            name: 'remove',
-            label: IPA.messages.buttons.remove,
-            icon: 'remove-icon',
-            click: function() {
-                if (!that.remove_button.hasClass('action-button-disabled')) {
-                    that.remove();
-                }
-                return false;
-            }
-        }).appendTo(that.controls);
-
-        that.add_button = IPA.action_button({
-            name: 'add',
-            label: IPA.messages.buttons.add,
-            icon: 'add-icon',
-            click: function() {
-                that.add();
-                return false;
-            }
-        }).appendTo(that.controls);
+        that.create_control_buttons(that.controls);
     };
-
 
     that.show = function() {
         that.facet_show();
 
+        var filter = IPA.nav.get_state(that.entity.name+'-filter');
+        that.old_filter = filter || '';
+        that.old_pkeys = that.managed_entity.get_primary_key_prefix();
+
         if (that.filter) {
-            var filter = IPA.nav.get_state(that.entity.name+'-filter');
             that.filter.val(filter);
         }
     };
 
-    that.select_changed = function() {
+    that.needs_update = function() {
+        if (that._needs_update !== undefined) return that._needs_update;
 
-        var values = that.table.get_selected_values();
+        var needs_update = that.facet_needs_update();
 
-        if (that.remove_button) {
-            if (values.length === 0) {
-                that.remove_button.addClass('action-button-disabled');
-            } else {
-                that.remove_button.removeClass('action-button-disabled');
-            }
-        }
+        //check if state changed
+        var pkeys = that.managed_entity.get_primary_key_prefix();
+        needs_update = needs_update || IPA.array_diff(pkeys, that.old_pkeys);
+
+        return needs_update;
     };
 
-    that.add = function() {
+    that.show_add_dialog = function() {
         var dialog = that.managed_entity.get_dialog('add');
         dialog.open(that.container);
     };
 
-    that.remove = function() {
-        that.remove_instances(that.managed_entity);
-    };
+    that.show_remove_dialog = function() {
 
-    that.remove_instances = function(entity) {
-
-        var values = that.get_values();
+        var values = that.get_selected_values();
 
         var title;
         if (!values.length) {
@@ -210,15 +152,15 @@ IPA.search_facet = function(spec) {
         var dialog = that.managed_entity.get_dialog('remove');
 
         if (!dialog) {
-            dialog = IPA.search_deleter_dialog();
+            dialog = that.deleter_dialog();
         }
 
-        dialog.entity_name = entity.name;
-        dialog.entity = entity;
+        dialog.entity_name = that.managed_entity.name;
+        dialog.entity = that.managed_entity;
         dialog.facet = that;
 
         title = IPA.messages.dialogs.remove_title;
-        var label = entity.metadata.label;
+        var label = that.managed_entity.metadata.label;
         dialog.title = title.replace('${entity}', label);
 
         dialog.set_values(values);
@@ -228,69 +170,92 @@ IPA.search_facet = function(spec) {
 
     that.find = function() {
         var filter = that.filter.val();
+        var old_filter = IPA.nav.get_state(that.managed_entity.name+'-filter');
         var state = {};
-        state[that.managed_entity_name + '-filter'] = filter;
+        state[that.managed_entity.name + '-filter'] = filter;
+
+        if (filter !== old_filter) that.set_expired_flag();
+
         IPA.nav.push_state(state);
     };
 
-    function load(result) {
-        that.table.load(result);
-    }
-
-    that.load = spec.load || load;
-
-    that.refresh = function() {
-        that.search_refresh(that.entity);
+    that.get_search_command_name = function() {
+        var name = that.managed_entity.name + '_find';
+        if (that.pagination && !that.search_all_entries) {
+            name += '_pkeys';
+        }
+        return name;
     };
 
-    that.on_error = function(xhr, text_status, error_thrown) {
-        that.report_error(error_thrown);
-    };
+    that.create_refresh_command = function() {
 
-    that.search_refresh = function(entity){
-
-        function on_success(data, text_status, xhr) {
-
-            that.load(data.result.result);
-
-            if (data.result.truncated) {
-                var message = IPA.messages.search.truncated;
-                message = message.replace('${counter}', data.result.count);
-                that.table.summary.text(message);
-            } else {
-                that.table.summary.text(data.result.summary);
-            }
-
-            that.filter.focus();
-            that.select_changed();
-        }
-
-        var filter = [];
-        var current_entity = entity;
-        filter.unshift(IPA.nav.get_state(current_entity.name+'-filter'));
-        current_entity = current_entity.containing_entity;
-        while(current_entity !== null){
-            filter.unshift(
-                IPA.nav.get_state(current_entity.name+'-pkey'));
-            current_entity = current_entity.containing_entity;
-        }
+        var filter = that.managed_entity.get_primary_key_prefix();
+        filter.push(IPA.nav.get_state(that.managed_entity.name+'-filter'));
 
         var command = IPA.command({
-            entity: entity.name,
+            name: that.get_search_command_name(),
+            entity: that.managed_entity.name,
             method: 'find',
             args: filter,
             options: {
-                all: that.search_all
-            },
-            on_success: on_success,
-            on_error: that.on_error
+                all: that.search_all_attributes
+            }
         });
+
+        if (that.pagination) {
+            if (!that.search_all_entries) command.set_option('pkey_only', true);
+            command.set_option('sizelimit', 0);
+        }
+
+        return command;
+    };
+
+    that.refresh = function() {
+
+        var command = that.create_refresh_command();
+
+        command.on_success = function(data, text_status, xhr) {
+            that.filter.focus();
+            that.load(data);
+            that.show_content();
+        };
+
+        command.on_error = function(xhr, text_status, error_thrown) {
+            that.report_error(error_thrown);
+        };
 
         command.execute();
     };
 
+    that.clear = function() {
+        if (that.needs_clear()) {
+            that.table.clear();
+        }
+    };
+
+    that.needs_clear = function() {
+        var clear = false;
+        var filter = IPA.nav.get_state(that.entity.name+'-filter') || '';
+        clear = that.old_filter !== '' || that.old_filter !== filter;
+
+        var pkeys = that.managed_entity.get_primary_key_prefix();
+        clear = clear || IPA.array_diff(pkeys, that.old_pkeys);
+
+        return clear;
+    };
+
+    that.init_search_facet = function() {
+
+        that.init_facet();
+        that.init_table_columns();
+        that.init_table(that.managed_entity);
+    };
+
+    if (!no_init) that.init_search_facet();
+
     // methods that should be invoked by subclasses
-    that.search_facet_create_content = that.create_content;
+    that.search_facet_refresh = that.refresh;
+    that.search_facet_create_refresh_command = that.create_refresh_command;
 
     return that;
 };
@@ -343,9 +308,11 @@ IPA.search_deleter_dialog = function(spec) {
 
         var batch = that.create_command();
 
-        batch.on_success = function() {
+        batch.on_success = function(data, text_status, xhr) {
             that.facet.refresh();
+            that.facet.on_update.notify([],that.facet);
             that.close();
+            IPA.notify_success(IPA.messages.search.deleted);
         };
 
         batch.on_error = function() {
@@ -367,7 +334,7 @@ IPA.nested_search_facet = function(spec) {
 
     spec = spec || {};
 
-    spec.managed_entity_name = spec.nested_entity;
+    spec.managed_entity = IPA.get_entity(spec.nested_entity);
 
     spec.disable_breadcrumb = false;
     spec.disable_facet_tabs = false;
@@ -380,13 +347,16 @@ IPA.nested_search_facet = function(spec) {
         that.header.set_pkey(
             IPA.nav.get_state(IPA.current_entity.name+'-pkey'));
 
+        var filter = IPA.nav.get_state(that.managed_entity.name+'-filter');
+        that.old_filter = filter || '';
+        that.old_pkeys = that.managed_entity.get_primary_key_prefix();
+
         if (that.filter) {
-            var filter = IPA.nav.get_state(that.managed_entity_name+'-filter');
             that.filter.val(filter);
         }
     };
 
-    that.refresh = function(){
+    that.refresh = function() {
 
         var pkey = IPA.nav.get_state(that.entity.name+'-pkey');
 
@@ -395,8 +365,129 @@ IPA.nested_search_facet = function(spec) {
             return;
         }
 
-        that.search_refresh(that.managed_entity);
+        that.search_facet_refresh();
     };
 
     return that;
+};
+
+IPA.batch_remove_action = function(spec) {
+
+    spec = spec || {};
+    spec.name = spec.name || 'remove';
+    spec.label = spec.label || IPA.messages.buttons.remove;
+    spec.enable_cond = spec.enable_cond || ['item-selected'];
+    spec.hide_cond = spec.hide_cond || ['self-service'];
+
+    var that = IPA.action(spec);
+
+    that.execute_action = function(facet) {
+        facet.show_remove_dialog();
+    };
+
+    return that;
+};
+
+IPA.add_action = function(spec) {
+
+    spec = spec || {};
+    spec.name = spec.name || 'add';
+    spec.label = spec.label || IPA.messages.buttons.add;
+    spec.hide_cond = spec.hide_cond || ['self-service'];
+
+    var that = IPA.action(spec);
+
+    that.execute_action = function(facet) {
+        facet.show_add_dialog();
+    };
+
+    return that;
+};
+
+/*
+ * Calls entity's disable command for each selected item in a batch.
+ * Usable in table facets.
+ */
+IPA.batch_items_action = function(spec) {
+
+    spec = spec || {};
+
+    var that = IPA.action(spec);
+
+    that.method = spec.method || 'disable';
+    that.success_msg = spec.success_msg;
+
+    that.execute_action = function(facet, on_success, on_error) {
+
+        var entity = facet.managed_entity;
+        var pkeys = facet.get_selected_values();
+
+        that.batch = IPA.batch_command({
+            name: entity.name + '_batch_'+ that.method,
+            on_success: that.get_on_success(facet, on_success)
+        });
+
+        for (var i=0; i<pkeys.length; i++) {
+            var pkey = pkeys[i];
+
+            var command = IPA.command({
+                entity: entity.name,
+                method: that.method,
+                args: [pkey]
+            });
+
+            that.batch.add_command(command);
+        }
+
+        that.batch.execute();
+    };
+
+    that.on_success = function(facet, data, text_status, xhr) {
+        facet.on_update.notify();
+        facet.refresh();
+
+        if (that.success_msg) {
+            var succeeded = that.batch.commands.length - that.batch.errors.errors.length;
+            var msg = that.success_msg.replace('${count}', succeeded);
+            IPA.notify_success(msg);
+        }
+    };
+
+    that.get_on_success = function(facet, on_success) {
+        return function(data, text_status, xhr) {
+            that.on_success(facet, data, text_status, xhr);
+            if (on_success) on_success.call(this, data, text_status, xhr);
+        };
+    };
+
+
+    return that;
+};
+
+IPA.batch_disable_action = function(spec) {
+
+    spec = spec || {};
+
+    spec.name = spec.name || 'disable';
+    spec.method = spec.method || 'disable';
+    spec.needs_confirm = spec.needs_confirm === undefined ? true : spec.needs_confirm;
+    spec.enable_cond = spec.enable_cond || ['item-selected'];
+    spec.success_msg = spec.success_msg || IPA.messages.search.disabled;
+    spec.confirm_msg = spec.confirm_msg || IPA.messages.search.disable_confirm;
+
+    return IPA.batch_items_action(spec);
+};
+
+IPA.batch_enable_action = function(spec) {
+
+    spec = spec || {};
+
+    spec.name = spec.name || 'enable';
+    spec.method = spec.method || 'enable';
+    spec.needs_confirm = spec.needs_confirm === undefined ? true : spec.needs_confirm;
+    spec.enable_cond = spec.enable_cond || ['item-selected'];
+    spec.success_msg = spec.success_msg || IPA.messages.search.enabled;
+    spec.confirm_msg = spec.confirm_msg || IPA.messages.search.enable_confirm;
+
+    return IPA.batch_items_action(spec);
 };

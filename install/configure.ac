@@ -48,6 +48,11 @@ if test "x$MSGCMP" = "xno"; then
     AC_MSG_ERROR([msgcmp not found, install gettext])
 fi
 
+AC_PATH_PROG(MSGATTRIB, msgattrib, [no])
+if test "x$MSGATTRIB" = "xno"; then
+    AC_MSG_ERROR([msgattrib not found, install gettext])
+fi
+
 AC_PATH_PROG(TX, tx, [/usr/bin/tx])
 
 AC_ARG_WITH([gettext_domain],
@@ -70,15 +75,24 @@ AC_SUBST(IPA_SYSCONF_DIR)
 
 AC_CONFIG_FILES([
     Makefile
+    certmonger/Makefile
     conf/Makefile
+    ffextension/Makefile
+    ffextension/chrome/Makefile
+    ffextension/chrome/content/Makefile
+    ffextension/locale/Makefile
+    ffextension/locale/en-US/Makefile
     html/Makefile
     migration/Makefile
     share/Makefile
     ui/Makefile
+    ui/ext/Makefile
+    ui/images/Makefile
     tools/Makefile
     tools/man/Makefile
     updates/Makefile
     po/Makefile
+    restart_scripts/Makefile
 ])
 
 AC_OUTPUT

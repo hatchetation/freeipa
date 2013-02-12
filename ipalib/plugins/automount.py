@@ -53,6 +53,11 @@ it: auto.master and auto.direct. auto.master is the root map for all
 automount maps for the location. auto.direct is the default map for
 direct mounts and is mounted on /-.
 
+An automount map may contain a submount key. This key defines a mount
+location within the map that references another map. This can be done
+either using automountmap-add-indirect --parentmap or manually
+with automountkey-add and setting info to "-type=autofs :<mapname>".
+
 EXAMPLES:
 
 Locations:
@@ -90,6 +95,14 @@ Maps:
   Find maps in the location baltimore:
     ipa automountmap-find baltimore
 
+  Create an indirect map with auto.share as a submount:
+    ipa automountmap-add-indirect baltimore --parentmap=auto.share --mount=sub auto.man
+
+    This is equivalent to:
+
+    ipa automountmap-add-indirect baltimore --mount=/man auto.man
+    ipa automountkey-add baltimore auto.man --key=sub --info="-fstype=autofs ldap:auto.share"
+
   Remove the auto.share map:
     ipa automountmap-del baltimore auto.share
 
@@ -123,6 +136,7 @@ A few notes on automount:
   URL format. Support for ldap as a map source in nsswitch.conf was added
   in autofs version 4.1.3-197.  Any version prior to that is not expected
   to work.
+- An indirect key should not begin with /
 
 As an example, the following automount files:
 
@@ -213,6 +227,7 @@ class automountlocation_add(LDAPCreate):
     msg_summary = _('Added automount location "%(value)s"')
 
     def post_callback(self, ldap, dn, entry_attrs, *keys, **options):
+        assert isinstance(dn, DN)
         # create auto.master for the new location
         self.api.Command['automountmap_add'](keys[-1], u'auto.master')
 
@@ -271,19 +286,38 @@ class automountlocation_tofiles(LDAPQuery):
         #       ?use ldap.find_entries instead of automountkey_find?
 
         keys = {}
+        mapnames = [u'auto.master']
         for m in maps:
             info = m['automountinformation'][0]
+            mapnames.append(info)
             key = info.split(None)
             result = self.api.Command['automountkey_find'](args[0], key[0])
             truncated = result['truncated']
             keys[info] = result['result']
             # TODO: handle truncated results, same as above
 
-        return dict(result=dict(maps=maps, keys=keys))
+        allmaps = self.api.Command['automountmap_find'](args[0])['result']
+        orphanmaps = []
+        for m in allmaps:
+            if m['automountmapname'][0] not in mapnames:
+                orphanmaps.append(m)
+
+        orphankeys = []
+        # Collect all the keys for the orphaned maps
+        for m in orphanmaps:
+            key = m['automountmapname']
+            result = self.api.Command['automountkey_find'](args[0], key[0])
+            truncated = result['truncated']
+            orphankeys.append(result['result'])
+
+        return dict(result=dict(maps=maps, keys=keys,
+                    orphanmaps=orphanmaps, orphankeys=orphankeys))
 
     def output_for_cli(self, textui, result, *keys, **options):
         maps = result['result']['maps']
         keys = result['result']['keys']
+        orphanmaps = result['result']['orphanmaps']
+        orphankeys = result['result']['orphankeys']
 
         textui.print_plain('/etc/auto.master:')
         for m in maps:
@@ -311,6 +345,21 @@ class automountlocation_tofiles(LDAPQuery):
                         k['automountkey'][0], k['automountinformation'][0]
                     )
                 )
+
+        textui.print_plain('')
+        textui.print_plain(_('maps not connected to /etc/auto.master:'))
+        for m in orphanmaps:
+            textui.print_plain('---------------------------')
+            textui.print_plain('/etc/%s:' % m['automountmapname'])
+            for k in orphankeys:
+                if len(k) == 0: continue
+                dn = DN(k[0]['dn'])
+                if dn['automountmapname'] == m['automountmapname'][0]:
+                    textui.print_plain(
+                        '%s\t%s' % (
+                            k[0]['automountkey'][0], k[0]['automountinformation'][0]
+                        )
+                    )
 
 api.register(automountlocation_tofiles)
 
@@ -343,7 +392,7 @@ class automountlocation_import(LDAPQuery):
                     reason=_('File %(file)s not found') % {'file': filename}
                 )
             else:
-                raise e
+                raise
         return map
 
     def forward(self, *args, **options):
@@ -391,7 +440,9 @@ class automountlocation_import(LDAPQuery):
                     result['duplicatekeys'].append(am[0])
                     pass
                 else:
-                    raise errors.DuplicateEntry(message=unicode('key %(key)s already exists' % {'key':am[0]}))
+                    raise errors.DuplicateEntry(
+                        message=_('key %(key)s already exists') % dict(
+                            key=am[0]))
             # Add the new map
             if not am[1].startswith('-'):
                 try:
@@ -405,7 +456,9 @@ class automountlocation_import(LDAPQuery):
                         result['duplicatemaps'].append(am[0])
                         pass
                     else:
-                        raise errors.DuplicateEntry(message=unicode('map %(map)s already exists' % {'map':am[1]}))
+                        raise errors.DuplicateEntry(
+                            message=_('map %(map)s already exists') % dict(
+                                map=am[1]))
                 except errors.DuplicateEntry:
                     # This means the same map is used on several mount points.
                     pass
@@ -547,6 +600,7 @@ class automountmap_del(LDAPDelete):
     msg_summary = _('Deleted automount map "%(value)s"')
 
     def post_callback(self, ldap, dn, *keys, **options):
+        assert isinstance(dn, DN)
         # delete optional parental connection (direct maps may not have this)
         try:
             (dn_, entry_attrs) = ldap.find_entry_by_attr(
@@ -597,7 +651,7 @@ class automountkey(LDAPObject):
     default_attributes = [
         'automountkey', 'automountinformation', 'description'
     ]
-    rdnattr = 'description'
+    rdn_is_primary_key = True
     rdn_separator = ' '
 
     takes_params = (
@@ -670,12 +724,14 @@ class automountkey(LDAPObject):
                     (kwargs['automountkey'], kwargs['automountinformation'])
             else:
                 sfilter = '(automountkey=%s)' % kwargs['automountkey']
-            basedn = 'automountmapname=%s,cn=%s,%s' % (parent_keys[1], parent_keys[0], self.container_dn)
+            basedn = DN(('automountmapname', parent_keys[1]), ('cn', parent_keys[0]), self.container_dn)
             attrs_list = ['*']
             (entries, truncated) = ldap.find_entries(sfilter, attrs_list,
                 basedn, _ldap.SCOPE_ONELEVEL)
             if len(entries) > 1:
                 raise errors.NotFound(reason=_('More than one entry with key %(key)s found, use --info to select specific entry.') % dict(key=pkey))
+            if truncated:
+                raise errors.LimitsExceeded()
             dn = entries[0][0]
 
         return dn
@@ -737,7 +793,12 @@ class automountkey_add(LDAPCreate):
 
     msg_summary = _('Added automount key "%(value)s"')
 
+    internal_options = ['description', 'add_operation']
+
     def pre_callback(self, ldap, dn, entry_attrs, *keys, **options):
+        assert isinstance(dn, DN)
+        options.pop('add_operation', None)
+        options.pop('description', None)
         self.obj.check_key_uniqueness(keys[-2], keys[-1], **options)
         return dn
 
@@ -777,17 +838,35 @@ class automountmap_add_indirect(LDAPCreate):
     )
 
     def execute(self, *keys, **options):
+        parentmap = options.pop('parentmap', None)
+        key = options.pop('key')
         result = self.api.Command['automountmap_add'](*keys, **options)
         try:
-            options['automountinformation'] = keys[1]
-            self.api.Command['automountkey_add'](
-                keys[0], options['parentmap'],
-                automountkey=options['key'], **options
-            )
-        except Exception, e:
+            if parentmap != u'auto.master':
+                if key.startswith('/'):
+                    raise errors.ValidationError(name='mount',
+                        error=_('mount point is relative to parent map, '
+                            'cannot begin with /'))
+                location = keys[0]
+                map = keys[1]
+                options['automountinformation'] = map
+
+                # Ensure the referenced map exists
+                self.api.Command['automountmap_show'](location, parentmap)
+                # Add a submount key
+                self.api.Command['automountkey_add'](
+                    location, parentmap, automountkey=key,
+                    automountinformation='-fstype=autofs ldap:%s' % map)
+            else: # adding to auto.master
+                # Ensure auto.master exists
+                self.api.Command['automountmap_show'](keys[0], parentmap)
+                self.api.Command['automountkey_add'](
+                    keys[0], u'auto.master', automountkey=key,
+                    automountinformation=keys[1])
+        except Exception:
             # The key exists, drop the map
-            self.api.Command['automountmap_del'](*keys, **options)
-            raise e
+            self.api.Command['automountmap_del'](*keys)
+            raise
         return result
 
 api.register(automountmap_add_indirect)
@@ -840,6 +919,8 @@ class automountkey_mod(LDAPUpdate):
 
     msg_summary = _('Modified automount key "%(value)s"')
 
+    internal_options = ['newautomountkey']
+
     takes_options = LDAPUpdate.takes_options + (
         IA5Str('newautomountinformation?',
                cli_name='newinfo',
@@ -852,6 +933,7 @@ class automountkey_mod(LDAPUpdate):
             yield key
 
     def pre_callback(self, ldap, dn, entry_attrs, *keys, **options):
+        assert isinstance(dn, DN)
         if 'newautomountkey' in options:
             entry_attrs['automountkey'] = options['newautomountkey']
         if 'newautomountinformation' in options:

@@ -22,12 +22,17 @@
 # server certificates created during the IPA server installation.
 
 import os
+import sys
 import re
 import time
 from ipapython import ipautil
+from ipapython import dogtag
 
 REQUEST_DIR='/var/lib/certmonger/requests/'
 CA_DIR='/var/lib/certmonger/cas/'
+
+# Normalizer types for critera in get_request_id()
+NPATH = 1
 
 def find_request_value(filename, directive):
     """
@@ -83,7 +88,7 @@ def get_request_id(criteria):
     through all the request files. An alternative would be to parse the
     ipa-getcert list output but this seems cleaner.
 
-    criteria is a tuple of key/value pairs to search for. The more specific
+    criteria is a tuple of key/value/type to search for. The more specific
     the better. An error is raised if multiple request_ids are returned for
     the same criteria.
 
@@ -95,8 +100,10 @@ def get_request_id(criteria):
     fileList=os.listdir(REQUEST_DIR)
     for file in fileList:
         match = True
-        for (key, value) in criteria:
+        for (key, value, valtype) in criteria:
             rv = find_request_value('%s/%s' % (REQUEST_DIR, file), key)
+            if rv and valtype == NPATH:
+                rv = os.path.abspath(rv)
             if rv is None or rv.rstrip() != value:
                 match = False
                 break
@@ -104,6 +111,27 @@ def get_request_id(criteria):
             raise RuntimeError('multiple certmonger requests match the criteria')
         if match:
             reqid = find_request_value('%s/%s' % (REQUEST_DIR, file), 'id').rstrip()
+
+    return reqid
+
+def get_requests_for_dir(dir):
+    """
+    Return a list containing the request ids for a given NSS database
+    directory.
+    """
+    reqid=[]
+    fileList=os.listdir(REQUEST_DIR)
+    for file in fileList:
+        rv = find_request_value(os.path.join(REQUEST_DIR, file),
+                                'cert_storage_location')
+        if rv is None:
+            continue
+        rv = os.path.abspath(rv).rstrip()
+        if rv != dir:
+            continue
+        id = find_request_value(os.path.join(REQUEST_DIR, file), 'id')
+        if id is not None:
+            reqid.append(id.rstrip())
 
     return reqid
 
@@ -157,7 +185,7 @@ def request_cert(nssdb, nickname, subject, principal, passwd_fname=None):
     ]
     if passwd_fname:
         args.append('-p')
-        args.append(passwd_fname)
+        args.append(os.path.abspath(passwd_fname))
     (stdout, stderr, returncode) = ipautil.run(args)
     # FIXME: should be some error handling around this
     m = re.match('New signing request "(\d+)" added', stdout)
@@ -175,7 +203,7 @@ def cert_exists(nickname, secdir):
     the database.
     """
     args = ["/usr/bin/certutil", "-L",
-           "-d", secdir,
+           "-d", os.path.abspath(secdir),
            "-n", nickname
           ]
     (stdout, stderr, rc) = ipautil.run(args, raiseonerr=False)
@@ -184,23 +212,30 @@ def cert_exists(nickname, secdir):
     else:
         return False
 
-def start_tracking(nickname, secdir, password_file=None):
+def start_tracking(nickname, secdir, password_file=None, command=None):
     """
     Tell certmonger to track the given certificate nickname in NSS
     database in secdir protected by optional password file password_file.
+
+    command is an optional parameter which specifies a command for
+    certmonger to run when it renews a certificate. This command must
+    reside in /usr/lib/ipa/certmonger to work with SELinux.
 
     Returns the stdout, stderr and returncode from running ipa-getcert
 
     This assumes that certmonger is already running.
     """
-    if not cert_exists(nickname, secdir):
+    if not cert_exists(nickname, os.path.abspath(secdir)):
         raise RuntimeError('Nickname "%s" doesn\'t exist in NSS database "%s"' % (nickname, secdir))
     args = ["/usr/bin/ipa-getcert", "start-tracking",
-            "-d", secdir,
+            "-d", os.path.abspath(secdir),
             "-n", nickname]
     if password_file:
         args.append("-p")
-        args.append(password_file)
+        args.append(os.path.abspath(password_file))
+    if command:
+        args.append("-C")
+        args.append(command)
 
     (stdout, stderr, returncode) = ipautil.run(args)
 
@@ -216,7 +251,7 @@ def stop_tracking(secdir, request_id=None, nickname=None):
         raise RuntimeError('Both request_id and nickname are missing.')
     if nickname:
         # Using the nickname find the certmonger request_id
-        criteria = (('cert_storage_location','%s' % secdir),('cert_nickname', '%s' % nickname))
+        criteria = (('cert_storage_location', os.path.abspath(secdir), NPATH),('cert_nickname', nickname, None))
         try:
             request_id = get_request_id(criteria)
             if request_id is None:
@@ -236,7 +271,7 @@ def stop_tracking(secdir, request_id=None, nickname=None):
         args.append('-n')
         args.append(nickname)
         args.append('-d')
-        args.append(secdir)
+        args.append(os.path.abspath(secdir))
 
     (stdout, stderr, returncode) = ipautil.run(args)
 
@@ -316,6 +351,86 @@ def remove_principal_from_cas():
         for line in lines:
             fp.write(line)
         fp.close()
+
+# Routines specific to renewing dogtag CA certificates
+def get_pin(token, dogtag_constants=None):
+    """
+    Dogtag stores its NSS pin in a file formatted as token:PIN.
+
+    The caller is expected to handle any exceptions raised.
+    """
+    if dogtag_constants is None:
+        dogtag_constants = dogtag.configured_constants()
+    with open(dogtag_constants.PASSWORD_CONF_PATH, 'r') as f:
+        for line in f:
+            (tok, pin) = line.split('=', 1)
+            if token == tok:
+                return pin.strip()
+    return None
+
+def dogtag_start_tracking(ca, nickname, pin, pinfile, secdir, command):
+    """
+    Tell certmonger to start tracking a dogtag CA certificate. These
+    are handled differently because their renewal must be done directly
+    and not through IPA.
+
+    This uses the generic certmonger command getcert so we can specify
+    a different helper.
+
+    command is the script to execute.
+
+    Returns the stdout, stderr and returncode from running ipa-getcert
+
+    This assumes that certmonger is already running.
+    """
+    if not cert_exists(nickname, os.path.abspath(secdir)):
+        raise RuntimeError('Nickname "%s" doesn\'t exist in NSS database "%s"' % (nickname, secdir))
+
+    if command is not None and not os.path.isabs(command):
+        if sys.maxsize > 2**32:
+            libpath = 'lib64'
+        else:
+            libpath = 'lib'
+        command = '/usr/%s/ipa/certmonger/%s' % (libpath, command)
+
+    args = ["/usr/bin/getcert", "start-tracking",
+            "-d", os.path.abspath(secdir),
+            "-n", nickname,
+            "-c", ca,
+            "-C", command,
+           ]
+
+    if pinfile:
+        args.append("-p")
+        args.append(pinfile)
+    else:
+        args.append("-P")
+        args.append(pin)
+
+    if ca == 'dogtag-ipa-retrieve-agent-submit':
+        # We cheat and pass in the nickname as the profile when
+        # renewing on a clone. The submit otherwise doesn't pass in the
+        # nickname and we need some way to find the right entry in LDAP.
+        args.append("-T")
+        args.append(nickname)
+
+    (stdout, stderr, returncode) = ipautil.run(args, nolog=[pin])
+
+def check_state(dirs):
+    """
+    Given a set of directories and nicknames verify that we are no longer
+    tracking certificates.
+
+    dirs is a list of directories to test for. We will return a tuple
+    of nicknames for any tracked certificates found.
+
+    This can only check for NSS-based certificates.
+    """
+    reqids = []
+    for dir in dirs:
+        reqids.extend(get_requests_for_dir(dir))
+
+    return reqids
 
 if __name__ == '__main__':
     request_id = request_cert("/etc/httpd/alias", "Test", "cn=tiger.example.com,O=IPA", "HTTP/tiger.example.com@EXAMPLE.COM")

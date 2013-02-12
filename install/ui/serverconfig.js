@@ -21,23 +21,24 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-/* REQUIRES: ipa.js, details.js, search.js, add.js, entity.js */
+/* REQUIRES: ipa.js, details.js, search.js, add.js, facet.js, entity.js */
 
+IPA.serverconfig = {};
 
+IPA.serverconfig.entity = function(spec) {
 
-/* Configuration */
+    var that = IPA.entity(spec);
 
-IPA.entity_factories.config = function(){
-    return IPA.entity_builder().
-        entity('config').
-        details_facet({
+    that.init = function() {
+        that.entity_init();
+
+        that.builder.details_facet({
             title: IPA.metadata.objects.config.label,
-            sections:
-            [
+            sections: [
                 {
                     name: 'search',
                     label: IPA.messages.objects.config.search,
-                    fields:[
+                    fields: [
                         'ipasearchrecordslimit',
                         'ipasearchtimelimit'
                     ]
@@ -45,11 +46,11 @@ IPA.entity_factories.config = function(){
                 {
                     name: 'user',
                     label: IPA.messages.objects.config.user,
-                    fields:[
+                    fields: [
                         'ipausersearchfields',
                         'ipadefaultemaildomain',
                         {
-                            factory: IPA.entity_select_widget,
+                            type: 'entity_select',
                             name: 'ipadefaultprimarygroup',
                             other_entity: 'group',
                             other_field: 'cn'
@@ -59,11 +60,19 @@ IPA.entity_factories.config = function(){
                         'ipamaxusernamelength',
                         'ipapwdexpadvnotify',
                         {
-                            factory: IPA.checkbox_widget,
+                            name: 'ipaconfigstring',
+                            type: 'checkboxes',
+                            options: IPA.create_options([
+                                'AllowLMhash', 'AllowNThash',
+                                'KDC:Disable Last Success', 'KDC:Disable Lockout'
+                            ])
+                        },
+                        {
+                            type: 'checkbox',
                             name: 'ipamigrationenabled'
                         },
                         {
-                            factory: IPA.multivalued_text_widget,
+                            type: 'multivalued',
                             name: 'ipauserobjectclasses'
                         }
                     ]
@@ -71,14 +80,39 @@ IPA.entity_factories.config = function(){
                 {
                     name: 'group',
                     label: IPA.messages.objects.config.group,
-                    fields:[
+                    fields: [
                         'ipagroupsearchfields',
                         {
-                            factory: IPA.multivalued_text_widget,
+                            type: 'multivalued',
                             name: 'ipagroupobjectclasses'
                         }
                     ]
+                },
+                {
+                    name: 'selinux',
+                    label: IPA.messages.objects.config.selinux,
+                    fields: [
+                        'ipaselinuxusermaporder',
+                        'ipaselinuxusermapdefault'
+                    ]
+                },
+                {
+                    name: 'service',
+                    label: IPA.messages.objects.config.service,
+                    fields: [
+                        {
+                            name: 'ipakrbauthzdata',
+                            type: 'checkboxes',
+                            options: IPA.create_options(['MS-PAC', 'PAD'])
+                        }
+                    ]
                 }
-            ]}).
-        build();
+            ],
+            needs_update: true
+        });
+    };
+
+    return that;
 };
+
+IPA.register('config', IPA.serverconfig.entity);

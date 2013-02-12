@@ -41,7 +41,12 @@
 #  include <config.h>
 #endif
 
-#define _XOPEN_SOURCE /* strptime needs this */
+/* strptime needs _XOPEN_SOURCE and endian.h needs __USE_BSD
+ * _GNU_SOURCE imply both, and we use it elsewhere, so use this */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
+
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -53,6 +58,7 @@
 #include <dirsrv/slapi-plugin.h>
 #include <lber.h>
 #include <time.h>
+#include <endian.h>
 
 #include "ipapwd.h"
 #include "util.h"
@@ -163,7 +169,7 @@ static int ipapwd_pre_add(Slapi_PBlock *pb)
     char *dn = NULL;
     struct ipapwd_operation *pwdop = NULL;
     void *op;
-    int is_repl_op, is_root, is_krb, is_smb;
+    int is_repl_op, is_root, is_krb, is_smb, is_ipant;
     int ret;
     int rc = LDAP_SUCCESS;
 
@@ -240,7 +246,7 @@ static int ipapwd_pre_add(Slapi_PBlock *pb)
     }
 
     rc = ipapwd_entry_checks(pb, e,
-                             &is_root, &is_krb, &is_smb,
+                             &is_root, &is_krb, &is_smb, &is_ipant,
                              NULL, SLAPI_ACL_ADD);
     if (rc != LDAP_SUCCESS) {
         goto done;
@@ -302,22 +308,23 @@ static int ipapwd_pre_add(Slapi_PBlock *pb)
 
     ret = ipapwd_CheckPolicy(&pwdop->pwdata);
     if (ret) {
-        errMesg = "Password Fails to meet minimum strength criteria";
+        errMesg = ipapwd_error2string(ret);
         rc = LDAP_CONSTRAINT_VIOLATION;
         goto done;
     }
 
-    if (is_krb || is_smb) {
+    if (is_krb || is_smb || is_ipant) {
 
         Slapi_Value **svals = NULL;
+        Slapi_Value **ntvals = NULL;
         char *nt = NULL;
         char *lm = NULL;
 
         pwdop->is_krb = is_krb;
 
         rc = ipapwd_gen_hashes(krbcfg, &pwdop->pwdata,
-                               userpw, is_krb, is_smb,
-                               &svals, &nt, &lm, &errMesg);
+                               userpw, is_krb, is_smb, is_ipant,
+                               &svals, &nt, &lm, &ntvals, &errMesg);
         if (rc != LDAP_SUCCESS) {
             goto done;
         }
@@ -335,15 +342,20 @@ static int ipapwd_pre_add(Slapi_PBlock *pb)
             ipapwd_free_slapi_value_array(&svals);
         }
 
-        if (lm) {
+        if (lm && is_smb) {
             /* set value */
             slapi_entry_attr_set_charptr(e, "sambaLMPassword", lm);
             slapi_ch_free_string(&lm);
         }
-        if (nt) {
+        if (nt && is_smb) {
             /* set value */
             slapi_entry_attr_set_charptr(e, "sambaNTPassword", nt);
             slapi_ch_free_string(&nt);
+        }
+
+        if (ntvals && is_ipant) {
+            slapi_entry_attr_replace_sv(e, "ipaNTHash", ntvals);
+            ipapwd_free_slapi_value_array(&ntvals);
         }
 
         if (is_smb) {
@@ -373,6 +385,12 @@ done:
     return 0;
 }
 
+#define NTHASH_REGEN_VAL "MagicRegen"
+#define NTHASH_REGEN_LEN sizeof(NTHASH_REGEN_VAL)
+static int ipapwd_regen_nthash(Slapi_PBlock *pb, Slapi_Mods *smods,
+                               char *dn, struct slapi_entry *entry,
+                               struct ipapwd_krbcfg *krbcfg);
+
 /* PRE MOD Operation:
  * Gets the clean text password (fail the operation if the password came
  * pre-hashed, unless this is a replicated operation).
@@ -388,7 +406,7 @@ static int ipapwd_pre_mod(Slapi_PBlock *pb)
     struct ipapwd_krbcfg *krbcfg = NULL;
     char *errMesg = NULL;
     LDAPMod **mods;
-    Slapi_Mod *smod, *tmod;
+    LDAPMod *lmod;
     Slapi_Mods *smods = NULL;
     char *userpw = NULL;
     char *unhashedpw = NULL;
@@ -397,7 +415,11 @@ static int ipapwd_pre_mod(Slapi_PBlock *pb)
     struct slapi_entry *e = NULL;
     struct ipapwd_operation *pwdop = NULL;
     void *op;
-    int is_repl_op, is_pwd_op, is_root, is_krb, is_smb;
+    int is_repl_op, is_pwd_op, is_root, is_krb, is_smb, is_ipant;
+    int has_krb_keys = 0;
+    int has_history = 0;
+    int gen_krb_keys = 0;
+    int is_magic_regen = 0;
     int ret, rc;
 
     LOG_TRACE( "=>\n");
@@ -425,60 +447,73 @@ static int ipapwd_pre_mod(Slapi_PBlock *pb)
     /* In the first pass,
      * only check there is anything we are interested in */
     is_pwd_op = 0;
-    tmod = slapi_mod_new();
-    smod = slapi_mods_get_first_smod(smods, tmod);
-    while (smod) {
+    lmod = slapi_mods_get_first_mod(smods);
+    while (lmod) {
         struct berval *bv;
-        const char *type;
-        int mop;
 
-        type = slapi_mod_get_type(smod);
-        if (slapi_attr_types_equivalent(type, SLAPI_USERPWD_ATTR)) {
-            mop = slapi_mod_get_operation(smod);
+        if (slapi_attr_types_equivalent(lmod->mod_type, SLAPI_USERPWD_ATTR)) {
             /* check op filtering out LDAP_MOD_BVALUES */
-            switch (mop & 0x0f) {
+            switch (lmod->mod_op & 0x0f) {
             case LDAP_MOD_ADD:
             case LDAP_MOD_REPLACE:
                 is_pwd_op = 1;
             default:
                 break;
             }
-        }
-
-        /* we check for unahsehd password here so that we are sure to catch them
-         * early, before further checks go on, this helps checking
-         * LDAP_MOD_DELETE operations in some corner cases later */
-        /* we keep only the last one if multiple are provided for any absurd
-	 * reason */
-        if (slapi_attr_types_equivalent(type, "unhashed#user#password")) {
-            bv = slapi_mod_get_first_value(smod);
-            if (!bv) {
-                slapi_mod_free(&tmod);
+        } else if (slapi_attr_types_equivalent(lmod->mod_type, "ipaNTHash")) {
+            /* check op filtering out LDAP_MOD_BVALUES */
+            switch (lmod->mod_op & 0x0f) {
+            case LDAP_MOD_ADD:
+                if (!lmod->mod_bvalues ||
+                    !lmod->mod_bvalues[0]) {
+                    rc = LDAP_OPERATIONS_ERROR;
+                    goto done;
+                }
+                bv = lmod->mod_bvalues[0];
+                if ((bv->bv_len >= NTHASH_REGEN_LEN -1) &&
+                    (bv->bv_len <= NTHASH_REGEN_LEN) &&
+                    (strncmp(NTHASH_REGEN_VAL,
+                             bv->bv_val, bv->bv_len) == 0)) {
+                    is_magic_regen = 1;
+                    /* make sure the database will later ignore this mod */
+                    slapi_mods_remove(smods);
+                }
+            default:
+                break;
+            }
+        } else if (slapi_attr_types_equivalent(lmod->mod_type,
+                                                "unhashed#user#password")) {
+            /* we check for unahsehd password here so that we are sure to
+             * catch them early, before further checks go on, this helps
+             * checking LDAP_MOD_DELETE operations in some corner cases later.
+             * We keep only the last one if multiple are provided for any
+             * reason */
+            if (!lmod->mod_bvalues ||
+                !lmod->mod_bvalues[0]) {
                 rc = LDAP_OPERATIONS_ERROR;
                 goto done;
             }
+            bv = lmod->mod_bvalues[0];
             slapi_ch_free_string(&unhashedpw);
             unhashedpw = slapi_ch_malloc(bv->bv_len+1);
             if (!unhashedpw) {
-                slapi_mod_free(&tmod);
                 rc = LDAP_OPERATIONS_ERROR;
                 goto done;
             }
             memcpy(unhashedpw, bv->bv_val, bv->bv_len);
             unhashedpw[bv->bv_len] = '\0';
         }
-        slapi_mod_done(tmod);
-        smod = slapi_mods_get_next_smod(smods, tmod);
+        lmod = slapi_mods_get_next_mod(smods);
     }
-    slapi_mod_free(&tmod);
 
-    /* If userPassword is not modified we are done here */
-    if (! is_pwd_op) {
+    /* If userPassword is not modified check if this is a request to generate
+     * NT hashes otherwise we are done here */
+    if (!is_pwd_op && !is_magic_regen) {
         rc = LDAP_SUCCESS;
         goto done;
     }
 
-    /* OK swe have something interesting here, start checking for
+    /* OK we have something interesting here, start checking for
      * pre-requisites */
 
     /* Get target DN */
@@ -511,7 +546,7 @@ static int ipapwd_pre_mod(Slapi_PBlock *pb)
     }
 
     rc = ipapwd_entry_checks(pb, e,
-                             &is_root, &is_krb, &is_smb,
+                             &is_root, &is_krb, &is_smb, &is_ipant,
                              SLAPI_USERPWD_ATTR, SLAPI_ACL_WRITE);
     if (rc) {
         goto done;
@@ -522,34 +557,44 @@ static int ipapwd_pre_mod(Slapi_PBlock *pb)
         goto done;
     }
 
-    /* run through the mods again and adjust flags if operations affect them */
-    tmod = slapi_mod_new();
-    smod = slapi_mods_get_first_smod(smods, tmod);
-    while (smod) {
-        struct berval *bv;
-        const char *type;
-        int mop;
+    if (!is_pwd_op) {
+        /* This may be a magic op to ask us to generate the NT hashes */
+        if (is_magic_regen) {
+            /* Make sense to call only if this entry has krb keys to source
+             * the nthash from */
+            if (is_krb) {
+                rc = ipapwd_regen_nthash(pb, smods, dn, e, krbcfg);
+            } else {
+                rc = LDAP_UNWILLING_TO_PERFORM;
+            }
+        } else {
+            rc = LDAP_OPERATIONS_ERROR;
+        }
+        goto done;
+    }
 
-        type = slapi_mod_get_type(smod);
-        if (slapi_attr_types_equivalent(type, SLAPI_USERPWD_ATTR)) {
-            mop = slapi_mod_get_operation(smod);
+    /* run through the mods again and adjust flags if operations affect them */
+    lmod = slapi_mods_get_first_mod(smods);
+    while (lmod) {
+        struct berval *bv;
+
+        if (slapi_attr_types_equivalent(lmod->mod_type, SLAPI_USERPWD_ATTR)) {
             /* check op filtering out LDAP_MOD_BVALUES */
-            switch (mop & 0x0f) {
+            switch (lmod->mod_op & 0x0f) {
             case LDAP_MOD_ADD:
                 /* FIXME: should we try to track cases where we would end up
                  * with multiple userPassword entries ?? */
             case LDAP_MOD_REPLACE:
                 is_pwd_op = 1;
-                bv = slapi_mod_get_first_value(smod);
-                if (!bv) {
-                    slapi_mod_free(&tmod);
+                if (!lmod->mod_bvalues ||
+                    !lmod->mod_bvalues[0]) {
                     rc = LDAP_OPERATIONS_ERROR;
                     goto done;
                 }
+                bv = lmod->mod_bvalues[0];
                 slapi_ch_free_string(&userpw);
                 userpw = slapi_ch_malloc(bv->bv_len+1);
                 if (!userpw) {
-                    slapi_mod_free(&tmod);
                     rc = LDAP_OPERATIONS_ERROR;
                     goto done;
                 }
@@ -560,42 +605,52 @@ static int ipapwd_pre_mod(Slapi_PBlock *pb)
                 /* reset only if we are deleting all values, or the exact
                  * same value previously set, otherwise we are just trying to
                  * add a new value and delete an existing one */
-                bv = slapi_mod_get_first_value(smod);
-                if (!bv) {
+                if (!lmod->mod_bvalues ||
+                    !lmod->mod_bvalues[0]) {
                     is_pwd_op = 0;
                 } else {
-                    if ((userpw && 0 == strncmp(userpw, bv->bv_val, bv->bv_len)) ||
-                        (unhashedpw && 0 == strncmp(unhashedpw, bv->bv_val, bv->bv_len)))
+                    bv = lmod->mod_bvalues[0];
+                    if ((userpw &&
+                         strncmp(userpw, bv->bv_val, bv->bv_len) == 0) ||
+                        (unhashedpw &&
+                         strncmp(unhashedpw, bv->bv_val, bv->bv_len) == 0)) {
                         is_pwd_op = 0;
+                    }
                 }
             default:
                 break;
             }
-        }
 
-        if (slapi_attr_types_equivalent(type, SLAPI_ATTR_OBJECTCLASS)) {
-            mop = slapi_mod_get_operation(smod);
+        } else if (slapi_attr_types_equivalent(lmod->mod_type,
+                                                SLAPI_ATTR_OBJECTCLASS)) {
+            int i;
             /* check op filtering out LDAP_MOD_BVALUES */
-            switch (mop & 0x0f) {
+            switch (lmod->mod_op & 0x0f) {
             case LDAP_MOD_REPLACE:
                 /* if objectclasses are replaced we need to start clean with
                  * flags, so we sero them out and see if they get set again */
                 is_krb = 0;
                 is_smb = 0;
+                is_ipant = 0;
 
             case LDAP_MOD_ADD:
-                bv = slapi_mod_get_first_value(smod);
-                if (!bv) {
-                    slapi_mod_free(&tmod);
+                if (!lmod->mod_bvalues ||
+                    !lmod->mod_bvalues[0]) {
                     rc = LDAP_OPERATIONS_ERROR;
                     goto done;
                 }
-                do {
-                    if (0 == strncasecmp("krbPrincipalAux", bv->bv_val, bv->bv_len))
+                for (i = 0; (bv = lmod->mod_bvalues[i]) != NULL; i++) {
+                    if (strncasecmp("krbPrincipalAux",
+                                    bv->bv_val, bv->bv_len) == 0) {
                         is_krb = 1;
-                    if (0 == strncasecmp("sambaSamAccount", bv->bv_val, bv->bv_len))
+                    } else if (strncasecmp("sambaSamAccount",
+                                           bv->bv_val, bv->bv_len) == 0) {
                         is_smb = 1;
-                } while ((bv = slapi_mod_get_next_value(smod)) != NULL);
+                    } else if (strncasecmp("ipaNTUserAttrs",
+                                           bv->bv_val, bv->bv_len) == 0) {
+                        is_ipant = 1;
+                    }
+                }
 
                 break;
 
@@ -603,16 +658,47 @@ static int ipapwd_pre_mod(Slapi_PBlock *pb)
                 /* can this happen for objectclasses ? */
                 is_krb = 0;
                 is_smb = 0;
+                is_ipant = 0;
 
             default:
                 break;
             }
+
+        } else if (slapi_attr_types_equivalent(lmod->mod_type,
+                                               "krbPrincipalKey")) {
+
+            /* if we are getting a krbPrincipalKey, also avoid regenerating
+             * the keys, it means kadmin has alredy done the job and is simply
+             * keeping userPassword and sambaXXPAssword in sync */
+
+            /* we also check we have enough authority */
+            if (is_root) {
+                has_krb_keys = 1;
+            }
+
+        } else if (slapi_attr_types_equivalent(lmod->mod_type,
+                                               "passwordHistory")) {
+
+            /* if we are getting a passwordHistory, also avoid regenerating
+             * the hashes, it means kadmin has alredy done the job and is
+             * simply keeping userPassword and sambaXXPAssword in sync */
+
+            /* we also check we have enough authority */
+            if (is_root) {
+                has_history = 1;
+            }
         }
 
-        slapi_mod_done(tmod);
-        smod = slapi_mods_get_next_smod(smods, tmod);
+        lmod = slapi_mods_get_next_mod(smods);
     }
-    slapi_mod_free(&tmod);
+
+    if (is_krb) {
+        if (has_krb_keys) {
+            gen_krb_keys = 0;
+        } else {
+            gen_krb_keys = 1;
+        }
+    }
 
     /* It seem like we have determined that the end result will be deletion of
      * the userPassword attribute, so we have no more business here */
@@ -623,7 +709,7 @@ static int ipapwd_pre_mod(Slapi_PBlock *pb)
 
     /* Check this is a clear text password, or refuse operation (only if we need
      * to comput other hashes */
-    if (! unhashedpw) {
+    if (! unhashedpw && (gen_krb_keys || is_smb || is_ipant)) {
         if ('{' == userpw[0]) {
             if (0 == strncasecmp(userpw, "{CLEAR}", strlen("{CLEAR}"))) {
                 unhashedpw = slapi_ch_strdup(&userpw[strlen("{CLEAR}")]);
@@ -663,6 +749,8 @@ static int ipapwd_pre_mod(Slapi_PBlock *pb)
     pwdop->pwd_op = IPAPWD_OP_MOD;
     pwdop->pwdata.password = slapi_ch_strdup(unhashedpw);
     pwdop->pwdata.changetype = IPA_CHANGETYPE_NORMAL;
+    pwdop->skip_history = has_history;
+    pwdop->skip_keys = has_krb_keys;
 
     if (is_root) {
         pwdop->pwdata.changetype = IPA_CHANGETYPE_DSMGR;
@@ -701,21 +789,28 @@ static int ipapwd_pre_mod(Slapi_PBlock *pb)
     pwdop->pwdata.timeNow = time(NULL);
     pwdop->pwdata.target = e;
 
-    ret = ipapwd_CheckPolicy(&pwdop->pwdata);
-    if (ret) {
-        errMesg = "Password Fails to meet minimum strength criteria";
-        rc = LDAP_CONSTRAINT_VIOLATION;
-        goto done;
+    /* if krb keys are being set by an external agent we assume password
+     * policies have been properly checked already, so we check them only
+     * if no krb keys are available */
+    if (has_krb_keys == 0) {
+        ret = ipapwd_CheckPolicy(&pwdop->pwdata);
+        if (ret) {
+            errMesg = ipapwd_error2string(ret);
+            rc = LDAP_CONSTRAINT_VIOLATION;
+            goto done;
+        }
     }
 
-    if (is_krb || is_smb) {
+    if (gen_krb_keys || is_smb || is_ipant) {
 
         Slapi_Value **svals = NULL;
+        Slapi_Value **ntvals = NULL;
         char *nt = NULL;
         char *lm = NULL;
 
         rc = ipapwd_gen_hashes(krbcfg, &pwdop->pwdata, unhashedpw,
-                               is_krb, is_smb, &svals, &nt, &lm, &errMesg);
+                               gen_krb_keys, is_smb, is_ipant,
+                               &svals, &nt, &lm, &ntvals, &errMesg);
         if (rc) {
             goto done;
         }
@@ -727,17 +822,23 @@ static int ipapwd_pre_mod(Slapi_PBlock *pb)
             ipapwd_free_slapi_value_array(&svals);
         }
 
-        if (lm) {
+        if (lm && is_smb) {
             /* replace value */
             slapi_mods_add_string(smods, LDAP_MOD_REPLACE,
                                   "sambaLMPassword", lm);
             slapi_ch_free_string(&lm);
         }
-        if (nt) {
+        if (nt && is_smb) {
             /* replace value */
             slapi_mods_add_string(smods, LDAP_MOD_REPLACE,
                                   "sambaNTPassword", nt);
             slapi_ch_free_string(&nt);
+        }
+
+        if (ntvals && is_ipant) {
+            slapi_mods_add_mod_values(smods, LDAP_MOD_REPLACE,
+                                      "ipaNTHash", ntvals);
+            ipapwd_free_slapi_value_array(&ntvals);
         }
 
         if (is_smb) {
@@ -781,6 +882,95 @@ done:
     return 0;
 }
 
+static int ipapwd_regen_nthash(Slapi_PBlock *pb, Slapi_Mods *smods,
+                               char *dn, struct slapi_entry *entry,
+                               struct ipapwd_krbcfg *krbcfg)
+{
+    Slapi_Attr *attr;
+    Slapi_Value *value;
+    const struct berval *val;
+    struct berval *ntvals[2] = { NULL, NULL };
+    struct berval bval;
+    krb5_key_data *keys;
+    int num_keys;
+    int mkvno;
+    int ret;
+    int i;
+
+    ret = slapi_entry_attr_find(entry, "ipaNTHash", &attr);
+    if (ret == 0) {
+        /* We refuse to regen if there is already a value */
+        return LDAP_CONSTRAINT_VIOLATION;
+    }
+
+    /* ok let's see if we can find the RC4 hash in the keys */
+    ret = slapi_entry_attr_find(entry, "krbPrincipalKey", &attr);
+    if (ret) {
+        return LDAP_UNWILLING_TO_PERFORM;
+    }
+
+    ret = slapi_attr_first_value(attr, &value);
+    if (ret) {
+        return LDAP_OPERATIONS_ERROR;
+    }
+
+    val = slapi_value_get_berval(value);
+    if (!val) {
+        return LDAP_OPERATIONS_ERROR;
+    }
+
+    ret = ber_decode_krb5_key_data((struct berval *)val,
+                                    &mkvno, &num_keys, &keys);
+    if (ret) {
+        return LDAP_OPERATIONS_ERROR;
+    }
+
+    ret = LDAP_UNWILLING_TO_PERFORM;
+
+    for (i = 0; i < num_keys; i++) {
+        char nthash[16];
+        krb5_enc_data cipher;
+        krb5_data plain;
+        krb5_int16 t;
+
+        if (keys[i].key_data_type[0] != ENCTYPE_ARCFOUR_HMAC) {
+            continue;
+        }
+
+        memcpy(&t, keys[i].key_data_contents[0], 2);
+        plain.length = le16toh(t);
+        if (plain.length != 16) {
+            continue;
+        }
+        plain.data = nthash;
+
+        memset(&cipher, 0, sizeof(krb5_enc_data));
+        cipher.enctype = krbcfg->kmkey->enctype;
+        cipher.ciphertext.length = keys[i].key_data_length[0] - 2;
+        cipher.ciphertext.data = ((char *)keys[i].key_data_contents[0]) + 2;
+
+        ret = krb5_c_decrypt(krbcfg->krbctx, krbcfg->kmkey,
+                             0, NULL, &cipher, &plain);
+        if (ret) {
+            ret = LDAP_OPERATIONS_ERROR;
+            break;
+        }
+
+        bval.bv_val = nthash;
+        bval.bv_len = 16;
+        ntvals[0] = &bval;
+
+        slapi_mods_add_modbvps(smods, LDAP_MOD_ADD, "ipaNTHash", ntvals);
+
+        ret = LDAP_SUCCESS;
+        break;
+    }
+
+    ipa_krb5_free_key_data(keys, num_keys);
+
+    return ret;
+}
+
 static int ipapwd_post_op(Slapi_PBlock *pb)
 {
     void *op;
@@ -820,6 +1010,11 @@ static int ipapwd_post_op(Slapi_PBlock *pb)
         return 0;
     }
 
+    if (pwdop->skip_keys && pwdop->skip_history) {
+        /* nothing to do, caller already set all interesting attributes */
+        return 0;
+    }
+
     ret = ipapwd_gen_checks(pb, &errMsg, &krbcfg, 0);
     if (ret != 0) {
         LOG_FATAL("ipapwd_gen_checks failed!?\n");
@@ -831,7 +1026,7 @@ static int ipapwd_post_op(Slapi_PBlock *pb)
 
     /* This was a mod operation on an existing entry, make sure we also update
      * the password history based on the entry we saved from the pre-op */
-    if (IPAPWD_OP_MOD == pwdop->pwd_op) {
+    if (IPAPWD_OP_MOD == pwdop->pwd_op && !pwdop->skip_history) {
         Slapi_DN *tmp_dn = slapi_sdn_new_dn_byref(pwdop->pwdata.dn);
         if (tmp_dn) {
             ret = slapi_search_internal_get_entry(tmp_dn, 0,
@@ -850,53 +1045,59 @@ static int ipapwd_post_op(Slapi_PBlock *pb)
         }
     }
 
-    /* Don't set a last password change or expiration on host passwords. 
-     * krbLastPwdChange is used to tell whether we have a valid keytab. If we
-     * set it on userPassword it confuses enrollment. If krbPasswordExpiration
-     * is set on a host entry then the keytab will appear to be expired.
-     *
-     * When a host is issued a keytab these attributes get set properly by
-     * ipapwd_setkeytab().
-     */
-    ipahost = slapi_value_new_string("ipaHost");
-    if (!pwdop->pwdata.target ||
-        (slapi_entry_attr_has_syntax_value(pwdop->pwdata.target,
-                                           SLAPI_ATTR_OBJECTCLASS,
-                                           ipahost)) == 0) {
+    /* we assume that krb attributes are properly updated too if keys were
+     * passed in */
+    if (!pwdop->skip_keys) {
+        /* Don't set a last password change or expiration on host passwords.
+         * krbLastPwdChange is used to tell whether we have a valid keytab.
+         * If we set it on userPassword it confuses enrollment.
+         * If krbPasswordExpiration is set on a host entry then the keytab
+         * will appear to be expired.
+         *
+         * When a host is issued a keytab these attributes get set properly by
+         * ipapwd_setkeytab().
+         */
+        ipahost = slapi_value_new_string("ipaHost");
+        if (!pwdop->pwdata.target ||
+            (slapi_entry_attr_has_syntax_value(pwdop->pwdata.target,
+                                    SLAPI_ATTR_OBJECTCLASS, ipahost)) == 0) {
+            /* set Password Expiration date */
+            if (!gmtime_r(&(pwdop->pwdata.expireTime), &utctime)) {
+                LOG_FATAL("failed to parse expiration date (buggy gmtime_r ?)\n");
+                goto done;
+            }
+            strftime(timestr, GENERALIZED_TIME_LENGTH+1,
+                     "%Y%m%d%H%M%SZ", &utctime);
+            slapi_mods_add_string(smods, LDAP_MOD_REPLACE,
+                                  "krbPasswordExpiration", timestr);
 
-        /* set Password Expiration date */
-        if (!gmtime_r(&(pwdop->pwdata.expireTime), &utctime)) {
-            LOG_FATAL("failed to parse expiration date (buggy gmtime_r ?)\n");
-            goto done;
+            /* change Last Password Change field with the current date */
+            if (!gmtime_r(&(pwdop->pwdata.timeNow), &utctime)) {
+                LOG_FATAL("failed to parse current date (buggy gmtime_r ?)\n");
+                slapi_value_free(&ipahost);
+                goto done;
+            }
+            strftime(timestr, GENERALIZED_TIME_LENGTH+1,
+                     "%Y%m%d%H%M%SZ", &utctime);
+            slapi_mods_add_string(smods, LDAP_MOD_REPLACE,
+                                  "krbLastPwdChange", timestr);
         }
-        strftime(timestr, GENERALIZED_TIME_LENGTH+1,
-                 "%Y%m%d%H%M%SZ", &utctime);
-        slapi_mods_add_string(smods, LDAP_MOD_REPLACE,
-                              "krbPasswordExpiration", timestr);
-        /* change Last Password Change field with the current date */
-        if (!gmtime_r(&(pwdop->pwdata.timeNow), &utctime)) {
-            LOG_FATAL("failed to parse current date (buggy gmtime_r ?)\n");
-            slapi_value_free(&ipahost);
-            goto done;
-        }
-        strftime(timestr, GENERALIZED_TIME_LENGTH+1,
-                 "%Y%m%d%H%M%SZ", &utctime);
-        slapi_mods_add_string(smods, LDAP_MOD_REPLACE,
-                              "krbLastPwdChange", timestr);
+        slapi_value_free(&ipahost);
     }
-    slapi_value_free(&ipahost);
 
     ret = ipapwd_apply_mods(pwdop->pwdata.dn, smods);
     if (ret)
         LOG("Failed to set additional password attributes in the post-op!\n");
 
-    if (pwdop->pwdata.changetype == IPA_CHANGETYPE_NORMAL) {
-        principal = slapi_entry_attr_get_charptr(pwdop->pwdata.target,
-                                                 "krbPrincipalName");
-    } else {
-        principal = slapi_ch_smprintf("root/admin@%s", krbcfg->realm);
+    if (!pwdop->skip_keys) {
+        if (pwdop->pwdata.changetype == IPA_CHANGETYPE_NORMAL) {
+            principal = slapi_entry_attr_get_charptr(pwdop->pwdata.target,
+                                                     "krbPrincipalName");
+        } else {
+            principal = slapi_ch_smprintf("root/admin@%s", krbcfg->realm);
+        }
+        ipapwd_set_extradata(pwdop->pwdata.dn, principal, pwdop->pwdata.timeNow);
     }
-    ipapwd_set_extradata(pwdop->pwdata.dn, principal, pwdop->pwdata.timeNow);
 
 done:
     if (pwdop && pwdop->pwdata.target) slapi_entry_free(pwdop->pwdata.target);
@@ -928,6 +1129,7 @@ static int ipapwd_pre_bind(Slapi_PBlock *pb)
     Slapi_Value *objectclass;
     int method; /* authentication method */
     int ret = 0;
+    char *principal = NULL;
 
     LOG_TRACE("=>\n");
 
@@ -1068,9 +1270,19 @@ static int ipapwd_pre_bind(Slapi_PBlock *pb)
         goto done;
     }
 
+    /* we need to make sure the ExtraData is set, otherwise kadmin
+     * will not like the object */
+    principal = slapi_entry_attr_get_charptr(entry, "krbPrincipalName");
+    if (!principal) {
+        LOG_OOM();
+        goto done;
+    }
+    ipapwd_set_extradata(pwdata.dn, principal, pwdata.timeNow);
+
     LOG("kerberos key generated for user entry: %s\n", dn);
 
 done:
+    slapi_ch_free_string(&principal);
     slapi_ch_free_string(&expire);
     if (entry)
         slapi_entry_free(entry);
@@ -1095,6 +1307,18 @@ int ipapwd_pre_init(Slapi_PBlock *pb)
     return ret;
 }
 
+int ipapwd_pre_init_betxn(Slapi_PBlock *pb)
+{
+    int ret;
+
+    ret = slapi_pblock_set(pb, SLAPI_PLUGIN_VERSION, SLAPI_PLUGIN_VERSION_01);
+    if (!ret) ret = slapi_pblock_set(pb, SLAPI_PLUGIN_DESCRIPTION, (void *)&ipapwd_plugin_desc);
+    if (!ret) ret = slapi_pblock_set(pb, SLAPI_PLUGIN_BE_TXN_PRE_ADD_FN, (void *)ipapwd_pre_add);
+    if (!ret) ret = slapi_pblock_set(pb, SLAPI_PLUGIN_BE_TXN_PRE_MODIFY_FN, (void *)ipapwd_pre_mod);
+
+    return ret;
+}
+
 /* Init post ops */
 int ipapwd_post_init(Slapi_PBlock *pb)
 {
@@ -1108,3 +1332,14 @@ int ipapwd_post_init(Slapi_PBlock *pb)
     return ret;
 }
 
+int ipapwd_post_init_betxn(Slapi_PBlock *pb)
+{
+    int ret;
+
+    ret = slapi_pblock_set(pb, SLAPI_PLUGIN_VERSION, SLAPI_PLUGIN_VERSION_01);
+    if (!ret) ret = slapi_pblock_set(pb, SLAPI_PLUGIN_DESCRIPTION, (void *)&ipapwd_plugin_desc);
+    if (!ret) ret = slapi_pblock_set(pb, SLAPI_PLUGIN_BE_TXN_POST_ADD_FN, (void *)ipapwd_post_op);
+    if (!ret) ret = slapi_pblock_set(pb, SLAPI_PLUGIN_BE_TXN_POST_MODIFY_FN, (void *)ipapwd_post_op);
+
+    return ret;
+}
