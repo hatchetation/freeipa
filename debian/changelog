@@ -33,5 +33,7 @@ freeipa (3.1.2-1) UNRELEASED; urgency=low
     fails.
   * dont-search-platform-path.diff: Don't use Python.h from the
     platform specific path.
+  * fix-install-layout.diff: Pass an option to setup-client.py to
+    install the python bits to the correct path.
 
  -- Timo Aaltonen <tjaalton@ubuntu.com>  Tue, 01 Nov 2011 10:52:25 -0400
