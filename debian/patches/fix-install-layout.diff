@@ -1,0 +1,14 @@
+--- a/Makefile
++++ b/Makefile
+@@ -76,9 +76,9 @@ client-install: client client-dirs
+ 	done
+ 	cd install/po && $(MAKE) install || exit 1;
+ 	if [ "$(DESTDIR)" = "" ]; then \
+-		$(PYTHON) setup-client.py install; \
++		$(PYTHON) setup-client.py install --install-layout=deb; \
+ 	else \
+-		$(PYTHON) setup-client.py install --root $(DESTDIR); \
++		$(PYTHON) setup-client.py install --install-layout=deb --root $(DESTDIR); \
+ 	fi
+ 
+ client-dirs:
