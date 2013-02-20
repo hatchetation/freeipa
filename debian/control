@@ -65,7 +65,7 @@ Depends: ${shlibs:Depends}, ${misc:Depends}, ${python:Depends},
  python-ldap,
  python-krbv,
  python-dnspython,
- sssd (>= 1.8.0),
+ sssd (>= 1.9.2),
  wget,
 Suggests:
  libpam-krb5,
