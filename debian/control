@@ -64,15 +64,16 @@ Depends: ${shlibs:Depends}, ${misc:Depends}, ${python:Depends},
  ntp,
  python-ldap,
  python-krbv,
+ python-dnspython,
  sssd (>= 1.8.0),
  wget,
 Suggests:
  libpam-krb5,
 Description: FreeIPA centralized identity framework -- client
- FreeIPA is an integrated solution to provide centrally managed Identity 
+ FreeIPA is an integrated solution to provide centrally managed Identity
  (machine, user, virtual machines, groups, authentication credentials), Policy
  (configuration settings, access control information) and Audit (events,
- logs, analysis thereof). 
+ logs, analysis thereof).
  .
  This is the client package.
 
@@ -89,9 +90,9 @@ Depends: ${shlibs:Depends}, ${python:Depends}, ${misc:Depends},
  python-nss,
  python-openssl,
 Description: FreeIPA centralized identity framework -- python modules
- FreeIPA is an integrated solution to provide centrally managed Identity 
+ FreeIPA is an integrated solution to provide centrally managed Identity
  (machine, user, virtual machines, groups, authentication credentials), Policy
  (configuration settings, access control information) and Audit (events,
- logs, analysis thereof). 
+ logs, analysis thereof).
  .
  This Python module is used by other FreeIPA packages.
