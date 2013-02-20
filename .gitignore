@@ -10,6 +10,7 @@ Makefile.in
 *.o
 *.pyc
 .bzr
+*.swp
 freeipa2-dev-doc
 build
 dist/
