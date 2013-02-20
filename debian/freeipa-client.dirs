@@ -1,1 +1,2 @@
 var/lib/ipa-client/sysrestore
+var/lib/sss/pubconf/krb5.include.d
