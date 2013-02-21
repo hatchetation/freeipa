@@ -7,3 +7,4 @@ no-test-lang.diff
 correct-python-path.diff
 dont-search-platform-path.diff
 fix-install-layout.diff
+fix-symlink-exclusion.diff

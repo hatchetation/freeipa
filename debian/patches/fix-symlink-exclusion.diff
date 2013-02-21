@@ -1,0 +1,22 @@
+Description: Don't exclude symlinks when loading plugins
+ FreeIPA uses custom helpers to enumerate and load plugins. These plugins,
+ provided by the ipalib module, are excluded due to being symlinked in from
+ /usr/lib/pyshared as part of the dh_python2 installation process.
+ .
+ This change can probably be submitted upstream, but I have no idea why the
+ original author would exclude symlinks in the first place, nor why a custom
+ loader is being used.
+Author: Nick Hatch <nicholas.hatch@gmail.com>
+Last-Update: 2013-03-20
+
+--- freeipa.orig/ipalib/util.py
++++ freeipa/ipalib/util.py
+@@ -81,7 +81,7 @@
+         if not name.endswith(suffix):
+             continue
+         pyfile = os.path.join(src_dir, name)
+-        if os.path.islink(pyfile) or not os.path.isfile(pyfile):
++        if not os.path.isfile(pyfile):
+             continue
+         module = name[:-len(suffix)]
+         if module == '__init__':
