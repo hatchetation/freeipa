@@ -9,3 +9,4 @@ dont-search-platform-path.diff
 fix-install-layout.diff
 fix-symlink-exclusion.diff
 fix-ldap-conf-path.diff
+check-dbus-before-starting.diff

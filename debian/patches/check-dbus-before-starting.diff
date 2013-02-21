@@ -1,0 +1,36 @@
+Index: freeipa/ipa-client/ipa-install/ipa-client-install
+===================================================================
+--- freeipa.orig/ipa-client/ipa-install/ipa-client-install	2013-02-21 01:19:38.000000000 +0000
++++ freeipa/ipa-client/ipa-install/ipa-client-install	2013-02-21 02:03:54.000000000 +0000
+@@ -353,10 +353,11 @@
+     # Always start certmonger. We can't untrack something if it isn't
+     # running
+     messagebus = ipaservices.knownservices.messagebus
+-    try:
+-        messagebus.start()
+-    except Exception, e:
+-        log_service_error(messagebus.service_name, 'start', e)
++    if not messagebus.is_running():
++        try:
++            messagebus.start()
++        except Exception, e:
++            log_service_error(messagebus.service_name, 'start', e)
+ 
+     cmonger = ipaservices.knownservices.certmonger
+     try:
+@@ -868,10 +869,11 @@
+     principal = 'host/%s@%s' % (hostname, cli_realm)
+ 
+     messagebus = ipaservices.knownservices.messagebus
+-    try:
+-        messagebus.start()
+-    except Exception, e:
+-        log_service_error(messagebus.service_name, 'start', e)
++    if not messagebus.is_running():
++        try:
++            messagebus.start()
++        except Exception, e:
++            log_service_error(messagebus.service_name, 'start', e)
+ 
+     # Ensure that certmonger has been started at least once to generate the
+     # cas files in /var/lib/certmonger/cas.
