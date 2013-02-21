@@ -8,3 +8,4 @@ correct-python-path.diff
 dont-search-platform-path.diff
 fix-install-layout.diff
 fix-symlink-exclusion.diff
+fix-ldap-conf-path.diff
