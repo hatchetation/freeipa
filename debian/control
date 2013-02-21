@@ -67,6 +67,7 @@ Depends: ${shlibs:Depends}, ${misc:Depends}, ${python:Depends},
  python-dnspython,
  sssd (>= 1.9.2),
  wget,
+ keyutils,
 Suggests:
  libpam-krb5,
 Description: FreeIPA centralized identity framework -- client
