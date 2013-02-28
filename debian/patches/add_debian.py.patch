@@ -3,9 +3,11 @@ Date:   Fri Oct 28 15:57:04 2011 +0300
 
     Add add_debian.py.patch, platform support code.
 
+Index: freeipa/ipapython/platform/debian.py
+===================================================================
 --- /dev/null
-+++ b/ipapython/platform/debian.py
-@@ -0,0 +1,174 @@
++++ freeipa/ipapython/platform/debian.py
+@@ -0,0 +1,196 @@
 +# Authors: Simo Sorce <ssorce redhat com>
 +#          Alexander Bokovoy <abokovoy redhat com>
 +#          Marko Myllynen <myllynen redhat com>
@@ -33,28 +35,45 @@ Date:   Fri Oct 28 15:57:04 2011 +0300
 +from ipapython.platform import base
 +
 +# All what we allow exporting directly from this module
-+# Everything else is made available through these symbols when they directly imported into ipapython.services:
-+# authconfig -- class reference for platform-specific implementation of authconfig(8)
-+# service    -- class reference for platform-specific implementation of a PlatformService class
-+# knownservices -- factory instance to access named services IPA cares about, names are ipapython.services.wellknownservices
-+# backup_and_replace_hostname -- platform-specific way to set hostname and make it persistent over reboots
-+# restore_context -- platform-sepcific way to restore security context, if applicable
-+__all__ = ['authconfig', 'service', 'knownservices', 'backup_and_replace_hostname', 'restore_context']
++# Everything else is made available through these symbols when they directly
++# imported into ipapython.services:
++# authconfig -- class reference for platform-specific implementation of
++#     authconfig(8)
++# service -- class reference for platform-specific implementation of a
++#     PlatformService class
++# knownservices -- factory instance to access named services IPA cares about,
++#     names are ipapython.services.wellknownservices
++# backup_and_replace_hostname -- platform-specific way to set hostname and make
++#     it persistent over reboots
++# restore_context -- platform-sepcific way to restore security context, if
++#     applicable
++
++__all__ = ['authconfig', 'service', 'knownservices',
++           'backup_and_replace_hostname', 'restore_context',
++           'timedate_services']
++
++# Just copy a referential list of timedate services
++timedate_services = list(base.timedate_services)
 +
 +class DebianService(base.PlatformService):
 +    def stop(self, instance_name="", capture_output=True):
-+        ipautil.run(["/usr/sbin/service", self.service_name, "stop", instance_name], capture_output=capture_output)
++        ipautil.run(["/usr/sbin/service", self.service_name, "stop",
++                     instance_name], capture_output=capture_output)
 +
 +    def start(self, instance_name="", capture_output=True):
-+        ipautil.run(["/usr/sbin/service", self.service_name, "start", instance_name], capture_output=capture_output)
++        ipautil.run(["/usr/sbin/service", self.service_name, "start",
++                     instance_name], capture_output=capture_output)
 +
 +    def restart(self, instance_name="", capture_output=True):
-+        ipautil.run(["/usr/sbin/service", self.service_name, "restart", instance_name], capture_output=capture_output)
++        ipautil.run(["/usr/sbin/service", self.service_name, "restart",
++                     instance_name], capture_output=capture_output)
 +
 +    def is_running(self, instance_name=""):
 +        ret = True
 +        try:
-+            (sout,serr,rcode) = ipautil.run(["/usr/sbin/service", self.service_name, "status", instance_name])
++            (sout,serr,rcode) = ipautil.run(["/usr/sbin/service",
++                                             self.service_name, "status",
++                                             instance_name])
 +            if sout.find("NOT running") >= 0:
 +                ret = False
 +            if sout.find("stop") >= 0:
@@ -76,10 +95,11 @@ Date:   Fri Oct 28 15:57:04 2011 +0300
 +    def is_enabled(self):
 +        ret = True
 +        try:
-+            (sout,serr,rcode) = ipautil.run(["/sbin/chkconfig", self.service_name])
++            (sout,serr,rcode) = ipautil.run(["/sbin/chkconfig",
++                                             self.service_name])
 +            if sout.find("off") >= 0:
 +                ret = False
-+            if sout.find("unknown service") >= 0:
++            if serr.find("unknown service") >= 0:
 +                ret = False
 +        except ipautil.CalledProcessError:
 +                ret = False
@@ -97,10 +117,14 @@ Date:   Fri Oct 28 15:57:04 2011 +0300
 +    def remove(self):
 +        ipautil.run(["/sbin/chkconfig", "--del", self.service_name])
 +
++class DebianSSHService(DebianService):
++    def get_config_dir(self, instance_name=""):
++        return '/etc/ssh'
++
 +class DebianAuthConfig(base.AuthConfig):
 +    """
-+    AuthConfig class implements system-independent interface to configure
-+    system authentication resources. In Red Hat-produced systems this is done with
++    AuthConfig class implements system-independent interface to configure system
++    authentication resources. In Red Hat-produced systems this is done with
 +    authconfig(8) utility.
 +    """
 +    def __build_args(self):
@@ -136,6 +160,8 @@ Date:   Fri Oct 28 15:57:04 2011 +0300
 +                services[s] = DebianService("dbus")
 +            elif s == "ntpd":
 +                services[s] = DebianService("ntp")
++            elif s == "sshd":
++                services[s] = DebianSSHService("ssh")
 +            else:
 +                services[s] = DebianService(s)
 +        # Call base class constructor. This will lock services to read-only
@@ -178,5 +204,3 @@ Date:   Fri Oct 28 15:57:04 2011 +0300
 +        restore_context(network_filename)
 +    except ipautil.CalledProcessError, e:
 +        print >>sys.stderr, "Failed to set permissions for %s (%s)." % (network_filename, str(e))
-+
-+
