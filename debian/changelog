@@ -1,3 +1,16 @@
+freeipa (3.1.2-0ubuntu1ppa1~precise1) precise; urgency=low
+
+  * control: add dependancy for python-dnspython
+  * Require sssd >= 1.9.3
+  * Ensure that /var/lib/sss/pubconf/krb5.include.d dir is created
+  * control: add keyutils dependancy
+  * Don't exclude symlinks when loading IPA plugins
+  * Patch client installer to use correct LDAP conf path
+  * Check to see if the messagebus (dbus) is running before attempting to start it
+  * Fixup debian-specific platform support
+
+ -- Nick Hatch <nicholas.hatch@gmail.com>  Thu, 28 Feb 2013 21:43:57 +0000
+
 freeipa (3.1.2-0ubuntu1) UNRELEASED; urgency=low
 
   * Merge from unreleased debian git.
